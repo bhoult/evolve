@@ -1,0 +1,1567 @@
+//! The egui interface: toolbar, parameter panel (generated from `SimParams`), statistics and
+//! plots, creature inspector, save/load browser and help.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::SystemTime;
+
+use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
+use bevy::prelude::*;
+use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+use bevy_egui::input::egui_wants_any_keyboard_input;
+use bevy_egui::{EguiContexts, EguiPrimaryContextPass, egui};
+use egui_plot::{Legend, Line, Plot, PlotPoints};
+use evolve_sim::brain::{input_label, output_label};
+use evolve_sim::params::{ParamInfo, ParamKind, ParamRef};
+use evolve_sim::snapshot::{CreatureDetail, Snapshot};
+use evolve_sim::stats::Sample;
+use evolve_sim::zoo::ZooMeta;
+use evolve_sim::{Command, Control, SimParams, ZooTarget, save};
+
+use crate::audio::SoundSettings;
+use crate::camera::OrbitCam;
+use crate::director::Director;
+use crate::env::{GraphicsSettings, ShadowQuality};
+use crate::preview::{PREVIEW_SIZE, Sketch, ZooPreview, sketch};
+use crate::sync::{ColorMode, ViewSettings};
+use crate::tools::{Tool, ToolState};
+use crate::{SimLink, Snap};
+
+pub struct UiPlugin;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlotKind {
+    Population,
+    Progress,
+    Traits,
+    Generations,
+}
+
+#[derive(Resource)]
+pub struct UiState {
+    params: SimParams,
+    defaults: HashMap<&'static str, f64>,
+    /// After a local edit, don't overwrite the panel from the (one-frame-old) snapshot.
+    hold_params_until: f64,
+    params_filter: String,
+    save_name: String,
+    show_saves: bool,
+    saves: Vec<(PathBuf, SystemTime, u64)>,
+    saves_refreshed: f64,
+    show_help: bool,
+    plot: PlotKind,
+    confirm_new_world: bool,
+    show_zoo: bool,
+    zoo_target: ZooTarget,
+    zoo_count: u32,
+    zoo_sort_newest: bool,
+    zoo_selected: Option<u64>,
+    /// Brain view: shown on request, and on its own while following a creature (unless closed
+    /// for that creature).
+    show_brain: bool,
+    brain_closed_for: Option<u64>,
+    /// Body plans of zoo creatures, loaded as their rows come into view (None: unreadable).
+    sketches: HashMap<u64, Option<Arc<Sketch>>>,
+}
+
+impl Default for UiState {
+    fn default() -> Self {
+        let mut defaults = HashMap::new();
+        SimParams::default().visit(&mut |info, r| {
+            let v = match r {
+                ParamRef::F32(x) => *x as f64,
+                ParamRef::U32(x) => *x as f64,
+                ParamRef::U64(x) => *x as f64,
+                ParamRef::Bool(x) => *x as u8 as f64,
+            };
+            defaults.insert(info.name, v);
+        });
+        Self {
+            params: SimParams::default(),
+            defaults,
+            hold_params_until: 0.0,
+            params_filter: String::new(),
+            save_name: "world".into(),
+            show_saves: false,
+            saves: Vec::new(),
+            saves_refreshed: -100.0,
+            show_help: false,
+            plot: PlotKind::Population,
+            confirm_new_world: false,
+            show_zoo: false,
+            zoo_target: ZooTarget::This,
+            zoo_count: 1,
+            zoo_sort_newest: false,
+            zoo_selected: None,
+            show_brain: false,
+            brain_closed_for: None,
+            sketches: HashMap::new(),
+        }
+    }
+}
+
+impl Plugin for UiPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<UiState>()
+            .add_systems(
+                EguiPrimaryContextPass,
+                ui_system.run_if(|args: Res<crate::Args>| !args.no_ui),
+            )
+            .add_systems(Startup, |args: Res<crate::Args>, mut st: ResMut<UiState>| st.show_zoo = args.zoo)
+            .add_systems(Update, shortcuts.run_if(not(egui_wants_any_keyboard_input)));
+    }
+}
+
+const SPEEDS: [(f32, &str); 7] = [
+    (0.25, "¼×"),
+    (0.5, "½×"),
+    (1.0, "1×"),
+    (2.0, "2×"),
+    (4.0, "4×"),
+    (8.0, "8×"),
+    (0.0, "Max"),
+];
+
+fn quicksave_path() -> PathBuf {
+    save::default_dir().join("quicksave.evo")
+}
+
+fn screenshot_dir() -> PathBuf {
+    save::default_dir()
+        .parent()
+        .map(|p| p.join("screenshots"))
+        .unwrap_or_else(|| PathBuf::from("screenshots"))
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn take_screenshot(commands: &mut Commands, link: &SimLink) {
+    let dir = screenshot_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("evolve-{}.png", unix_time()));
+    link.cmd(Command::Select(None));
+    commands
+        .spawn(Screenshot::primary_window())
+        .observe(save_to_disk(path));
+}
+
+#[allow(clippy::too_many_arguments)]
+fn shortcuts(
+    keys: Res<ButtonInput<KeyCode>>,
+    snap: Res<Snap>,
+    link: Res<SimLink>,
+    mut st: ResMut<UiState>,
+    mut director: ResMut<Director>,
+    mut sound: ResMut<SoundSettings>,
+    mut commands: Commands,
+) {
+    if keys.just_pressed(KeyCode::KeyC) {
+        director.toggle();
+    }
+    if keys.just_pressed(KeyCode::KeyM) {
+        sound.muted = !sound.muted;
+    }
+    if keys.just_pressed(KeyCode::Space) {
+        link.0.send(Control::Pause(!snap.0.paused));
+    }
+    if keys.just_pressed(KeyCode::Period) {
+        link.0.send(Control::StepOnce);
+    }
+    let i = SPEEDS.iter().position(|(s, _)| *s == snap.0.speed).unwrap_or(2);
+    if keys.just_pressed(KeyCode::Equal) || keys.just_pressed(KeyCode::NumpadAdd) {
+        link.0.send(Control::Speed(SPEEDS[(i + 1).min(SPEEDS.len() - 1)].0));
+    }
+    if keys.just_pressed(KeyCode::Minus) || keys.just_pressed(KeyCode::NumpadSubtract) {
+        link.0.send(Control::Speed(SPEEDS[i.saturating_sub(1)].0));
+    }
+    if keys.just_pressed(KeyCode::F5) {
+        link.0.send(Control::Save(quicksave_path()));
+    }
+    if keys.just_pressed(KeyCode::F9) {
+        link.0.send(Control::Load(quicksave_path()));
+    }
+    if keys.just_pressed(KeyCode::F12) {
+        take_screenshot(&mut commands, &link);
+    }
+    if keys.just_pressed(KeyCode::KeyH) {
+        st.show_help = !st.show_help;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ui_system(
+    mut contexts: EguiContexts,
+    snap: Res<Snap>,
+    link: Res<SimLink>,
+    mut st: ResMut<UiState>,
+    mut tools: ResMut<ToolState>,
+    mut view: ResMut<ViewSettings>,
+    mut cam: ResMut<OrbitCam>,
+    mut preview: ResMut<ZooPreview>,
+    mut director: ResMut<Director>,
+    mut sound: ResMut<SoundSettings>,
+    mut gfx: ResMut<GraphicsSettings>,
+    diag: Res<DiagnosticsStore>,
+    time: Res<Time>,
+) -> Result {
+    let ctx = contexts.ctx_mut()?;
+    let snap = &*snap.0;
+    let st = &mut *st;
+    let now = time.elapsed_secs_f64();
+    if now > st.hold_params_until && snap.terrain.res >= 3 {
+        st.params = snap.params.clone();
+    }
+    let fps = diag
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed())
+        .unwrap_or(0.0);
+
+    if director.active {
+        director_overlay(ctx, &mut director, &mut sound, now);
+        if !director.panels {
+            return Ok(());
+        }
+    }
+    toolbar(ctx, snap, &link, st, &mut tools, &mut view, &mut cam, &mut director, &mut sound, fps);
+    params_panel(ctx, &link, st, &mut gfx, now);
+    stats_panel(ctx, snap, st, fps, &link, &mut cam);
+    events_panel(ctx, snap);
+    if let Some(sel) = &snap.selected {
+        inspector(ctx, sel, &link, &mut cam, &mut st.show_brain);
+        let following = cam.follow && st.brain_closed_for != Some(sel.id);
+        if st.show_brain || following {
+            let mut open = true;
+            brain_window(ctx, sel, &mut open);
+            if !open {
+                st.show_brain = false;
+                st.brain_closed_for = Some(sel.id);
+            }
+        }
+    }
+    saves_window(ctx, &link, st, now);
+    zoo_window(ctx, snap, &link, st, &mut tools, &mut preview);
+    help_window(ctx, st);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn toolbar(
+    ctx: &mut egui::Context,
+    snap: &Snapshot,
+    link: &SimLink,
+    st: &mut UiState,
+    tools: &mut ToolState,
+    view: &mut ViewSettings,
+    cam: &mut OrbitCam,
+    director: &mut Director,
+    sound: &mut SoundSettings,
+    fps: f64,
+) {
+    egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            let label = if snap.paused { "▶ Run" } else { "⏸ Pause" };
+            if ui.button(label).on_hover_text("Space").clicked() {
+                link.0.send(Control::Pause(!snap.paused));
+            }
+            if ui.button("Step").on_hover_text("Advance one physics step (.)").clicked() {
+                link.0.send(Control::StepOnce);
+            }
+            ui.separator();
+            ui.label("Speed");
+            for (s, name) in SPEEDS {
+                if ui
+                    .selectable_label(snap.speed == s, name)
+                    .on_hover_text("+ / - keys")
+                    .clicked()
+                {
+                    link.0.send(Control::Speed(s));
+                }
+            }
+            ui.separator();
+            ui.label(format!(
+                "t = {}   {:.0} steps/s ({:.1}× real time)   {:.0} fps",
+                fmt_time(snap.time),
+                snap.steps_per_sec,
+                snap.steps_per_sec / 60.0,
+                fps
+            ));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.button("Help").clicked() {
+                    st.show_help = !st.show_help;
+                }
+                sound_controls(ui, sound);
+                if ui
+                    .selectable_label(director.active, "Director")
+                    .on_hover_text("Watch hands-free: the camera finds fights, births, swimmers, sunsets and storms on its own (C)")
+                    .clicked()
+                {
+                    director.toggle();
+                }
+                if st.confirm_new_world {
+                    if ui.button("Cancel").clicked() {
+                        st.confirm_new_world = false;
+                    }
+                    if ui.button("Yes, start over").clicked() {
+                        link.0.send(Control::NewWorld(Box::new(st.params.clone())));
+                        st.confirm_new_world = false;
+                    }
+                    ui.label("Discard this world?");
+                } else if ui
+                    .button("New world")
+                    .on_hover_text("Start over with the current parameters")
+                    .clicked()
+                {
+                    st.confirm_new_world = true;
+                }
+                if ui
+                    .button(format!("Zoo ({})", snap.zoo.len()))
+                    .on_hover_text("The best creatures from every world, kept across sessions")
+                    .clicked()
+                {
+                    st.show_zoo = !st.show_zoo;
+                }
+                if ui.button("Save / Load").on_hover_text("F5 quick save, F9 quick load").clicked() {
+                    st.show_saves = !st.show_saves;
+                    st.saves_refreshed = -100.0;
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            for t in Tool::ALL {
+                if ui
+                    .selectable_label(tools.tool == t, t.label())
+                    .on_hover_text(t.hint())
+                    .clicked()
+                {
+                    tools.tool = t;
+                }
+            }
+            ui.separator();
+            match tools.tool {
+                Tool::Plant => {
+                    ui.add(egui::Slider::new(&mut tools.brush, 0.5..=15.0).text("brush m"));
+                }
+                Tool::Rock | Tool::Boulder => {
+                    ui.add(egui::Slider::new(&mut tools.obstacle_size, 0.5..=10.0).text("size m"));
+                }
+                _ => {}
+            }
+            ui.separator();
+            egui::ComboBox::from_label("color")
+                .selected_text(view.color_mode.label())
+                .show_ui(ui, |ui| {
+                    for m in ColorMode::ALL {
+                        ui.selectable_value(&mut view.color_mode, m, m.label());
+                    }
+                });
+            ui.toggle_value(&mut cam.follow, "Follow selected")
+                .on_hover_text("F");
+            if let Some((_, name, count)) = &tools.zoo_place {
+                ui.separator();
+                ui.colored_label(
+                    egui::Color32::from_rgb(240, 200, 90),
+                    format!("Click the ground to drop {count} x {name} (Esc cancels)"),
+                );
+            }
+        });
+    });
+}
+
+fn fmt_time(t: f64) -> String {
+    let s = t as u64;
+    if s >= 3600 {
+        format!("{}h{:02}m{:02}s", s / 3600, (s / 60) % 60, s % 60)
+    } else {
+        format!("{}m{:02}s", s / 60, s % 60)
+    }
+}
+
+fn param_widget(ui: &mut egui::Ui, info: &ParamInfo, r: ParamRef<'_>, default: f64) -> bool {
+    let mut label = info.name.replace('_', " ");
+    if info.kind == ParamKind::NewWorld {
+        label.push_str(" ⟳");
+    }
+    let resp = match r {
+        ParamRef::F32(x) => {
+            let log = info.min >= 0.0 && default > 0.0 && info.max / default >= 30.0;
+            let mut s = egui::Slider::new(x, info.min as f32..=info.max as f32).text(label);
+            if log {
+                s = s.logarithmic(true).smallest_positive(default / 100.0);
+            }
+            ui.add(s)
+        }
+        ParamRef::U32(x) => {
+            let mut s = egui::Slider::new(x, info.min as u32..=info.max as u32).text(label);
+            if info.min >= 1.0 && info.max / info.min >= 100.0 {
+                s = s.logarithmic(true);
+            }
+            ui.add(s)
+        }
+        ParamRef::U64(x) => ui.add(egui::DragValue::new(x).range(info.min as u64..=info.max as u64).prefix(format!("{label}: "))),
+        ParamRef::Bool(x) => ui.checkbox(x, label),
+    };
+    let mut tip = info.doc.trim().to_string();
+    if info.kind == ParamKind::NewWorld {
+        tip.push_str("\n\n⟳ Takes effect when you press Regenerate terrain (or New world).");
+    }
+    tip.push_str(&format!("\nDefault: {default}"));
+    resp.on_hover_text(tip).changed()
+}
+
+fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: &mut GraphicsSettings, now: f64) {
+    egui::SidePanel::left("params")
+        .resizable(true)
+        .default_width(330.0)
+        .show(ctx, |ui| {
+            ui.heading("Parameters");
+            ui.horizontal(|ui| {
+                ui.label("Filter");
+                ui.text_edit_singleline(&mut st.params_filter);
+            });
+            let mut changed = false;
+            ui.horizontal(|ui| {
+                if ui
+                    .button("Regenerate terrain")
+                    .on_hover_text("Rebuild the landscape from the World ⟳ settings, keeping all life")
+                    .clicked()
+                {
+                    link.cmd(Command::RegenerateTerrain);
+                }
+                if ui.button("Defaults").on_hover_text("Reset every parameter").clicked() {
+                    st.params = SimParams::default();
+                    changed = true;
+                }
+            });
+            egui::CollapsingHeader::new("Graphics").show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut gfx.clouds, "clouds");
+                    ui.checkbox(&mut gfx.rain, "rain");
+                    ui.checkbox(&mut gfx.lightning, "lightning");
+                    ui.checkbox(&mut gfx.bloom, "bloom");
+                    ui.checkbox(&mut gfx.sway, "swaying plants");
+                });
+                ui.horizontal(|ui| {
+                    ui.label("shadows");
+                    for (q, name) in [(ShadowQuality::Off, "off"), (ShadowQuality::Low, "low"), (ShadowQuality::High, "high")] {
+                        ui.selectable_value(&mut gfx.shadows, q, name);
+                    }
+                });
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.spacing_mut().slider_width = 150.0;
+                let mut groups: Vec<&'static str> = Vec::new();
+                st.params.visit(&mut |info, _| {
+                    if groups.last() != Some(&info.group) {
+                        groups.push(info.group);
+                    }
+                });
+                let filter = st.params_filter.to_lowercase();
+                let defaults = &st.defaults;
+                for group in groups {
+                    let open = !filter.is_empty() || matches!(group, "World" | "Population" | "Brain");
+                    egui::CollapsingHeader::new(group)
+                        .default_open(open)
+                        .open(if filter.is_empty() { None } else { Some(true) })
+                        .show(ui, |ui| {
+                            st.params.visit(&mut |info, r| {
+                                if info.group != group {
+                                    return;
+                                }
+                                if !filter.is_empty()
+                                    && !info.name.contains(&filter)
+                                    && !info.doc.to_lowercase().contains(&filter)
+                                {
+                                    return;
+                                }
+                                let d = defaults.get(info.name).copied().unwrap_or(0.0);
+                                changed |= param_widget(ui, info, r, d);
+                            });
+                        });
+                }
+            });
+            if changed {
+                st.hold_params_until = now + 0.5;
+                link.cmd(Command::SetParams(Box::new(st.params.clone())));
+            }
+        });
+}
+
+fn stats_panel(
+    ctx: &mut egui::Context,
+    snap: &Snapshot,
+    st: &mut UiState,
+    fps: f64,
+    link: &SimLink,
+    cam: &mut OrbitCam,
+) {
+    egui::SidePanel::right("stats")
+        .resizable(true)
+        .default_width(330.0)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading("World");
+                let s = &snap.stats;
+                let n = snap.creatures.len();
+                let mean_gen = if n > 0 {
+                    snap.creatures.iter().map(|c| c.generation as f32).sum::<f32>() / n as f32
+                } else {
+                    0.0
+                };
+                egui::Grid::new("stats_grid").num_columns(2).striped(true).show(ui, |ui| {
+                    let mut row = |k: &str, v: String| {
+                        ui.label(k);
+                        ui.label(v);
+                        ui.end_row();
+                    };
+                    row("Creatures", format!("{n}  (rain below {}, cap {})", snap.params.min_population, snap.params.max_population));
+                    row("Plants", format!("{}", snap.plants.len()));
+                    row("Meat", format!("{}", snap.meat.len()));
+                    row("Obstacles", format!("{}", snap.obstacles.len()));
+                    row("Born / rained", format!("{} / {}", s.births, s.rained));
+                    row(
+                        "Deaths",
+                        format!(
+                            "{} starved, {} killed, {} old, {} drowned, {} thirst, {} other",
+                            s.deaths_starved,
+                            s.deaths_killed,
+                            s.deaths_old,
+                            s.deaths_drowned,
+                            s.deaths_thirst,
+                            s.deaths_other
+                        ),
+                    );
+                    row("Generation", format!("mean {mean_gen:.1}, max {}", s.max_generation));
+                    row("Species (approx.)", format!("{}", snap.history.last().map(|h| h.species).unwrap_or(0)));
+                    row("Gene pool", format!("{} genomes, best score {:.1}", snap.pool_size, snap.pool_best));
+                    row(
+                        "Recent lifetimes",
+                        format!(
+                            "{:.0} food, {:.0} m walked, {:.0} s, {:.2} children",
+                            s.life_food, s.life_distance, s.life_age, s.life_children
+                        ),
+                    );
+                });
+
+                ui.add_space(6.0);
+                species_list(ui, snap, link, cam);
+                if snap.worlds.len() > 1 {
+                    ui.add_space(6.0);
+                    worlds_list(ui, snap);
+                }
+
+                ui.add_space(6.0);
+                ui.heading("History");
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut st.plot, PlotKind::Population, "Population");
+                    ui.selectable_value(&mut st.plot, PlotKind::Progress, "Progress");
+                    ui.selectable_value(&mut st.plot, PlotKind::Traits, "Traits");
+                    ui.selectable_value(&mut st.plot, PlotKind::Generations, "Generations");
+                });
+                history_plot(ui, &snap.history, st.plot);
+
+                ui.add_space(6.0);
+                ui.heading("Performance");
+                let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+                let total_steps: f32 = snap.worlds.iter().map(|w| w.steps_per_sec).sum();
+                egui::Grid::new("perf_grid").num_columns(2).show(ui, |ui| {
+                    let p = &snap.perf;
+                    let mut row = |k: &str, v: String| {
+                        ui.label(k);
+                        ui.label(v);
+                        ui.end_row();
+                    };
+                    row("Render", format!("{fps:.0} fps"));
+                    row(
+                        "CPU",
+                        format!(
+                            "{:.0}% of one core ({:.0}% of all {cores})",
+                            snap.cpu_percent,
+                            snap.cpu_percent / cores as f32
+                        ),
+                    );
+                    row(
+                        "All worlds",
+                        format!("{total_steps:.0} steps/s ({} worlds)", snap.worlds.len().max(1)),
+                    );
+                    row("This world", format!("{:.0} steps/s", snap.steps_per_sec));
+                    row("  physics", format!("{:.2} ms/step", p.physics_ms));
+                    row("  senses + brains (CPU)", format!("{:.3} ms/step", p.think_ms));
+                    row("  ecology", format!("{:.3} ms/step", p.other_ms));
+                    row("Brains run on", snap.brain_backend.clone());
+                    if snap.brain_memory_bytes > 0 {
+                        let all_busy: f32 = snap.worlds.iter().map(|w| w.gpu_busy).sum();
+                        row(
+                            "  GPU busy (brains)",
+                            format!(
+                                "{:.0}% all worlds ({:.0}% this one, {:.2} ms per brain tick)",
+                                all_busy * 100.0,
+                                p.gpu_busy * 100.0,
+                                p.gpu_ms
+                            ),
+                        );
+                        if snap.params.gpu_target > 0.0 {
+                            row(
+                                "  brain price",
+                                format!(
+                                    "×{:.2}, steering toward {:.0}% GPU at Max speed",
+                                    snap.brain_price,
+                                    snap.params.gpu_target * 100.0
+                                ),
+                            );
+                        }
+                        row("  waiting on GPU", format!("{:.2} ms per brain tick", p.gpu_wait_ms));
+                        row("  brain memory", format!("{:.0} MB", snap.brain_memory_bytes as f64 / 1e6));
+                    }
+                });
+            });
+        });
+}
+
+fn history_plot(ui: &mut egui::Ui, h: &[Sample], kind: PlotKind) {
+    let series = |f: &dyn Fn(&Sample) -> f64| -> PlotPoints<'static> {
+        h.iter().map(|s| [s.time as f64 / 60.0, f(s)]).collect()
+    };
+    Plot::new(("history", kind as u8))
+        .height(190.0)
+        .legend(Legend::default())
+        .allow_scroll(false)
+        .x_axis_label("minutes")
+        .show(ui, |p| match kind {
+            PlotKind::Population => {
+                let rgb = egui::Color32::from_rgb;
+                p.line(Line::new("creatures", series(&|s| s.population as f64)).color(rgb(240, 170, 60)));
+                p.line(Line::new("plants / 10", series(&|s| s.plants as f64 / 10.0)).color(rgb(90, 190, 80)));
+                p.line(Line::new("meat", series(&|s| s.meat as f64)).color(rgb(200, 70, 60)));
+                p.line(Line::new("species", series(&|s| s.species as f64)).color(rgb(170, 120, 230)));
+            }
+            PlotKind::Progress => {
+                p.line(Line::new("food per life", series(&|s| s.life_food as f64)));
+                p.line(Line::new("meters per life", series(&|s| s.life_distance as f64)));
+            }
+            PlotKind::Traits => {
+                p.line(Line::new("neurons", series(&|s| s.mean_neurons as f64)));
+                p.line(Line::new("limbs", series(&|s| s.mean_limbs as f64)));
+                p.line(Line::new("diet x10 (meat)", series(&|s| s.mean_diet as f64 * 10.0)));
+                p.line(Line::new("mass / 10 kg", series(&|s| s.mean_mass as f64 / 10.0)));
+            }
+            PlotKind::Generations => {
+                p.line(Line::new("mean generation", series(&|s| s.mean_generation as f64)));
+                p.line(Line::new("max generation", series(&|s| s.max_generation as f64)));
+            }
+        });
+}
+
+fn events_panel(ctx: &mut egui::Context, snap: &Snapshot) {
+    if snap.events.is_empty() {
+        return;
+    }
+    egui::TopBottomPanel::bottom("events").show(ctx, |ui| {
+        for e in snap.events.iter().rev().take(2) {
+            ui.label(egui::RichText::new(e).small());
+        }
+    });
+}
+
+fn value_color(v: f32) -> egui::Color32 {
+    let v = v.clamp(-1.0, 1.0);
+    let base = 70.0;
+    if v >= 0.0 {
+        egui::Color32::from_rgb((base + 185.0 * v) as u8, (base + 90.0 * v) as u8, base as u8)
+    } else {
+        let v = -v;
+        egui::Color32::from_rgb(base as u8, (base + 80.0 * v) as u8, (base + 185.0 * v) as u8)
+    }
+}
+
+fn activity(ui: &mut egui::Ui, values: &[f32], label: impl Fn(usize) -> String) {
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(2.0, 2.0);
+        for (i, v) in values.iter().enumerate() {
+            let (rect, resp) = ui.allocate_exact_size(egui::vec2(11.0, 11.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 2.0, value_color(*v));
+            resp.on_hover_text(format!("{}: {:+.2}", label(i), v));
+        }
+    });
+}
+
+fn bar(ui: &mut egui::Ui, label: &str, value: f32, max: f32) {
+    let frac = if max > 0.0 { (value / max).clamp(0.0, 1.0) } else { 0.0 };
+    ui.add(
+        egui::ProgressBar::new(frac)
+            .desired_height(14.0)
+            .text(format!("{label} {value:.0} / {max:.0}")),
+    );
+}
+
+fn inspector(ctx: &mut egui::Context, c: &CreatureDetail, link: &SimLink, cam: &mut OrbitCam, show_brain: &mut bool) {
+    egui::Window::new(format!("Creature #{}", c.id))
+        .id(egui::Id::new("inspector"))
+        .default_pos([360.0, 90.0])
+        .default_width(320.0)
+        .resizable(true)
+        .show(ctx, |ui| {
+            let origin = match c.parents {
+                Some((a, b)) if a == b => format!("budded from #{a}"),
+                Some((a, b)) => format!("child of #{a} and #{b}"),
+                None if c.rained && c.generation > 0 => "fell from the sky, bred from the gene pool".to_string(),
+                None if c.rained => "fell from the sky, random genes".to_string(),
+                None => "placed by hand".to_string(),
+            };
+            ui.label(format!("Generation {}, {}, age {}", c.generation, origin, fmt_time(c.age as f64)));
+            bar(ui, "energy", c.energy, c.max_energy);
+            bar(ui, "health", c.health, c.max_health);
+            bar(ui, "oxygen %", c.oxygen * 100.0, 100.0);
+            bar(ui, "water %", c.hydration * 100.0, 100.0);
+            bar(ui, "mating drive %", c.mate_drive * 100.0, 100.0);
+            let calling = ((c.outputs.get(evolve_sim::brain::output::CALL).copied().unwrap_or(-1.0) - 0.2) / 0.8).max(0.0);
+            bar(ui, "calling %", calling * 100.0, 100.0);
+            ui.horizontal(|ui| {
+                if ui.button("Follow").clicked() {
+                    cam.follow = true;
+                }
+                if ui
+                    .selectable_label(*show_brain, "Brain view")
+                    .on_hover_text("A live picture of its neural network (opens by itself while following)")
+                    .clicked()
+                {
+                    *show_brain = !*show_brain;
+                }
+                if ui.button("Feed").on_hover_text("Fill energy and health").clicked() {
+                    link.cmd(Command::FeedCreature(c.id));
+                }
+                if ui
+                    .button("Clone")
+                    .on_hover_text("Drop a mutated copy from the sky")
+                    .clicked()
+                {
+                    link.cmd(Command::SpawnCreature {
+                        pos: None,
+                        from: Some(c.id),
+                        count: 1,
+                    });
+                }
+                if ui.button("Kill").on_hover_text("Dies and leaves meat").clicked() {
+                    link.cmd(Command::KillCreature(c.id));
+                }
+                if ui.button("Remove").clicked() {
+                    link.cmd(Command::RemoveCreature(c.id));
+                }
+                if ui
+                    .button("Add to zoo")
+                    .on_hover_text("Keep this creature's genome in the zoo (pinned)")
+                    .clicked()
+                {
+                    link.0.send(Control::ZooAdd(c.id));
+                }
+            });
+            ui.separator();
+            let t = &c.traits;
+            egui::Grid::new("traits").num_columns(2).striped(true).show(ui, |ui| {
+                let mut row = |k: &str, v: String| {
+                    ui.label(k);
+                    ui.label(v);
+                    ui.end_row();
+                };
+                row(
+                    "Body",
+                    format!(
+                        "{:.0} kg, size {:.2}: {} body segment{}, {} limb segments",
+                        c.mass,
+                        t.size,
+                        c.trunk,
+                        if c.trunk == 1 { "" } else { "s" },
+                        c.limbs
+                    ),
+                );
+                row("Joints", format!("{} hinges, {} swivels", c.hinges, c.swivels));
+                row("Diet", format!("{:.0}% meat", t.diet * 100.0));
+                row("Leanings", format!("aggression {:+.2}, mating {:+.2}, appetite {:+.2}", t.aggression, t.libido, t.appetite));
+                row("Armor / lungs", format!("{:.2} / {:.2}", t.armor, t.breath));
+                row("Rhythm", format!("{:.2} Hz", t.cpg_freq));
+                row(
+                    "Brain",
+                    format!(
+                        "{} neurons, {} connections, costs {:.4} energy/s",
+                        c.neurons,
+                        if c.synapses >= 1_000_000 {
+                            format!("{:.2}M", c.synapses as f64 / 1e6)
+                        } else {
+                            format!("{:.1}k", c.synapses as f64 / 1e3)
+                        },
+                        c.brain_cost
+                    ),
+                );
+                row("Metabolism", format!("{:.3} energy/s at rest", c.basal_cost));
+                row(
+                    "Learning",
+                    format!(
+                        "rate {:.2}, explores {:.2}, remembers {:.1} s, seeks {:.2}",
+                        t.plasticity, t.explore, t.trace_time, t.seek
+                    ),
+                );
+                row(
+                    "Learned",
+                    format!(
+                        "{:.0}% of its inherited wiring (offsets {:.3} vs weights {:.3})",
+                        100.0 * c.learned / c.inherited.max(1e-6),
+                        c.learned,
+                        c.inherited
+                    ),
+                );
+                row(
+                    "Lifetime",
+                    format!(
+                        "ate {:.0} plant + {:.0} meat, walked {:.0} m",
+                        c.life.plant_eaten, c.life.meat_eaten, c.life.distance
+                    ),
+                );
+                row(
+                    "Record",
+                    format!("{} children, {} kills, {} bites", c.life.children, c.life.kills, c.life.attacks),
+                );
+                let [eat, hunt, breed, travel] = c.score;
+                row(
+                    "Score",
+                    format!(
+                        "{:.1}: eating {eat:.1}, hunting {hunt:.1}, breeding {breed:.1}, travelling {travel:.1}",
+                        eat + hunt + breed + travel
+                    ),
+                );
+                let v = t.voice;
+                row(
+                    "Voice",
+                    format!(
+                        "{:.0} Hz, timbre {:.2}, rasp {:.2}, warble {:.2}",
+                        110.0 * 10f32.powf(v[0].clamp(0.0, 1.0)),
+                        v[1],
+                        v[2],
+                        v[3]
+                    ),
+                );
+            });
+            ui.separator();
+            ui.label("Brain activity (hover a cell; orange positive, blue negative)");
+            ui.label(egui::RichText::new("Senses").small());
+            activity(ui, &c.inputs, input_label);
+            const SHOWN: usize = 160;
+            let more = c.hidden.len().saturating_sub(SHOWN);
+            let title = if more > 0 {
+                format!("Hidden (first {SHOWN} of {})", c.hidden.len())
+            } else {
+                format!("Hidden ({})", c.hidden.len())
+            };
+            ui.label(egui::RichText::new(title).small());
+            activity(ui, &c.hidden[..c.hidden.len().min(SHOWN)], |i| format!("neuron {i}"));
+            ui.label(egui::RichText::new("Actions").small());
+            activity(ui, &c.outputs, output_label);
+            if ui.button("Deselect").clicked() {
+                link.cmd(Command::Select(None));
+                cam.follow = false;
+            }
+        });
+}
+
+fn saves_window(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, now: f64) {
+    if !st.show_saves {
+        return;
+    }
+    let dir = save::default_dir();
+    if now - st.saves_refreshed > 2.0 {
+        st.saves = save::list(&dir);
+        st.saves_refreshed = now;
+    }
+    let mut open = true;
+    egui::Window::new("Save / Load")
+        .open(&mut open)
+        .default_pos([420.0, 140.0])
+        .default_width(380.0)
+        .show(ctx, |ui| {
+            ui.label(egui::RichText::new(dir.display().to_string()).small().weak());
+            ui.horizontal(|ui| {
+                ui.text_edit_singleline(&mut st.save_name);
+                if ui.button("Save").clicked() {
+                    let name: String = st
+                        .save_name
+                        .chars()
+                        .map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+                        .collect();
+                    let name = if name.is_empty() { "world".to_string() } else { name };
+                    link.0.send(Control::Save(dir.join(format!("{name}.{}", save::EXTENSION))));
+                    st.saves_refreshed = now - 1.5;
+                }
+            });
+            ui.separator();
+            if st.saves.is_empty() {
+                ui.label("No saves yet.");
+            }
+            egui::ScrollArea::vertical().max_height(320.0).show(ui, |ui| {
+                for (path, modified, size) in &st.saves {
+                    ui.horizontal(|ui| {
+                        if ui.button("Load").clicked() {
+                            link.0.send(Control::Load(path.clone()));
+                        }
+                        let name = path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                        let age = SystemTime::now()
+                            .duration_since(*modified)
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        let age = if age < 120 {
+                            format!("{age}s ago")
+                        } else if age < 7200 {
+                            format!("{}m ago", age / 60)
+                        } else {
+                            format!("{}h ago", age / 3600)
+                        };
+                        ui.label(format!("{name}   {:.1} MB, {age}", *size as f64 / 1e6));
+                    });
+                }
+            });
+        });
+    st.show_saves = open;
+}
+
+fn help_window(ctx: &mut egui::Context, st: &mut UiState) {
+    let mut open = st.show_help;
+    egui::Window::new("Help").open(&mut open).default_width(420.0).show(ctx, |ui| {
+        ui.label("Camera: right-drag orbit, middle-drag pan, scroll zoom, WASD move, Q/E turn, F follow the selected creature.");
+        ui.label("Tools (1-7): select and drag creatures, plant food, drop meat, place rocks and boulders, drop creatures, remove things. While dragging, scroll to lift.");
+        ui.label("Keys: Space pause, . single step, + / - speed, F5 quick save, F9 quick load, F12 screenshot, Delete removes the selected creature, Esc deselects, H this help.");
+        ui.separator();
+        ui.label("Every creature is built from its genome: a head-end torso, optionally followed by a spine of up to five more segments (a snake or a caterpillar), plus up to six limb genes. A limb has up to three segments (thigh, shin, foot), can grow from any body segment or from the tip of another limb, can be mirrored into a symmetric pair, and can end in a flat paddle. Joints are hinges (one axis, cheap, knees bend mostly one way) or swivels (two axes, like a tentacle, costing more energy per unit of work); every joint's range of motion is genetic. A neural network reads its senses (food, meat, water, other creatures, obstacle rays, thirst, its own joint angles, an internal rhythm) and drives the joints and the eat / attack / mate actions. Creatures must drink: putting the mouth in water refills them, rain helps a little.");
+        ui.label("Brains range between the min and max neuron params; each neuron costs energy every second. Energy comes from eating; it drains with body mass, brain size and motor work. Two willing, related creatures near each other breed: their genomes cross over and mutate. When the population falls below the minimum, new creatures rain from the sky, mostly bred from the best genomes seen so far. Creatures also learn while they live: they vary their movements a little, remember what they tried for a moment, and keep what turned out better than usual (food, water, mating, closing in on food when hungry). Parents pass part of what they learned on to their children. They can call out in voices of their own and hear each other's calls (direction, loudness, pitch, and whether the caller sounds like kin); what calls come to mean is up to evolution. Lives are scored by what they achieve: eating, hunting, breeding and travelling, not by how long they last.");
+        ui.label("Parameters marked ⟳ shape the terrain and apply on Regenerate terrain. Everything else applies immediately.");
+    });
+    st.show_help = open;
+}
+
+fn species_list(ui: &mut egui::Ui, snap: &Snapshot, link: &SimLink, cam: &mut OrbitCam) {
+    egui::CollapsingHeader::new(format!("Species ({})", snap.species.len()))
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Creatures that can interbreed. Click one to follow its most advanced member.")
+                    .small()
+                    .weak(),
+            );
+            egui::Grid::new("species_grid").num_columns(6).striped(true).show(ui, |ui| {
+                for h in ["", "alive", "gen", "meat", "limbs", "neurons"] {
+                    ui.label(egui::RichText::new(h).small().strong());
+                }
+                ui.end_row();
+                for s in snap.species.iter().take(12) {
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(28.0, 14.0), egui::Sense::click());
+                    let [r, g, b] = s.color.map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8);
+                    ui.painter().rect_filled(rect, 3.0, egui::Color32::from_rgb(r, g, b));
+                    let resp = resp.on_hover_text(format!(
+                        "{:.0} kg on average, {} children among the living",
+                        s.mean_mass, s.births
+                    ));
+                    let clicked = resp.clicked()
+                        | ui.selectable_label(false, format!("{}", s.count)).clicked()
+                        | ui.selectable_label(false, format!("{}", s.max_generation)).clicked()
+                        | ui.selectable_label(false, format!("{:.0}%", s.mean_diet * 100.0)).clicked()
+                        | ui.selectable_label(false, format!("{:.1}", s.mean_limbs)).clicked()
+                        | ui.selectable_label(false, format!("{:.0}", s.mean_neurons)).clicked();
+                    if clicked {
+                        link.cmd(Command::Select(Some(s.representative)));
+                        cam.follow = true;
+                    }
+                    ui.end_row();
+                }
+            });
+            if snap.species.len() > 12 {
+                ui.label(egui::RichText::new(format!("and {} smaller ones", snap.species.len() - 12)).small());
+            }
+        });
+}
+
+fn worlds_list(ui: &mut egui::Ui, snap: &Snapshot) {
+    egui::CollapsingHeader::new(format!("Worlds ({})", snap.worlds.len()))
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(
+                    "Background worlds evolve on spare cores; their best genomes migrate into this one's gene pool.",
+                )
+                .small()
+                .weak(),
+            );
+            egui::Grid::new("worlds_grid").num_columns(6).striped(true).show(ui, |ui| {
+                for h in ["", "time", "alive", "max gen", "neurons", "steps/s"] {
+                    ui.label(egui::RichText::new(h).small().strong());
+                }
+                ui.end_row();
+                for w in &snap.worlds {
+                    ui.label(if w.index == 0 { "this".to_string() } else { format!("#{}", w.index) });
+                    ui.label(fmt_time(w.time));
+                    ui.label(format!("{}", w.population));
+                    ui.label(format!("{}", w.max_generation));
+                    ui.label(format!("{:.0}", w.mean_neurons));
+                    ui.label(format!("{:.0}", w.steps_per_sec));
+                    ui.end_row();
+                }
+            });
+        });
+}
+
+fn zoo_window(
+    ctx: &mut egui::Context,
+    snap: &Snapshot,
+    link: &SimLink,
+    st: &mut UiState,
+    tools: &mut ToolState,
+    pv: &mut ZooPreview,
+) {
+    if !st.show_zoo {
+        return;
+    }
+    let mut open = true;
+    egui::Window::new("Zoo")
+        .open(&mut open)
+        .default_pos([300.0, 100.0])
+        .default_width(1000.0)
+        .show(ctx, |ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "Every world stores its best creature here every {:.0} simulated minutes; pinned ones are never pruned. {}",
+                    snap.params.zoo_interval / 60.0,
+                    snap.zoo_dir
+                ))
+                .small()
+                .weak(),
+            );
+            ui.horizontal(|ui| {
+                ui.label("Drop into");
+                let label = |t: ZooTarget| match t {
+                    ZooTarget::This => "this world".to_string(),
+                    ZooTarget::World(k) => format!("background world {k}"),
+                    ZooTarget::All => "every world".to_string(),
+                };
+                egui::ComboBox::from_id_salt("zoo_target")
+                    .selected_text(label(st.zoo_target))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut st.zoo_target, ZooTarget::This, label(ZooTarget::This));
+                        for k in 1..snap.worlds.len() {
+                            ui.selectable_value(&mut st.zoo_target, ZooTarget::World(k), label(ZooTarget::World(k)));
+                        }
+                        ui.selectable_value(&mut st.zoo_target, ZooTarget::All, label(ZooTarget::All));
+                    });
+                ui.label("copies");
+                for n in [1u32, 5, 10] {
+                    ui.selectable_value(&mut st.zoo_count, n, format!("{n}"))
+                        .on_hover_text("Each copy is a slightly mutated variant; they can breed with each other");
+                }
+                ui.separator();
+                ui.selectable_value(&mut st.zoo_sort_newest, false, "best");
+                ui.selectable_value(&mut st.zoo_sort_newest, true, "newest");
+            });
+            ui.separator();
+            if snap.zoo.is_empty() {
+                ui.label("The zoo is empty. Worlds add their best creature periodically, or use Add to zoo in a creature's inspector.");
+                return;
+            }
+            let mut rows: Vec<&ZooMeta> = snap.zoo.iter().collect();
+            if st.zoo_sort_newest {
+                rows.sort_by(|a, b| b.saved_unix.cmp(&a.saved_unix));
+            } else {
+                // Scores worked out the old way don't compare with today's; they go last.
+                rows.sort_by(|a, b| b.score_version.cmp(&a.score_version).then(b.score.total_cmp(&a.score)));
+            }
+            if !st.zoo_selected.is_some_and(|id| rows.iter().any(|e| e.id == id)) {
+                st.zoo_selected = rows.first().map(|e| e.id);
+            }
+            let dir = PathBuf::from(&snap.zoo_dir);
+            // Reading a genome means unpacking its whole brain, so only a few per frame.
+            let mut budget = 4;
+            let mut load = |sketches: &mut HashMap<u64, Option<Arc<Sketch>>>, id: u64| -> Option<Arc<Sketch>> {
+                if let Some(sk) = sketches.get(&id) {
+                    return sk.clone();
+                }
+                if budget == 0 {
+                    return None;
+                }
+                budget -= 1;
+                let sk = evolve_sim::zoo::load_genome(&dir, id).ok().map(|g| Arc::new(sketch(&g)));
+                sketches.insert(id, sk.clone());
+                sk
+            };
+            let selected = rows.iter().find(|e| Some(e.id) == st.zoo_selected).copied();
+            let sel_sketch = selected.and_then(|e| load(&mut st.sketches, e.id));
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            ui.horizontal_top(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_width(560.0);
+                    egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
+                        egui::Grid::new("zoo_grid").num_columns(9).striped(true).show(ui, |ui| {
+                            for h in ["body (side)", "name", "score", "neurons", "parts", "meat", "", "", ""] {
+                                ui.label(egui::RichText::new(h).small().strong());
+                            }
+                            ui.end_row();
+                            for e in &rows {
+                                let sk = load(&mut st.sketches, e.id);
+                                let picked = st.zoo_selected == Some(e.id);
+                                if draw_sketch(ui, sk.as_deref(), e.color, picked, egui::vec2(84.0, 46.0))
+                                    .on_hover_text("Show this creature")
+                                    .clicked()
+                                {
+                                    st.zoo_selected = Some(e.id);
+                                }
+                                let pin = if e.pinned { " (pinned)" } else { "" };
+                                if ui.selectable_label(picked, format!("{}{pin}", e.name)).clicked() {
+                                    st.zoo_selected = Some(e.id);
+                                }
+                                if e.score_version == evolve_sim::zoo::SCORE_VERSION {
+                                    ui.label(format!("{:.1}", e.score));
+                                } else {
+                                    ui.label(egui::RichText::new(format!("{:.1}*", e.score)).weak())
+                                        .on_hover_text("Scored the old way (4 points per child, however little it was given), so it doesn't compare with newer scores");
+                                }
+                                ui.label(format!("{}", e.neurons));
+                                ui.label(match &sk {
+                                    Some(sk) => format!("{} + {}", sk.trunk, sk.limbs),
+                                    None => format!("{}", e.limbs + 1),
+                                })
+                                .on_hover_text("body segments + limb segments");
+                                ui.label(format!("{:.0}%", e.diet * 100.0));
+                                if ui.button("Drop").on_hover_text("Drop from the sky at a random spot").clicked() {
+                                    link.0.send(Control::ZooDrop {
+                                        id: e.id,
+                                        target: st.zoo_target,
+                                        pos: None,
+                                        count: st.zoo_count,
+                                    });
+                                }
+                                if ui.button("Place").on_hover_text("Click the ground in this world to drop it there").clicked() {
+                                    tools.zoo_place = Some((e.id, e.name.clone(), st.zoo_count));
+                                    tools.tool = Tool::Creature;
+                                }
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .small_button(if e.pinned { "unpin" } else { "pin" })
+                                        .on_hover_text("Pinned creatures are never pruned")
+                                        .clicked()
+                                    {
+                                        link.0.send(Control::ZooPin(e.id, !e.pinned));
+                                    }
+                                    if ui.small_button("delete").clicked() {
+                                        link.0.send(Control::ZooRemove(e.id));
+                                    }
+                                });
+                                ui.end_row();
+                            }
+                        });
+                    });
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    let Some(e) = selected else {
+                        return;
+                    };
+                    ui.heading(&e.name);
+                    match &sel_sketch {
+                        Some(sk) => {
+                            pv.want = Some((e.id, sk.clone(), e.color));
+                            pv.visible = true;
+                            let size = egui::vec2(PREVIEW_SIZE[0] as f32, PREVIEW_SIZE[1] as f32) * 0.8;
+                            match pv.texture {
+                                Some(tex) => {
+                                    let resp = ui
+                                        .add(egui::Image::new((tex, size)).sense(egui::Sense::drag()))
+                                        .on_hover_text("Drag to turn it");
+                                    pv.dragging = resp.dragged();
+                                    if resp.dragged() {
+                                        pv.yaw += resp.drag_delta().x * 0.012;
+                                    }
+                                }
+                                None => {
+                                    ui.allocate_space(size);
+                                }
+                            }
+                            ui.label(
+                                egui::RichText::new("Yellow joints are hinges (one axis, cheap); pink ones are swivels (two axes, like a tentacle).")
+                                    .small()
+                                    .weak(),
+                            );
+                            egui::Grid::new("zoo_detail").num_columns(2).show(ui, |ui| {
+                                let mut row = |k: &str, v: String| {
+                                    ui.label(k);
+                                    ui.label(v);
+                                    ui.end_row();
+                                };
+                                row(
+                                    "Body",
+                                    format!(
+                                        "{} body segment{}, {} limb segments, {:.0} kg",
+                                        sk.trunk,
+                                        if sk.trunk == 1 { "" } else { "s" },
+                                        sk.limbs,
+                                        e.mass
+                                    ),
+                                );
+                                row("Joints", format!("{} hinges, {} swivels", sk.hinges, sk.swivels));
+                                row("Brain", format!("{} neurons", e.neurons));
+                                row("Diet", format!("{:.0}% meat", e.diet * 100.0));
+                                row("Score", format!("{:.1}, generation {}", e.score, e.generation));
+                                let age = now.saturating_sub(e.saved_unix);
+                                let age = if age < 3600 {
+                                    format!("{} min ago", age / 60)
+                                } else if age < 86400 * 2 {
+                                    format!("{} h ago", age / 3600)
+                                } else {
+                                    format!("{} days ago", age / 86400)
+                                };
+                                row("From", format!("{}, saved {age}", e.source));
+                            });
+                        }
+                        None => {
+                            ui.label("Reading its genome...");
+                        }
+                    }
+                });
+            });
+        });
+    st.show_zoo = open;
+}
+
+/// A side view of a body plan (forward to the right), fitted into a small box.
+fn draw_sketch(ui: &mut egui::Ui, sk: Option<&Sketch>, color: [f32; 3], selected: bool, size: egui::Vec2) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    let painter = ui.painter_at(rect);
+    let bg = if selected {
+        ui.visuals().selection.bg_fill
+    } else {
+        ui.visuals().extreme_bg_color
+    };
+    painter.rect_filled(rect, 3.0, bg);
+    let Some(sk) = sk else {
+        return resp;
+    };
+    enum Mark {
+        Hull(Vec<Vec2>, bool),
+        Stick(Vec2, Vec2, f32),
+    }
+    let mut marks = Vec::new();
+    let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
+    let mut grow = |p: Vec2, r: f32| {
+        lo = lo.min(p - Vec2::splat(r));
+        hi = hi.max(p + Vec2::splat(r));
+    };
+    for p in &sk.parts {
+        let rot = Quat::from_array(p.rot);
+        let at = Vec3::from_array(p.pos);
+        match p.shape {
+            evolve_sim::body::PartShape::Box { half } => {
+                let h = Vec3::from_array(half);
+                let mut pts = Vec::with_capacity(8);
+                for c in 0..8 {
+                    let s = Vec3::new(
+                        if c & 1 == 0 { -1.0 } else { 1.0 },
+                        if c & 2 == 0 { -1.0 } else { 1.0 },
+                        if c & 4 == 0 { -1.0 } else { 1.0 },
+                    );
+                    let w = at + rot * (h * s);
+                    let q = Vec2::new(w.x, w.y);
+                    grow(q, 0.0);
+                    pts.push(q);
+                }
+                marks.push(Mark::Hull(hull(pts), p.trunk));
+            }
+            evolve_sim::body::PartShape::Capsule { half_height, radius } => {
+                let a = at + rot * Vec3::new(0.0, -half_height, 0.0);
+                let b = at + rot * Vec3::new(0.0, half_height, 0.0);
+                let (a, b) = (Vec2::new(a.x, a.y), Vec2::new(b.x, b.y));
+                grow(a, radius);
+                grow(b, radius);
+                marks.push(Mark::Stick(a, b, radius));
+            }
+        }
+    }
+    let span = (hi - lo).max(Vec2::splat(1e-3));
+    let inner = rect.shrink(4.0);
+    let scale = (inner.width() / span.x).min(inner.height() / span.y);
+    let mid = (lo + hi) * 0.5;
+    let to_screen = |p: Vec2| inner.center() + egui::vec2((p.x - mid.x) * scale, (mid.y - p.y) * scale);
+    let shade = |k: f32| {
+        let [r, g, b] = color.map(|v| (v * k).clamp(0.0, 1.0));
+        egui::Color32::from_rgb((r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8)
+    };
+    // Limbs behind, body in front.
+    for trunk_pass in [false, true] {
+        for m in &marks {
+            match m {
+                Mark::Stick(a, b, r) if !trunk_pass => {
+                    painter.line_segment([to_screen(*a), to_screen(*b)], egui::Stroke::new((r * 2.0 * scale).max(1.0), shade(0.75)));
+                }
+                Mark::Hull(pts, trunk) if *trunk == trunk_pass => {
+                    let pts: Vec<egui::Pos2> = pts.iter().map(|p| to_screen(*p)).collect();
+                    let fill = if *trunk { shade(1.0) } else { shade(0.75) };
+                    painter.add(egui::Shape::convex_polygon(pts, fill, egui::Stroke::NONE));
+                }
+                _ => {}
+            }
+        }
+    }
+    for &(pos, swivel) in &sk.joints {
+        let c = if swivel {
+            egui::Color32::from_rgb(240, 90, 230)
+        } else {
+            egui::Color32::from_rgb(255, 215, 50)
+        };
+        painter.circle_filled(to_screen(Vec2::new(pos[0], pos[1])), 1.6, c);
+    }
+    resp
+}
+
+/// Convex hull, counterclockwise (monotone chain).
+fn hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
+    pts.sort_by(|a, b| a.x.total_cmp(&b.x).then(a.y.total_cmp(&b.y)));
+    let cross = |o: Vec2, a: Vec2, b: Vec2| (a - o).perp_dot(b - o);
+    let mut out: Vec<Vec2> = Vec::with_capacity(pts.len() * 2);
+    for pass in 0..2 {
+        let start = out.len();
+        let iter: Box<dyn Iterator<Item = &Vec2>> = if pass == 0 { Box::new(pts.iter()) } else { Box::new(pts.iter().rev()) };
+        for &p in iter {
+            while out.len() >= start + 2 && cross(out[out.len() - 2], out[out.len() - 1], p) <= 0.0 {
+                out.pop();
+            }
+            out.push(p);
+        }
+        out.pop();
+    }
+    out
+}
+
+fn sound_controls(ui: &mut egui::Ui, sound: &mut SoundSettings) {
+    if let Some(e) = &sound.error {
+        ui.label(egui::RichText::new("no sound").weak()).on_hover_text(e.as_str());
+        return;
+    }
+    ui.add(egui::Slider::new(&mut sound.volume, 0.0..=1.0).show_value(false))
+        .on_hover_text("Volume");
+    let label = if sound.muted { "Unmute" } else { "Mute" };
+    if ui.selectable_label(sound.muted, label).on_hover_text("M").clicked() {
+        sound.muted = !sound.muted;
+    }
+}
+
+/// While the director runs: what it's showing, and how to take over.
+fn director_overlay(ctx: &mut egui::Context, director: &mut Director, sound: &mut SoundSettings, now: f64) {
+    egui::Area::new(egui::Id::new("director_hint"))
+        .anchor(egui::Align2::LEFT_TOP, [12.0, 10.0])
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(110))
+                .corner_radius(6.0)
+                .inner_margin(8.0)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("Director").strong());
+                        ui.label(
+                            egui::RichText::new("Press C or move the camera to take over.")
+                                .small()
+                                .color(egui::Color32::from_gray(200)),
+                        );
+                        if ui.small_button("Stop").clicked() {
+                            director.toggle();
+                        }
+                        ui.checkbox(&mut director.panels, "panels");
+                        sound_controls(ui, sound);
+                    });
+                });
+        });
+    let Some(c) = &director.caption else {
+        return;
+    };
+    // Fade in, hold, fade out.
+    let alpha = ((now - c.started) / 0.8).min((c.until - now) / 1.2).clamp(0.0, 1.0) as f32;
+    if alpha <= 0.0 {
+        return;
+    }
+    let a = (alpha * 255.0) as u8;
+    egui::Area::new(egui::Id::new("director_caption"))
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -40.0])
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha((alpha * 120.0) as u8))
+                .corner_radius(8.0)
+                .inner_margin(egui::Margin::symmetric(18, 10))
+                .show(ui, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.vertical_centered(|ui| {
+                        ui.label(
+                            egui::RichText::new(&c.title)
+                                .size(28.0)
+                                .strong()
+                                .color(egui::Color32::from_white_alpha(a)),
+                        );
+                        ui.label(
+                            egui::RichText::new(&c.detail)
+                                .size(16.0)
+                                .color(egui::Color32::from_white_alpha((a as f32 * 0.85) as u8)),
+                        );
+                    });
+                });
+        });
+}
+
+/// Diagram labels: joint channels by limb and segment, everything else by name.
+fn short_input(k: usize) -> String {
+    if k >= evolve_sim::brain::input::JOINTS {
+        format!("{} angle", evolve_sim::brain::motor_short_label(k - evolve_sim::brain::input::JOINTS))
+    } else {
+        input_label(k)
+    }
+}
+
+fn short_output(k: usize) -> String {
+    if k < evolve_sim::brain::output::EAT {
+        format!("move {}", evolve_sim::brain::motor_short_label(k))
+    } else {
+        output_label(k)
+    }
+}
+
+/// Orange for positive, blue for negative, grey near zero.
+fn signal_color(v: f32, alpha: u8) -> egui::Color32 {
+    let v = v.clamp(-1.0, 1.0);
+    let grey = [90.0, 90.0, 96.0];
+    let to = if v >= 0.0 { [255.0, 150.0, 40.0] } else { [60.0, 140.0, 255.0] };
+    let t = v.abs();
+    let c = |k: usize| (grey[k] + (to[k] - grey[k]) * t) as u8;
+    egui::Color32::from_rgba_unmultiplied(c(0), c(1), c(2), alpha)
+}
+
+/// The creature's brain as a live diagram: senses on the left, the hidden neurons that matter
+/// most in a ring, actions on the right, and the strongest connections between them.
+fn brain_window(ctx: &mut egui::Context, c: &CreatureDetail, open: &mut bool) {
+    use evolve_sim::wiring::Node;
+    egui::Window::new(format!("Brain of #{}", c.id))
+        .id(egui::Id::new("brain_view"))
+        .open(open)
+        .default_pos([980.0, 60.0])
+        .default_size([640.0, 720.0])
+        .resizable(true)
+        .show(ctx, |ui| {
+            let w = &*c.wiring;
+            if w.creature != c.id || w.inputs.is_empty() {
+                ui.label("Reading its wiring...");
+                return;
+            }
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} of its {} neurons and the strongest {} of {} connections. Orange excites, blue inhibits; brighter lines carry more signal right now. Hover for names and values.",
+                    w.hidden.len(),
+                    w.total_hidden,
+                    w.edges.len(),
+                    c.synapses
+                ))
+                .small()
+                .weak(),
+            );
+            let rows = w.inputs.len().max(w.outputs.len()) as f32;
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let width = ui.available_width().max(520.0);
+                let height = (rows * 12.0 + 20.0).max(ui.available_height()).max(480.0);
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                let painter = ui.painter_at(rect);
+                let label_w = 124.0;
+                let x_in = rect.left() + label_w;
+                let x_out = rect.right() - label_w;
+                let row_y = |i: usize, n: usize| rect.top() + 10.0 + (rect.height() - 20.0) * (i as f32 + 0.5) / n.max(1) as f32;
+                let center = egui::pos2((x_in + x_out) * 0.5, rect.center().y);
+                let radius = ((x_out - x_in) * 0.5 - 40.0).min(rect.height() * 0.42).max(40.0);
+                let mut at: HashMap<Node, (egui::Pos2, f32)> = HashMap::new();
+                for (i, &k) in w.inputs.iter().enumerate() {
+                    at.insert(Node::Input(k), (egui::pos2(x_in, row_y(i, w.inputs.len())), c.inputs.get(k).copied().unwrap_or(0.0)));
+                }
+                for (i, &k) in w.outputs.iter().enumerate() {
+                    at.insert(Node::Output(k), (egui::pos2(x_out, row_y(i, w.outputs.len())), c.outputs.get(k).copied().unwrap_or(0.0)));
+                }
+                let n = w.hidden.len().max(1) as f32;
+                for (i, &k) in w.hidden.iter().enumerate() {
+                    let a = -std::f32::consts::FRAC_PI_2 + i as f32 / n * std::f32::consts::TAU;
+                    let p = center + egui::vec2(a.cos(), a.sin()) * radius;
+                    at.insert(Node::Hidden(k), (p, c.hidden.get(k).copied().unwrap_or(0.0)));
+                }
+                // Weights are scaled per kind of link, so each layer's strongest reads as strong.
+                let kind = |e: &evolve_sim::wiring::Edge| match (e.from, e.to) {
+                    (Node::Input(_), _) => 0,
+                    (_, Node::Output(_)) => 2,
+                    _ => 1,
+                };
+                let mut max = [1e-6f32; 3];
+                for e in &w.edges {
+                    let k = kind(e);
+                    max[k] = max[k].max(e.weight.abs());
+                }
+                for e in &w.edges {
+                    let (Some(&(a, va)), Some(&(b, _))) = (at.get(&e.from), at.get(&e.to)) else {
+                        continue;
+                    };
+                    let strength = e.weight.abs() / max[kind(e)];
+                    let flow = va.abs().min(1.0);
+                    let alpha = (25.0 + 210.0 * strength * (0.2 + 0.8 * flow)) as u8;
+                    let color = signal_color(e.weight.signum(), alpha);
+                    let stroke = egui::Stroke::new(0.4 + 2.4 * strength, color);
+                    if kind(e) == 1 {
+                        if a == b {
+                            // A neuron feeding itself: a small loop outside the ring.
+                            let out = (a - center).normalized() * 9.0;
+                            painter.circle_stroke(a + out, 6.0, stroke);
+                        } else {
+                            let ctrl = a + (b - a) * 0.5 + (center - (a + (b - a) * 0.5)) * 0.55;
+                            painter.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
+                                [a, ctrl, b],
+                                false,
+                                egui::Color32::TRANSPARENT,
+                                stroke,
+                            ));
+                        }
+                    } else {
+                        painter.line_segment([a, b], stroke);
+                    }
+                }
+                let font = egui::FontId::proportional(10.5);
+                let text = ui.visuals().text_color();
+                for (&node, &(p, v)) in &at {
+                    let r = if matches!(node, Node::Hidden(_)) { 6.0 } else { 4.0 };
+                    painter.circle(p, r, signal_color(v, 255), egui::Stroke::new(0.8, egui::Color32::from_gray(30)));
+                    match node {
+                        Node::Input(k) => {
+                            painter.text(p - egui::vec2(8.0, 0.0), egui::Align2::RIGHT_CENTER, short_input(k), font.clone(), text);
+                        }
+                        Node::Output(k) => {
+                            painter.text(p + egui::vec2(8.0, 0.0), egui::Align2::LEFT_CENTER, short_output(k), font.clone(), text);
+                        }
+                        Node::Hidden(_) => {}
+                    }
+                }
+                if let Some(pointer) = resp.hover_pos()
+                    && let Some((node, (p, v))) = at
+                        .iter()
+                        .map(|(n, x)| (*n, *x))
+                        .min_by(|a, b| a.1.0.distance(pointer).total_cmp(&b.1.0.distance(pointer)))
+                    && p.distance(pointer) < 10.0
+                {
+                    let name = match node {
+                        Node::Input(k) => input_label(k),
+                        Node::Output(k) => output_label(k),
+                        Node::Hidden(k) => format!("neuron {k}"),
+                    };
+                    let links = w.edges.iter().filter(|e| e.from == node || e.to == node).count();
+                    resp.on_hover_text_at_pointer(format!("{name}: {v:+.2}\n{links} connections shown"));
+                }
+            });
+        });
+}

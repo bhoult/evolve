@@ -1,0 +1,22 @@
+[package]
+name = "evolve"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "3D evolution simulator: creatures with evolved bodies and brains"
+
+[features]
+dev = ["bevy/dynamic_linking"]
+# Native Wayland windows; needs `sudo apt install libwayland-dev` to build. Without it the app
+# runs through XWayland, which works fine.
+wayland = ["bevy/wayland"]
+
+[dependencies]
+evolve-sim.workspace = true
+bevy.workspace = true
+bevy_egui.workspace = true
+egui_plot.workspace = true
+# Sound output; the sounds themselves are synthesized in audio.rs.
+cpal = "0.15"
