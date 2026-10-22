@@ -173,10 +173,44 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     if (abs(det) > 1e-8) {
         grad = vec2<f32>(ay.y * sx - ax.y * sy, ax.x * sy - ay.x * sx) / det;
     }
+
+    // The surface of deep water: a second mesh over lakes, ponds and deep streams (scene.rs),
+    // flagged by a negative moisture. Sky reflections and sun glints over a dark body, see-through
+    // where it thins out at the shore. Lakes lie level (their normal is up); streams follow their
+    // bed and carry their ripples downstream.
+    if (soil_wet < -0.5) {
+        let fall = length(n.xz);
+        let downhill = n.xz / max(fall, 1e-4);
+        let drift = downhill * t * (0.3 + 5.0 * fall) + vec2<f32>(t * 0.05, 0.0);
+        let q1 = p.xz * 2.3 - drift;
+        let q2 = p.xz * 0.9 - drift * 0.6;
+        let ripple = (vec2<f32>(vnoise(q1), vnoise(q1 + 17.3)) - 0.5) * 0.12 * band(px, 2.3)
+            + (vec2<f32>(vnoise(q2 + 5.1), vnoise(q2 + 23.7)) - 0.5) * 0.08 * band(px, 0.9);
+        let wn_ = normalize(n + vec3<f32>(-ripple.x, 0.0, -ripple.y));
+        let v = pbr.V;
+        let ndv_ = clamp(dot(wn_, v), 0.0, 1.0);
+        let fres = 0.02 + 0.98 * pow(1.0 - ndv_, 5.0);
+        var rr = reflect(-v, wn_);
+        rr.y = abs(rr.y);
+        let incoming = env.ambient.rgb * 1.2 + env.sun_color.rgb * max(env.sun.y, 0.0) * 0.35
+            + env.moon_color.rgb * max(env.moon.y, 0.0) * 0.35;
+        let body = mix(vec3<f32>(0.03, 0.17, 0.18), vec3<f32>(0.006, 0.035, 0.055), smoothstep(0.5, 4.0, water)) * incoming;
+        let hs = normalize(v + env.sun.xyz);
+        let glint = pow(max(dot(wn_, hs), 0.0), 400.0) * 18.0 * step(0.0, env.sun.y) * cloud_shadow(p);
+        let lake_col = body * (1.0 - fres) + sky_clear(rr, false) * fres + env.sun_color.rgb * glint;
+        let alpha = smoothstep(0.1, 0.35, water) * clamp(0.55 + 0.35 * smoothstep(0.3, 3.0, water) + fres, 0.0, 0.97);
+        var lake: FragmentOutput;
+        lake.color = main_pass_post_lighting_processing(pbr, vec4<f32>(lake_col, alpha));
+        return lake;
+    }
+
     let cover = smoothstep(0.005, 0.05, water) * on_land;
     if (cover > 0.001) {
+        // Shallows show their bed through tinted water; a lake metres deep is dark blue-green.
         let deep = smoothstep(0.03, 0.5, water);
-        let body = mix(col * 0.5, lin(vec3<f32>(0.12, 0.25, 0.27)), deep * 0.7);
+        let abyss = smoothstep(0.5, 4.0, water);
+        let shallows = mix(col * 0.5, lin(vec3<f32>(0.12, 0.25, 0.27)), deep * 0.7);
+        let body = mix(shallows, lin(vec3<f32>(0.03, 0.10, 0.13)), abyss * 0.85);
         col = mix(col, body, cover);
         rough = mix(rough, 0.05, cover);
         // A stream lies along its bed and runs down it; a pond lies level.
@@ -227,13 +261,15 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let ndv = max(dot(pbr.N, pbr.V), 0.0001);
     let lost = col * (1.0 - shade) * F_AB(1.0, ndv).x * lights.ambient_color.rgb * pbr.diffuse_occlusion;
     out.color = vec4<f32>(out.color.rgb + lost * view.exposure, out.color.a);
-    // Water on the ground mirrors the sky.
-    if (cover > 0.001) {
+    // Water on the ground mirrors the sky, unless it's deep enough to have a surface of its own
+    // above (then this is its bed).
+    let open = cover * (1.0 - smoothstep(0.1, 0.25, water));
+    if (open > 0.001) {
         let wn = clamp(dot(pbr.N, pbr.V), 0.0, 1.0);
         let fresnel = 0.02 + 0.98 * pow(1.0 - wn, 5.0);
         var r = reflect(-pbr.V, pbr.N);
         r.y = abs(r.y);
-        out.color = vec4<f32>(mix(out.color.rgb, sky_clear(r, false), fresnel * cover), out.color.a);
+        out.color = vec4<f32>(mix(out.color.rgb, sky_clear(r, false), fresnel * open), out.color.a);
     }
     out.color = main_pass_post_lighting_processing(pbr, out.color);
     return out;

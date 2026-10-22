@@ -646,8 +646,9 @@ impl Sim {
         // heightfield rebuild) changes every half minute rather than every update.
         const EROSION_EVERY: f32 = 30.0;
         if !self.params.hydrology {
-            if self.terrain.water.iter().any(|&w| w > 0.0) {
+            if self.terrain.water.iter().chain(&self.terrain.pooled).any(|&w| w > 0.0) {
                 self.terrain.water.fill(0.0);
+                self.terrain.pooled.fill(0.0);
                 self.terrain.version += 1;
             }
             return;

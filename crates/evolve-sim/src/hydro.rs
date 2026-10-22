@@ -3,8 +3,10 @@
 //! Every couple of simulated seconds the island is drained toward the sea: a priority flood from
 //! the coast gives every land point a downhill neighbour to pass its water to (water in a hollow
 //! fills it and spills over the lowest edge), and adding up the rain from everything uphill gives
-//! the flow at each point. Enough flow makes a stream; hollows hold ponds while the ground is
-//! soaked. Now and then the flow cuts its channel deeper (the "stream power" law: faster on
+//! the flow at each point. Enough flow makes a stream. Hollows hold lakes and ponds: the rain on
+//! everything draining into a hollow collects there, levels out, evaporates slowly and spills
+//! over the rim when full, on downhill into the next hollow or the sea (see `fill_lakes`). Now
+//! and then the flow cuts its channel deeper (the "stream power" law: faster on
 //! steeper ground with more water behind it, and faster on ground trampled bare), solved
 //! implicitly downstream-first so it never digs a pit or overshoots. Trampling fades as the
 //! ground grows back.
@@ -101,10 +103,21 @@ pub fn drainage(t: &Terrain, water_level: f32) -> Drainage {
 
 const NEIGHBOURS: [(isize, isize); 8] = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)];
 
+/// Where the water in lakes went in one update, m³.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Budget {
+    /// Gathered into hollows from the rain on everything draining into them.
+    pub rained: f32,
+    pub evaporated: f32,
+    /// Spilled over a rim (or left a hollow that's no longer there) and run off into the sea.
+    pub to_sea: f32,
+    /// Whether the ground's shape changed (erosion).
+    pub reshaped: bool,
+}
+
 /// Moves the water and soil on for `dt` seconds of `rain` (0 to 1) after a spell whose
 /// `soak` (recent rain, 0 to 1) is given. With `erode`, also wears channels for that long.
-/// Returns whether the ground's shape changed.
-pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, erode: Option<f32>) -> bool {
+pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, erode: Option<f32>) -> Budget {
     t.ensure_layers();
     let (n, wl) = (t.res, p.water_level);
     let count = n * n;
@@ -121,8 +134,9 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
         }
     }
 
-    // Streams where enough flows, ponds in hollows while the ground is soaked.
-    let ponding = (1.5 * soak).clamp(0.0, 1.0);
+    let mut budget = fill_lakes(t, p, &d, fall, dt);
+
+    // Streams where enough flows, and the lakes.
     let wet_k = 1.0 - (-dt / WETTING_TIME).exp();
     let dry_k = 1.0 - (-dt / DRYING_TIME).exp();
     for k in 0..count {
@@ -132,8 +146,8 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
             continue;
         }
         let stream = (STREAM_DEPTH * flow[k].sqrt() - FILM).clamp(0.0, MAX_STREAM_DEPTH);
-        let pond = (d.filled[k] - t.heights[k]) * ponding;
-        t.water[k] = stream.max(if pond > FILM { pond } else { 0.0 });
+        let pool = t.pooled[k];
+        t.water[k] = stream.max(if pool > FILM { pool } else { 0.0 });
         let target = if t.water[k] > 0.0 { 1.0 } else { rain.max(0.5 * soak) };
         let m = &mut t.moisture[k];
         *m += (target - *m) * if target > *m { wet_k } else { dry_k };
@@ -145,14 +159,178 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
         *w *= recover;
     }
 
-    let mut changed = false;
     if let Some(edt) = erode
         && p.erosion_rate > 0.0
     {
-        changed = erode_channels(t, p, &d, &flow, edt);
+        budget.reshaped = erode_channels(t, p, &d, &flow, edt);
     }
     t.version += 1;
-    changed
+    budget
+}
+
+/// Points this much below their hollow's rim are in it.
+const HOLLOW: f32 = 1e-4;
+
+/// Lakes and ponds. A hollow (a basin) is a connected set of points below the level the
+/// priority flood filled them to, all sharing that level: its rim, where it spills. Each update:
+/// - the water already in each basin (`pooled`, summed) stays in it; water standing where the
+///   ground has changed so there's no longer a hollow runs downhill to the next basin;
+/// - the rain on everything draining into a basin (`fall`, in m² of hillside, times
+///   `rain_rate`) is added, and evaporation over its wet area taken away;
+/// - basins are filled from the highest rim down, so what spills over one reaches the next;
+/// - each basin's water is levelled: one surface height whose depth over the basin's ground adds
+///   up to its volume, capped at the rim.
+///
+/// A basin with two pits under its rim is levelled as one (both fill together), a fair likeness
+/// at this scale.
+fn fill_lakes(t: &mut Terrain, p: &SimParams, d: &Drainage, fall: f32, dt: f32) -> Budget {
+    let (n, wl) = (t.res, p.water_level);
+    let count = n * n;
+    let area = t.cell() * t.cell();
+    let h = &t.heights;
+    let mut budget = Budget::default();
+
+    // Basins: connected hollow points with the same rim level.
+    let mut label = vec![NONE; count];
+    let mut basins: Vec<Vec<u32>> = Vec::new();
+    let in_hollow = |k: usize| d.filled[k] > h[k] + HOLLOW && h[k] > wl;
+    let mut stack = Vec::new();
+    for start in 0..count {
+        if label[start] != NONE || !in_hollow(start) {
+            continue;
+        }
+        let b = basins.len() as u32;
+        let rim = d.filled[start];
+        let mut cells = Vec::new();
+        label[start] = b;
+        stack.push(start);
+        while let Some(k) = stack.pop() {
+            cells.push(k as u32);
+            let (i, j) = (k / n, k % n);
+            for (di, dj) in NEIGHBOURS {
+                let (ii, jj) = (i as isize + di, j as isize + dj);
+                if ii < 0 || jj < 0 || ii >= n as isize || jj >= n as isize {
+                    continue;
+                }
+                let m = ii as usize * n + jj as usize;
+                if label[m] == NONE && in_hollow(m) && d.filled[m] == rim {
+                    label[m] = b;
+                    stack.push(m);
+                }
+            }
+        }
+        basins.push(cells);
+    }
+
+    // Where water at each point ends up: its own basin, the first basin downhill, or the sea.
+    let mut down = vec![NONE; count];
+    for &k in &d.order {
+        let k = k as usize;
+        down[k] = if label[k] != NONE {
+            label[k]
+        } else {
+            let r = d.receiver[k];
+            if r == NONE { NONE } else { down[r as usize] }
+        };
+    }
+    // Where each basin spills: wherever water leaving it over the rim goes. (A rim point level
+    // with the rim can pass water back in; that isn't where it spills.)
+    let mut spill_to = vec![NONE; basins.len()];
+    for (b, cells) in basins.iter().enumerate() {
+        for &k in cells {
+            let r = d.receiver[k as usize];
+            if r != NONE && label[r as usize] != b as u32 && down[r as usize] != b as u32 {
+                spill_to[b] = down[r as usize];
+                break;
+            }
+        }
+    }
+
+    // Water already standing, and the rain gathered.
+    let rate = p.rain_rate.max(0.0) / 1000.0 / 3600.0;
+    let mut volume = vec![0.0f64; basins.len()];
+    let mut wet_area = vec![0.0f32; basins.len()];
+    for k in 0..count {
+        let pool = t.pooled[k];
+        let to = down[k];
+        if pool > 0.0 {
+            match (label[k] != NONE, to) {
+                (true, b) => wet_area[b as usize] += area,
+                (false, NONE) => budget.to_sea += pool * area,
+                _ => {}
+            }
+            if to != NONE {
+                volume[to as usize] += (pool * area) as f64;
+            }
+        }
+        if to != NONE && h[k] > wl {
+            let v = fall * rate * dt;
+            volume[to as usize] += v as f64;
+            budget.rained += v;
+        }
+    }
+
+    // Fill from the highest rim down, passing what spills over on. (Water spills to a rim no
+    // higher, but one exactly as high may already be done: it's levelled again.)
+    let mut by_rim: Vec<usize> = (0..basins.len()).collect();
+    by_rim.sort_by(|&a, &b| d.filled[basins[b][0] as usize].total_cmp(&d.filled[basins[a][0] as usize]));
+    let mut queue: std::collections::VecDeque<usize> = by_rim.into();
+    let mut done = vec![false; basins.len()];
+    let mut relevels = 0;
+    let evap = p.evaporation.max(0.0) / 1000.0 / 3600.0 * dt;
+    t.pooled.fill(0.0);
+    let mut heights: Vec<f32> = Vec::new();
+    while let Some(b) = queue.pop_front() {
+        let cells = &basins[b];
+        if !done[b] {
+            let gone = ((evap * wet_area[b]) as f64).min(volume[b]);
+            budget.evaporated += gone as f32;
+            volume[b] -= gone;
+            done[b] = true;
+        }
+        let vol = volume[b];
+        let rim = d.filled[cells[0] as usize];
+        heights.clear();
+        heights.extend(cells.iter().map(|&k| h[k as usize]));
+        heights.sort_by(f32::total_cmp);
+        let capacity: f64 = heights.iter().map(|&x| ((rim - x) * area) as f64).sum();
+        let level = if vol >= capacity {
+            let over = vol - capacity;
+            volume[b] = capacity;
+            match spill_to[b] {
+                NONE => budget.to_sea += over as f32,
+                // Re-levelling is bounded, in case odd ground makes basins spill into each other.
+                to if done[to as usize] && relevels >= basins.len() => budget.to_sea += over as f32,
+                to => {
+                    volume[to as usize] += over;
+                    if done[to as usize] {
+                        relevels += 1;
+                        queue.push_back(to as usize);
+                    }
+                }
+            }
+            rim
+        } else {
+            // The surface over the lowest j points: (vol/area + their heights summed) / j.
+            let per = vol / area as f64;
+            let mut sum = 0.0f64;
+            let mut level = rim;
+            for (j, &x) in heights.iter().enumerate() {
+                sum += x as f64;
+                let l = (per + sum) / (j + 1) as f64;
+                if heights.get(j + 1).is_none_or(|&next| l <= next as f64) {
+                    level = (l as f32).min(rim);
+                    break;
+                }
+            }
+            level
+        };
+        for &k in cells {
+            let k = k as usize;
+            t.pooled[k] = (level - h[k]).max(0.0);
+        }
+    }
+    budget
 }
 
 /// Cuts channels for `dt` seconds of the given flow, downstream first, each point toward its

@@ -193,6 +193,7 @@ fn old_brains_upgrade_without_changing_behavior() {
         bias: bias.clone(),
         w_out: HalfVec(w_out_old.clone()),
         b_out: b_out_old.clone(),
+        era: 0,
     };
     assert!(g.upgrade_io(&mut rng));
     assert!(!g.upgrade_io(&mut rng), "upgrading twice does nothing");
@@ -251,6 +252,7 @@ fn check_upgrade(n_in: usize, n_out: usize, map_in: impl Fn(usize) -> usize, map
         bias: bias.clone(),
         w_out: HalfVec(w_out.clone()),
         b_out: b_out.clone(),
+        era: 0,
     };
     assert!(g.upgrade_io(&mut rng));
     assert!(!g.upgrade_io(&mut rng));

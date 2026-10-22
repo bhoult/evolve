@@ -1,4 +1,4 @@
-//! Rain running off into streams, wearing channels, and feet wearing paths.
+//! Rain running off into streams and filling lakes, wearing channels, and feet wearing paths.
 
 use evolve_sim::hydro;
 use evolve_sim::terrain::Terrain;
@@ -77,24 +77,206 @@ fn steady_rain_makes_streams_in_valleys_and_cuts_them_deeper() {
     }
 }
 
+/// Running water (not lakes) on the land, summed.
+fn streams(t: &Terrain) -> f32 {
+    (0..t.water.len()).filter(|&k| t.pooled[k] <= 0.02).map(|k| t.water[k]).sum()
+}
+
 #[test]
-fn streams_shrink_after_the_rain_and_ponds_dry_up() {
+fn streams_shrink_after_the_rain_and_the_land_dries() {
     let p = SimParams::default();
     let mut t = Terrain::generate(&p, 1);
     for _ in 0..60 {
         hydro::update(&mut t, &p, 1.0, 1.0, 30.0, None);
     }
-    let raining: f32 = t.water.iter().sum();
+    let raining = streams(&t);
     let mut soak = 1.0f32;
     for _ in 0..240 {
         soak *= (-30.0f32 / 1800.0).exp();
         hydro::update(&mut t, &p, 0.0, soak, 30.0, None);
     }
-    let after: f32 = t.water.iter().sum();
+    let after = streams(&t);
     assert!(after < raining * 0.2, "two dry hours later: {after} vs {raining} while raining");
-    let land = (0..t.heights.len()).filter(|&k| t.heights[k] > p.water_level).count();
-    let soaked = (0..t.heights.len()).filter(|&k| t.heights[k] > p.water_level && t.moisture[k] > 0.5).count();
+    let dry_land = |k: usize| t.heights[k] > p.water_level && t.pooled[k] <= 0.0;
+    let land = (0..t.heights.len()).filter(|&k| dry_land(k)).count();
+    let soaked = (0..t.heights.len()).filter(|&k| dry_land(k) && t.moisture[k] > 0.5).count();
     assert!(soaked < land / 4, "the land dries out: {soaked} of {land} still wet");
+}
+
+/// Digs a round hollow `radius` m across, `depth` m below the lowest point of its rim (so it
+/// holds that much, even on a slope), somewhere its rim stands well above the sea. Returns its
+/// center and grid points.
+fn hollow(t: &mut Terrain, p: &SimParams, radius: f32, depth: f32) -> (f32, f32, Vec<usize>) {
+    let n = t.res;
+    let size = t.size;
+    let at = move |k: usize| (((k % n) as f32 / (n - 1) as f32 - 0.5) * size, ((k / n) as f32 / (n - 1) as f32 - 0.5) * size);
+    let ring = 2.0 * t.cell() / radius;
+    let rim_of = |t: &Terrain, x: f32, z: f32| {
+        (0..t.heights.len())
+            .filter(|&k| {
+                let (gx, gz) = at(k);
+                (1.0..1.0 + ring).contains(&((gx - x).hypot(gz - z) / radius))
+            })
+            .map(|k| t.heights[k])
+            .fold(f32::MAX, f32::min)
+    };
+    let (x, z, rim) = (0..t.heights.len())
+        .step_by(7)
+        .map(|k| {
+            let (x, z) = at(k);
+            (x, z, rim_of(t, x, z))
+        })
+        .filter(|&(x, z, rim)| t.contains(x, z, radius + 10.0) && rim > p.water_level + depth + 1.0 && rim < 1e6)
+        // The gentlest: the least ground above the rim inside it.
+        .min_by(|a, b| (t.height_at(a.0, a.1) - a.2).total_cmp(&(t.height_at(b.0, b.1) - b.2)))
+        .expect("somewhere to dig");
+    let mut cells = Vec::new();
+    for k in 0..t.heights.len() {
+        let (gx, gz) = at(k);
+        let r = (gx - x).hypot(gz - z) / radius;
+        if r < 1.0 {
+            t.heights[k] = t.heights[k].min(rim - depth * (1.0 - r * r));
+            cells.push(k);
+        }
+    }
+    t.mark_dirty(0, n - 1, 0, n - 1);
+    (x, z, cells)
+}
+
+fn lake_volume(t: &Terrain) -> f64 {
+    let area = (t.cell() * t.cell()) as f64;
+    t.pooled.iter().map(|&w| w as f64 * area).sum()
+}
+
+#[test]
+fn a_hollow_fills_in_the_rain_holds_its_water_then_slowly_dries() {
+    let p = SimParams::default();
+    let mut t = Terrain::generate(&p, 1);
+    let (_, _, cells) = hollow(&mut t, &p, 8.0, 2.0);
+    let held = |t: &Terrain| -> f32 { cells.iter().map(|&k| t.pooled[k]).fold(0.0, f32::max) };
+    assert_eq!(held(&t), 0.0);
+    // An hour of steady rain.
+    let mut soak = 0.0f32;
+    for _ in 0..120 {
+        soak += (1.0 - soak) * (1.0 - (-30.0f32 / 1800.0).exp());
+        hydro::update(&mut t, &p, 1.0, soak, 30.0, None);
+    }
+    let full = held(&t);
+    assert!(full > 0.2, "an hour of rain should leave a pond in the hollow: {full} m deep");
+    let level = cells.iter().filter(|&&k| t.pooled[k] > 0.0).map(|&k| t.heights[k] + t.pooled[k]).collect::<Vec<_>>();
+    let (lo, hi) = level.iter().fold((f32::MAX, f32::MIN), |(a, b), &l| (a.min(l), b.max(l)));
+    assert!(hi - lo < 1e-3, "the pond lies level: {lo}..{hi}");
+    // A short dry spell: it's still there.
+    for _ in 0..60 {
+        soak *= (-30.0f32 / 1800.0).exp();
+        hydro::update(&mut t, &p, 0.0, soak, 30.0, None);
+    }
+    let after_short = held(&t);
+    assert!(after_short > full * 0.8, "half an hour later the pond is still there: {full} -> {after_short} m");
+    // A long one: it shrinks.
+    for _ in 0..1440 {
+        soak *= (-30.0f32 / 1800.0).exp();
+        hydro::update(&mut t, &p, 0.0, soak, 30.0, None);
+    }
+    let after_long = held(&t);
+    assert!(after_long < after_short - 0.05, "a dry half day later it has shrunk: {after_short} -> {after_long} m");
+    // And the hollow's water shows on the ground for drinking and the renderer.
+    let k = cells.iter().copied().max_by(|&a, &b| t.pooled[a].total_cmp(&t.pooled[b])).unwrap();
+    assert!(t.water[k] >= t.pooled[k]);
+}
+
+#[test]
+fn lake_water_is_only_gained_by_rain_and_lost_to_evaporation_or_the_sea() {
+    let p = SimParams::default();
+    let mut t = Terrain::generate(&p, 1);
+    let (_, _, cells) = hollow(&mut t, &p, 10.0, 2.5);
+    let (mut rained, mut evaporated, mut to_sea) = (0.0f64, 0.0f64, 0.0f64);
+    let start = lake_volume(&t);
+    for step in 0..400 {
+        let rain = if step < 200 { 0.8 } else { 0.0 };
+        // Creatures pile earth into the pond halfway through: the water it displaces must go
+        // somewhere.
+        if step == 250 {
+            for &k in cells.iter().take(cells.len() / 2) {
+                t.heights[k] += 1.0;
+            }
+        }
+        let b = hydro::update(&mut t, &p, rain, 0.5, 30.0, None);
+        rained += b.rained as f64;
+        evaporated += b.evaporated as f64;
+        to_sea += b.to_sea as f64;
+    }
+    let end = lake_volume(&t);
+    assert!(rained > 0.0 && evaporated > 0.0 && end > 0.0);
+    let expected = start + rained - evaporated - to_sea;
+    assert!(
+        (end - expected).abs() < 1e-3 * rained.max(1.0),
+        "lakes hold {end} m³, but rain {rained} - evaporation {evaporated} - spilled to sea {to_sea} gives {expected}"
+    );
+    for k in 0..t.pooled.len() {
+        assert!(t.pooled[k].is_finite() && t.pooled[k] >= 0.0);
+    }
+}
+
+#[test]
+fn creatures_float_in_a_lake_and_can_drown_in_it() {
+    for sink in [false, true] {
+        let mut p = quiet_params();
+        if sink {
+            p.water_density = 0.0;
+            p.breath_time = 1.0;
+        }
+        let mut sim = Sim::new(p.clone());
+        let (x, z, cells) = hollow(&mut sim.terrain, &p, 9.0, 4.0);
+        let d = hydro::drainage(&sim.terrain, p.water_level);
+        for &k in &cells {
+            sim.terrain.pooled[k] = (d.filled[k] - sim.terrain.heights[k]).max(0.0);
+            sim.terrain.water[k] = sim.terrain.pooled[k];
+        }
+        let surface = sim.terrain.height_at(x, z) + sim.terrain.water_at(x, z);
+        assert!(sim.terrain.water_at(x, z) > 2.0, "a deep lake to swim in");
+        // Let the physics ground take on the bowl first.
+        for _ in 0..40 {
+            sim.step();
+        }
+        let id = sim.spawn_creature(
+            evolve_sim::genome::Genome::random(&mut evolve_sim::rng::Rng::new(3), &p),
+            evolve_sim::math::Vec3::new(x, surface, z),
+            0.0,
+            f32::MAX,
+            0,
+            None,
+        );
+        for _ in 0..240 {
+            sim.step();
+        }
+        let c = sim.creature(id).expect("alive");
+        let y = sim.world.bodies.get(c.parts[0].body).unwrap().translation().y;
+        if sink {
+            assert!(y < surface - 1.0, "without buoyancy it sinks: {y} vs surface {surface}");
+            assert!(c.drowning && c.oxygen == 0.0, "and drowns in the lake");
+        } else {
+            assert!((y - surface).abs() < 1.0 && c.in_water > 0.0, "it floats at the surface: {y} vs {surface}");
+            assert!(!c.drowning);
+        }
+    }
+}
+
+#[test]
+fn worlds_saved_before_lakes_and_trampling_still_load() {
+    let p = SimParams::default();
+    let t = Terrain::generate(&p, 1);
+    let mut json = serde_json::to_value(&t).unwrap();
+    for layer in ["ground", "eroded", "wear", "water", "pooled", "moisture"] {
+        json.as_object_mut().unwrap().remove(layer);
+    }
+    let mut old: Terrain = serde_json::from_value(json).unwrap();
+    assert!(old.pooled.is_empty() && old.water.is_empty());
+    assert_eq!(old.water_surface(0.0, 0.0, p.water_level), p.water_level);
+    assert_eq!(old.disturbance(0), 0.0);
+    hydro::update(&mut old, &p, 1.0, 1.0, 30.0, Some(30.0));
+    assert_eq!(old.pooled.len(), old.heights.len());
+    assert_eq!(old.ground.len(), old.heights.len());
 }
 
 #[test]

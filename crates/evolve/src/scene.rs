@@ -19,6 +19,10 @@ pub struct ScenePlugin;
 #[derive(Component)]
 pub struct TerrainMesh;
 
+/// Water deeper than this gets a surface of its own (the lake mesh) above the ground; shallower
+/// water is painted on the ground.
+const SURFACE_DEPTH: f32 = 0.1;
+
 /// Beaches, rock, grass, sea floor and cloud shadows, all from world position in the shader, so
 /// changing the water level needs no rebuild.
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
@@ -42,6 +46,9 @@ struct TerrainState {
     built_from: Option<std::sync::Arc<Terrain>>,
     material: Option<Handle<TerrainMaterial>>,
     mesh: Option<Handle<Mesh>>,
+    /// The surface of deep water: the same material, blended, drawing its own branch.
+    lake_material: Option<Handle<TerrainMaterial>>,
+    lake_mesh: Option<Handle<Mesh>>,
 }
 
 impl Plugin for ScenePlugin {
@@ -87,11 +94,12 @@ fn update_terrain(
         }
         if let Some(mesh) = meshes.get_mut(&handle) {
             if !(same_world && patch_terrain(mesh, t, &moved)) {
-                let (positions, normals, colors, surfaces) = terrain_attributes(t);
-                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, surfaces);
+                set_attributes(mesh, terrain_attributes(t));
+            }
+            if let Some(lake) = state.lake_mesh.clone()
+                && let Some(mesh) = meshes.get_mut(&lake)
+            {
+                set_attributes(mesh, lake_attributes(t));
             }
             state.built_from = Some(t.clone());
             return;
@@ -114,10 +122,84 @@ fn update_terrain(
             })
         })
         .clone();
-    let mesh = meshes.add(terrain_mesh(t));
+    let mesh = meshes.add(grid_mesh(t, terrain_attributes(t)));
     state.mesh = Some(mesh.clone());
     commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::default(), TerrainMesh));
+    let lake_material = state
+        .lake_material
+        .get_or_insert_with(|| {
+            materials.add(ExtendedMaterial {
+                base: StandardMaterial {
+                    base_color: Color::WHITE,
+                    alpha_mode: AlphaMode::Blend,
+                    ..default()
+                },
+                extension: TerrainExt { env: gpu.buffer.clone() },
+            })
+        })
+        .clone();
+    let lake = meshes.add(grid_mesh(t, lake_attributes(t)));
+    state.lake_mesh = Some(lake.clone());
+    commands.spawn((
+        Mesh3d(lake),
+        MeshMaterial3d(lake_material),
+        Transform::default(),
+        TerrainMesh,
+        bevy::light::NotShadowCaster,
+    ));
     state.built_from = Some(t.clone());
+}
+
+type Attributes = (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 2]>);
+
+fn set_attributes(mesh: &mut Mesh, (positions, normals, colors, surfaces): Attributes) {
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, surfaces);
+}
+
+/// The surface of water deeper than `SURFACE_DEPTH`, on the terrain's grid: the ground plus the
+/// water there, or tucked just under the ground where there's none (so it meets the bank in
+/// between). Its UV is (depth, -1), the -1 telling the shader it's a water surface. Lakes and
+/// ponds lie level; deep streams follow their bed.
+fn lake_attributes(t: &Terrain) -> Attributes {
+    let count = t.res * t.res;
+    let mut positions = Vec::with_capacity(count);
+    let mut normals = Vec::with_capacity(count);
+    let mut surfaces = Vec::with_capacity(count);
+    let n = t.res;
+    let surface = |k: usize| {
+        let water = t.water.get(k).copied().unwrap_or(0.0);
+        (water > SURFACE_DEPTH).then(|| t.heights[k] + water)
+    };
+    for k in 0..count {
+        let (x, z) = grid_xz(t, k);
+        let water = t.water.get(k).copied().unwrap_or(0.0);
+        let pooled = t.pooled.get(k).copied().unwrap_or(0.0);
+        let deep = water > SURFACE_DEPTH;
+        // Next to water, a dry point whose ground rises above it keeps the water's level, so
+        // the surface meets the bank where the bank crosses it (the ground hides the rest)
+        // instead of slanting up the bank in a bright sliver. Elsewhere it sits under the ground.
+        let height = if deep {
+            t.heights[k] + water
+        } else {
+            let (i, j) = (k / n, k % n);
+            let mut level = f32::MIN;
+            for ii in i.saturating_sub(1)..(i + 2).min(n) {
+                for jj in j.saturating_sub(1)..(j + 2).min(n) {
+                    if let Some(l) = surface(ii * n + jj) {
+                        level = level.max(l);
+                    }
+                }
+            }
+            if level > f32::MIN && t.heights[k] >= level { level } else { t.heights[k] - 0.3 }
+        };
+        positions.push([x, height, z]);
+        normals.push(if pooled >= water - 1e-3 { [0.0, 1.0, 0.0] } else { t.normal_at(x, z).to_array() });
+        surfaces.push([if deep { water } else { 0.0 }, -1.0]);
+    }
+    (positions, normals, vec![[0.0; 4]; count], surfaces)
 }
 
 /// Where grid point `k` sits on the ground plane.
@@ -147,8 +229,7 @@ fn surface_step(t: &Terrain, k: usize) -> [u16; 3] {
 }
 
 /// Per-vertex positions, normals, colors and surface water.
-#[allow(clippy::type_complexity)]
-fn terrain_attributes(t: &Terrain) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 2]>) {
+fn terrain_attributes(t: &Terrain) -> Attributes {
     let count = t.res * t.res;
     let mut positions = Vec::with_capacity(count);
     let mut normals = Vec::with_capacity(count);
@@ -206,11 +287,10 @@ fn patch_terrain(mesh: &mut Mesh, t: &Terrain, moved: &[usize]) -> bool {
     true
 }
 
-/// Triangulated exactly like the physics heightfield (diagonal from (x0, z1) to (x1, z0)).
-/// Fertility rides along in the vertex color's red channel.
-fn terrain_mesh(t: &Terrain) -> Mesh {
+/// A mesh on the terrain's grid, triangulated exactly like the physics heightfield (diagonal
+/// from (x0, z1) to (x1, z0)).
+fn grid_mesh(t: &Terrain, (positions, normals, colors, surfaces): Attributes) -> Mesh {
     let n = t.res;
-    let (positions, normals, colors, surfaces) = terrain_attributes(t);
     let idx = |i: usize, j: usize| (i * n + j) as u32;
     let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
     for i in 0..n - 1 {

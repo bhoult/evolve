@@ -111,6 +111,12 @@ inspector's Brain view button.
 - *Connections:* the strongest connections are drawn in orange (excite) or blue (inhibit), thicker
   for stronger weights and brighter while signal is flowing through them.
 - *Live:* nodes light up with their current activity. Hover a node for its name and value.
+- *Neural tab:* the same brain drawn as living tissue (neural_view.rs). Sensory neurons with
+  receptor endings sit on the left, hidden neurons with branching dendrites in the middle, and
+  motor neurons on the right, their axons ending in end plates on the muscle they drive. Each
+  neuron fires as often as it is active. Spikes run down its axons to synapses, warm where they
+  excite and cool where they inhibit, and the next cell body glows as they arrive. Thicker axons
+  are stronger connections. `--neural-view` with `--select-first` opens it, for screenshots.
 
 **The zoo** (toolbar button, or start with `--zoo`) keeps the best creatures from every world
 across sessions, in `~/.local/share/evolve/zoo`. Every `zoo_interval` simulated seconds (default
@@ -176,12 +182,15 @@ never rewires another.
 
 **Brain.** A recurrent network: every hidden neuron feeds back into every other one each tick,
 so the brain keeps a state between ticks (memory, rhythms, plans). Weights are stored as f16.
-Creatures made from scratch start with `brain_min_neurons` (8). Brains then grow or shrink
+Creatures made from scratch start with `brain_min_neurons` (64). Brains then grow or shrink
 through mutation, by about 20% at a time (`brain_resize_rate`, with a slight upward bias set by
-`brain_growth`), up to `brain_max_neurons` (2048; the slider goes to 8192). Crossover lines
+`brain_growth`), up to `brain_max_neurons` (4096; the slider goes to 8192). Crossover lines
 parents up neuron by neuron. A brain costs `brain_energy_cost` per million connections per
 second. Connections grow with the square of the neuron count: a 2048-neuron brain has 4.3 million
 of them and costs about as much as resting metabolism, so a big brain has to pay for itself.
+On 2026-10-22 every brain was doubled. Genomes from before that (in the zoo, the gene pool or an
+older save) double their neurons once as they come into a world; the new neurons are wired in
+weakly, so what the brain already does carries over.
 - *Senses (128):*
   - the rhythm, energy, health, oxygen, thirst and age;
   - a mating drive: an urge that builds while the creature is mature, past its cooldown and fed
@@ -307,9 +316,15 @@ evolution moving until the population can sustain itself.
   passes its water to a downhill neighbour, and water in a hollow fills it and spills over its
   lowest edge. Where enough water gathers from uphill, a stream runs (`runoff` sets how big).
   Streams swell in rain and dwindle over the next half hour or so as the ground dries.
-- *Ponds:* hollows, including holes creatures dig, fill with water while the ground is soaked and
-  dry out afterwards.
-- *Drinking:* streams and ponds count as water for drinking and for the water sense.
+- *Lakes and ponds:* rain collects in hollows, including holes creatures dig. All the rain on
+  everything draining into a hollow gathers there (`rain_rate`, 40 mm an hour at full strength,
+  several times real rain so lakes fill within a session), and the water lies level. A full hollow
+  spills over its lowest edge, downhill into the next hollow or the sea. Lakes lose water slowly to
+  evaporation and seepage (`evaporation`, 8 mm an hour), so they last through dry spells and
+  shrink in long ones. Water is conserved: when creatures dig or pile earth in a pond, or a hollow
+  is worn away, the water moves on rather than vanishing.
+- *In the water:* lakes, ponds and streams are water like the sea: creatures float, swim, hold
+  their breath and can drown in them, and drink from them; the water sense finds them.
 - *Erosion:* streams slowly cut their beds deeper, faster with more water behind them, on steeper
   ground, and on trampled ground (`erosion_rate`). The cut can go `erosion_max_depth` (2.5 m) below
   the original land. A long wet spell carves gullies down the hillsides; dry spells don't.
@@ -317,8 +332,10 @@ evolution moving until the population can sustain itself.
   (`trampling`). Busy ground turns to bare earth, then to slick mud with puddles when wet. Plants
   grow poorly on it, and nothing grows in a stream. Left alone, worn ground grows back, halfway in
   `wear_recovery` (60) minutes.
-- *Looks:* soaked soil stays dark after rain; streams ripple downhill and ponds lie level,
-  reflecting the sky.
+- *Looks:* soaked soil stays dark after rain; shallow streams and puddles are painted on the
+  ground. Water deeper than 10 cm gets a surface of its own: lakes lie level and deep streams
+  follow their beds, reflecting the sky over a body that darkens with depth, see-through at the
+  shore.
 - *Cost:* about 1.6 ms of one core every 2 simulated seconds per world.
 
 **Swimming.** Water gives buoyancy and costs breath. Drag acts at two points along every body
@@ -462,8 +479,11 @@ Tests: `cargo test --release -p evolve-sim`. These check:
 - that snakes, tentacles and legs stay within their joints' range;
 - thirst and drinking;
 - rain draining to the sea through every point, streams forming in valleys and cutting them
-  deeper (within the limit, never below the sea floor), streams and ponds drying up after rain,
-  feet wearing paths that plants avoid, and drinking from a stream;
+  deeper (within the limit, never below the sea floor), streams shrinking after rain, a hollow
+  filling with a level pond that outlasts a short dry spell and shrinks in a long one, lake water
+  conserved (gained only from rain, lost only to evaporation or the sea, even when earth is piled
+  into a pond), creatures floating in a lake and drowning in one without buoyancy, worlds saved
+  before these layers loading, feet wearing paths that plants avoid, and drinking from a stream;
 - that old brains behave exactly the same after the upgrade;
 - that the learning rule learns (a toy task where reward follows one output), that the GPU hands
   back exactly what a brain learned, and that parents pass on the set fraction of it;

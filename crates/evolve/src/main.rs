@@ -5,6 +5,7 @@ mod audio;
 mod camera;
 mod director;
 mod env;
+mod neural_view;
 mod preview;
 mod scene;
 mod sky;
@@ -91,6 +92,8 @@ pub struct Args {
     pub director: bool,
     /// Start with the sound off.
     pub mute: bool,
+    /// Open the brain view on its neural picture (with --select-first, for screenshots).
+    pub neural_view: bool,
     pub pick_test: bool,
 }
 
@@ -127,6 +130,7 @@ fn main() -> AppExit {
             "--zoo" => args.zoo = true,
             "--director" => args.director = true,
             "--mute" => args.mute = true,
+            "--neural-view" => args.neural_view = true,
             "--time-of-day" => visuals.time_of_day = Some(val().parse().unwrap_or_else(|_| usage())),
             "--weather" => visuals.weather = Some(val().parse().unwrap_or_else(|_| usage())),
             "--lightning" => visuals.lightning = true,

@@ -151,6 +151,8 @@ params! {
         air_drag: f32 = 0.05, [0, 2], Live;
         /// Hard cap on body part speed, m/s, to keep the solver from exploding.
         max_body_speed: f32 = 30.0, [5, 200], Live;
+        /// Hard cap on body part spin, rad/s.
+        max_body_spin: f32 = 40.0, [5, 1000], Live;
     }
     "Motors" {
         /// Spring stiffness of the joint motors chasing the brain's target angles.
@@ -188,10 +190,10 @@ params! {
     }
     "Brain" {
         /// Hidden neurons in a brain made from scratch, and the fewest a brain can have.
-        brain_min_neurons: u32 = 32, [1, 1024], Live;
-        /// Most hidden neurons a brain can evolve. A 2048-neuron brain has 4.3 million connections
-        /// (8.6 MB of GPU memory); thousands of creatures that size need a big GPU.
-        brain_max_neurons: u32 = 2048, [1, 8192], Live;
+        brain_min_neurons: u32 = 64, [1, 1024], Live;
+        /// Most hidden neurons a brain can evolve. A 4096-neuron brain has 17 million connections
+        /// (34 MB of GPU memory); thousands of creatures that size need a big GPU.
+        brain_max_neurons: u32 = 4096, [1, 8192], Live;
         /// Energy per second per million connections. Connections grow with the square of the
         /// neuron count, so big brains get expensive.
         brain_energy_cost: f32 = 0.1, [0, 5], Live;
@@ -286,6 +288,11 @@ params! {
         hydrology: bool = true, [0, 1], Live;
         /// How much of the rain runs off downhill (bigger: bigger streams).
         runoff: f32 = 1.0, [0, 5], Live;
+        /// Rain at full strength, mm per hour of water gathered into hollows from everything that
+        /// drains into them (several times real rain, so lakes fill within a session).
+        rain_rate: f32 = 40.0, [0, 1000], Live;
+        /// Water lakes and ponds lose to evaporation and seepage, mm per hour.
+        evaporation: f32 = 8.0, [0, 500], Live;
         /// How fast running water cuts its bed, m per hour for a stream draining 100 m² of hillside
         /// at a 1-in-10 slope in steady rain (a big valley's stream cuts several times faster).
         erosion_rate: f32 = 0.08, [0, 20], Live;

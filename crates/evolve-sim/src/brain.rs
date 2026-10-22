@@ -248,7 +248,14 @@ pub struct BrainGenes {
     pub bias: Vec<f32>,
     pub w_out: HalfVec,
     pub b_out: Vec<f32>,
+    /// Which brain-size era this brain is from (see `BRAIN_ERA`).
+    #[serde(default)]
+    pub era: u32,
 }
+
+/// Brains from before an era change are rescaled once as they enter a world (see
+/// `BrainGenes::bring_up_to_era`). Era 1 (2026-10-22): every brain doubled in size.
+pub const BRAIN_ERA: u32 = 1;
 
 fn half_normal(rng: &mut Rng, sigma: f32) -> f16 {
     f16::from_f32(rng.normal() * sigma)
@@ -301,6 +308,7 @@ impl BrainGenes {
             bias: (0..h).map(|_| rng.normal() * 0.2).collect(),
             w_out: HalfVec((0..N_OUT * h).map(|_| half_normal(rng, sigma_out)).collect()),
             b_out: (0..N_OUT).map(|_| rng.normal() * 0.3).collect(),
+            era: BRAIN_ERA,
         }
     }
 
@@ -346,7 +354,19 @@ impl BrainGenes {
             bias,
             w_out: HalfVec(w_out),
             b_out: self.b_out.clone(),
+            era: self.era,
         }
+    }
+
+    /// Rescales a brain from an earlier era (doubling its neurons for era 1, within `lo..=hi`).
+    /// The new neurons are wired in weakly, so what the brain does carries over.
+    pub fn bring_up_to_era(&mut self, lo: usize, hi: usize, rng: &mut Rng) {
+        if self.era >= BRAIN_ERA {
+            return;
+        }
+        let nh = (self.h * 2).clamp(lo, hi.max(lo));
+        *self = self.resize(nh, rng);
+        self.era = BRAIN_ERA;
     }
 
     /// Grow or shrink to `nh` neurons, keeping as much of the existing wiring as possible.
@@ -491,7 +511,8 @@ impl BrainGenes {
     /// Neuron-by-neuron crossover: each hidden neuron keeps its input row, bias and output column
     /// from one parent.
     pub fn crossover(a: &BrainGenes, b: &BrainGenes, rng: &mut Rng) -> BrainGenes {
-        let h = if rng.coin() { a.h } else { b.h };
+        let sized = if rng.coin() { a } else { b };
+        let (h, era) = (sized.h, sized.era);
         let src: Vec<&BrainGenes> = (0..h)
             .map(|i| match (i < a.h, i < b.h) {
                 (true, true) => if rng.coin() { a } else { b },
@@ -525,6 +546,7 @@ impl BrainGenes {
             bias,
             w_out: HalfVec(w_out),
             b_out,
+            era,
         }
     }
 

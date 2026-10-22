@@ -62,6 +62,9 @@ pub struct UiState {
     /// for that creature).
     show_brain: bool,
     brain_closed_for: Option<u64>,
+    /// Which picture of the brain the brain view shows.
+    brain_tab: BrainTab,
+    neural: crate::neural_view::NeuralView,
     /// Body plans of zoo creatures, read as their rows come into view.
     sketches: Sketches,
 }
@@ -206,6 +209,8 @@ impl Default for UiState {
             zoo_selected: None,
             show_brain: false,
             brain_closed_for: None,
+            brain_tab: BrainTab::Network,
+            neural: Default::default(),
             sketches: Sketches::default(),
         }
     }
@@ -218,7 +223,13 @@ impl Plugin for UiPlugin {
                 EguiPrimaryContextPass,
                 ui_system.run_if(|args: Res<crate::Args>| !args.no_ui),
             )
-            .add_systems(Startup, |args: Res<crate::Args>, mut st: ResMut<UiState>| st.show_zoo = args.zoo)
+            .add_systems(Startup, |args: Res<crate::Args>, mut st: ResMut<UiState>| {
+                st.show_zoo = args.zoo;
+                if args.neural_view {
+                    st.show_brain = true;
+                    st.brain_tab = BrainTab::Neural;
+                }
+            })
             .add_systems(Update, shortcuts.run_if(not(egui_wants_any_keyboard_input)));
     }
 }
@@ -347,7 +358,7 @@ fn ui_system(
         let following = cam.follow && st.brain_closed_for != Some(sel.id);
         if st.show_brain || following {
             let mut open = true;
-            brain_window(ctx, sel, &mut open);
+            brain_window(ctx, sel, &mut open, &mut st.brain_tab, &mut st.neural, now);
             if !open {
                 st.show_brain = false;
                 st.brain_closed_for = Some(sel.id);
@@ -1601,7 +1612,7 @@ fn director_overlay(ctx: &mut egui::Context, director: &mut Director, sound: &mu
 }
 
 /// Diagram labels: joint channels by limb and segment, everything else by name.
-fn short_input(k: usize) -> String {
+pub(crate) fn short_input(k: usize) -> String {
     if k >= evolve_sim::brain::input::JOINTS {
         format!("{} angle", evolve_sim::brain::motor_short_label(k - evolve_sim::brain::input::JOINTS))
     } else {
@@ -1609,7 +1620,7 @@ fn short_input(k: usize) -> String {
     }
 }
 
-fn short_output(k: usize) -> String {
+pub(crate) fn short_output(k: usize) -> String {
     if k < evolve_sim::brain::output::EAT {
         format!("move {}", evolve_sim::brain::motor_short_label(k))
     } else {
@@ -1627,9 +1638,25 @@ fn signal_color(v: f32, alpha: u8) -> egui::Color32 {
     egui::Color32::from_rgba_unmultiplied(c(0), c(1), c(2), alpha)
 }
 
-/// The creature's brain as a live diagram: senses on the left, the hidden neurons that matter
-/// most in a ring, actions on the right, and the strongest connections between them.
-fn brain_window(ctx: &mut egui::Context, c: &CreatureDetail, open: &mut bool) {
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BrainTab {
+    /// The wiring as a diagram.
+    Network,
+    /// The same wiring as tissue: neurons, dendrites and synapses, with spikes.
+    Neural,
+}
+
+/// The creature's brain, as a live diagram (senses on the left, the hidden neurons that matter
+/// most in a ring, actions on the right, and the strongest connections between them) or as
+/// living tissue (see `neural_view`).
+fn brain_window(
+    ctx: &mut egui::Context,
+    c: &CreatureDetail,
+    open: &mut bool,
+    tab: &mut BrainTab,
+    neural: &mut crate::neural_view::NeuralView,
+    now: f64,
+) {
     use evolve_sim::wiring::Node;
     egui::Window::new(format!("Brain of #{}", c.id))
         .id(egui::Id::new("brain_view"))
@@ -1638,9 +1665,36 @@ fn brain_window(ctx: &mut egui::Context, c: &CreatureDetail, open: &mut bool) {
         .default_size([640.0, 720.0])
         .resizable(true)
         .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.selectable_value(tab, BrainTab::Network, "Network")
+                    .on_hover_text("The wiring as a diagram");
+                ui.selectable_value(tab, BrainTab::Neural, "Neural")
+                    .on_hover_text("The same wiring as living tissue, firing");
+            });
             let w = &*c.wiring;
             if w.creature != c.id || w.inputs.is_empty() {
                 ui.label("Reading its wiring...");
+                return;
+            }
+            if *tab == BrainTab::Neural {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} of its {} neurons and the strongest {} of {} connections, as tissue. Senses on the left, hidden neurons in the middle, motor neurons on the right. Each neuron fires as fast as it is active; spikes run down axons to synapses, warm ones exciting and cool ones inhibiting the next neuron. Hover a cell body for its name and value.",
+                        w.hidden.len(),
+                        w.total_hidden,
+                        w.edges.len(),
+                        c.synapses
+                    ))
+                    .small()
+                    .weak(),
+                );
+                let rows = w.inputs.len().max(w.outputs.len()) as f32;
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    let width = ui.available_width().max(560.0);
+                    let height = (rows * 13.0 + 28.0).max(ui.available_height()).max(480.0);
+                    let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+                    neural.show(ui, rect, &resp, c, now);
+                });
                 return;
             }
             ui.label(

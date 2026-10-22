@@ -32,9 +32,14 @@ pub struct Terrain {
     /// ground recovers. See `worn`.
     #[serde(default)]
     pub wear: Vec<f32>,
-    /// Standing or running water on the ground (streams, ponds, puddles), m deep.
+    /// Standing or running water on the ground (streams, lakes, ponds, puddles), m deep: the
+    /// deeper of `pooled` and the stream running there.
     #[serde(default)]
     pub water: Vec<f32>,
+    /// Water held in hollows (lakes, ponds, puddles), m deep. Unlike streams, which follow the
+    /// rain, it stays until it evaporates or spills over (see `hydro`).
+    #[serde(default)]
+    pub pooled: Vec<f32>,
     /// How wet the soil is, 0 (dry) to 1 (soaked).
     #[serde(default)]
     pub moisture: Vec<f32>,
@@ -57,6 +62,7 @@ impl Default for Terrain {
             eroded: vec![0.0; 4],
             wear: vec![0.0; 4],
             water: vec![0.0; 4],
+            pooled: vec![0.0; 4],
             moisture: vec![0.0; 4],
             dirty: None,
             version: 0,
@@ -110,6 +116,7 @@ impl Terrain {
             eroded: vec![0.0; n],
             wear: vec![0.0; n],
             water: vec![0.0; n],
+            pooled: vec![0.0; n],
             moisture: vec![0.0; n],
             version,
             dirty: None,
@@ -122,7 +129,7 @@ impl Terrain {
         if self.ground.len() != n {
             self.ground = self.heights.clone();
         }
-        for layer in [&mut self.eroded, &mut self.wear, &mut self.water, &mut self.moisture] {
+        for layer in [&mut self.eroded, &mut self.wear, &mut self.water, &mut self.pooled, &mut self.moisture] {
             if layer.len() != n {
                 *layer = vec![0.0; n];
             }
@@ -151,6 +158,13 @@ impl Terrain {
         let a = w[i * r + j] * (1.0 - fx) + w[i * r + j + 1] * fx;
         let b = w[(i + 1) * r + j] * (1.0 - fx) + w[(i + 1) * r + j + 1] * fx;
         a * (1.0 - fz) + b * fz
+    }
+
+    /// Height of the water surface over a spot: the sea, or a lake, pond or stream standing
+    /// higher than it.
+    pub fn water_surface(&self, x: f32, z: f32, sea: f32) -> f32 {
+        let w = self.water_at(x, z);
+        if w > 0.02 { sea.max(self.height_at(x, z) + w) } else { sea }
     }
 
     /// The grid point nearest a spot.

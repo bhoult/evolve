@@ -663,6 +663,9 @@ impl Sim {
         let max_energy = self.params.energy_per_mass * mass;
         let max_health = 100.0 * (mass / 60.0).sqrt();
         let mut genome = genome;
+        // A brain from before the last change of brain size grows into the new era.
+        let (lo, hi) = self.params.neuron_range();
+        genome.brain.bring_up_to_era(lo as usize, hi as usize, &mut self.rng);
         if let Some(g) = self.brains.as_mut() {
             // A brain the GPU can't hold is trimmed until it fits.
             let (lo, _) = self.params.neuron_range();
@@ -950,7 +953,7 @@ impl Sim {
     /// Water buoyancy and drag, wind, plus the user's grab spring.
     fn environment_forces(&mut self) {
         let p = &self.params;
-        let wl = p.water_level;
+        let sea = p.water_level;
         let g = p.gravity;
         let wind = Vec3::new(self.weather.wind[0], 0.0, self.weather.wind[1]);
         // Air drag, 1/2 rho Cd v^2 per m^2 facing the wind (rho 1.2, Cd 1).
@@ -964,6 +967,8 @@ impl Sim {
                 let shape = c.plan[k].shape;
                 let pos = b.translation();
                 let vr = shape.vertical_radius().max(0.02);
+                // The sea, or a lake, pond or stream standing higher than it here.
+                let wl = self.terrain.water_surface(pos.x, pos.z, sea);
                 let frac = ((wl - (pos.y - vr)) / (2.0 * vr)).clamp(0.0, 1.0);
                 if k == 0 {
                     if c.in_water < 0.3 && frac >= 0.3 && b.linvel().y < -1.5 {
@@ -1052,7 +1057,7 @@ impl Sim {
     fn after_physics(&mut self) {
         let p = &self.params;
         let max_v = p.max_body_speed;
-        let max_w = 40.0;
+        let max_w = p.max_body_spin;
         let terrain = &self.terrain;
         let rain = self.weather.rain;
         let wl = p.water_level;
@@ -1100,7 +1105,7 @@ impl Sim {
                 if was < -2.0 && v.y > was * 0.3 {
                     let at = b.translation();
                     let reach = c.plan[k].shape.bounding_radius() + 0.25;
-                    if at.y > wl && at.y - terrain.height_at(at.x, at.z) < reach {
+                    if at.y > terrain.water_surface(at.x, at.z, wl) && at.y - terrain.height_at(at.x, at.z) < reach {
                         let strength = (-was * b.mass().sqrt() / 15.0).min(1.5);
                         if strength > 0.08 {
                             impacts.push((c.id, at, strength));
@@ -1140,7 +1145,8 @@ impl Sim {
             let power = work / DT / c.mass.max(0.1);
             c.exertion += (power - c.exertion) * (DT / 1.0);
             let exertion = p.exertion_oxygen * power;
-            let head_under = mouth.y < p.water_level - 0.05 || c.in_water >= 0.95;
+            let surface = terrain.water_surface(mouth.x, mouth.z, p.water_level);
+            let head_under = mouth.y < surface - 0.05 || c.in_water >= 0.95;
             if head_under {
                 let hold = p.breath_time * (0.3 + 1.7 * lungs);
                 c.oxygen -= DT / hold.max(0.1) + exertion * DT;
@@ -1160,10 +1166,8 @@ impl Sim {
                 }
             }
 
-            // Drinking: any water will do, sea, stream or pond, as long as the mouth is in it.
-            let pool = self.terrain.water_at(mouth.x, mouth.z);
-            let surface = if pool > 0.02 { self.terrain.height_at(mouth.x, mouth.z) + pool } else { f32::MIN };
-            if mouth.y < p.water_level.max(surface) + 0.1 {
+            // Drinking: any water will do, sea, lake, stream or pond, as long as the mouth is in it.
+            if mouth.y < surface + 0.1 {
                 c.hydration += p.drink_rate * DT;
             }
             c.hydration += p.rain_drinking * rain * DT;
