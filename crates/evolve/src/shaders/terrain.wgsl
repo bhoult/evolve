@@ -1,7 +1,9 @@
 // Island ground: beaches, wet sand, sea floor with caustics, grass and rock, with noise detail,
 // rain wetness and moving cloud shadows. The vertex color's red channel carries fertility, the
 // green channel how much creatures have dug or piled the ground there (0 untouched, 1 a lot),
-// and the blue channel is 1 where it was dug out rather than piled up.
+// the blue channel is 1 where it was dug out rather than piled up, and alpha is how trampled it
+// is. The UV carries water standing or running on the ground (m) and soil moisture (the material
+// has no textures to need it).
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
@@ -9,7 +11,7 @@
     lighting::F_AB,
     mesh_view_bindings::{lights, view},
 }
-#import evolve::env::{env, vnoise, gnoise, fbm, cloud_shadow}
+#import evolve::env::{env, vnoise, gnoise, fbm, cloud_shadow, sky_clear}
 
 fn lin(c: vec3<f32>) -> vec3<f32> {
     return pow(c, vec3<f32>(2.2));
@@ -130,16 +132,73 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         rough = mix(rough, 0.97, smoothstep(0.0, 0.35, moved));
     }
 
-    // Rain darkens dry ground and gives it a soft sheen.
-    let wetness = env.weather.w * smoothstep(-0.2, 0.3, above);
+    // Feet wear the grass to bare earth along well-used paths, and wet paths turn to mud.
+    let worn = in.color.a;
+    var water = 0.0;
+    var soil_wet = 0.0;
+#ifdef VERTEX_UVS_A
+    water = in.uv.x;
+    soil_wet = in.uv.y;
+#endif
+    let on_land = smoothstep(0.0, 0.25, above);
+    let path = smoothstep(0.08, 0.7, worn + (n1 - 0.5) * 0.15) * on_land * (1.0 - 0.7 * rockiness);
+    if (path > 0.001) {
+        let dirt = lin(vec3<f32>(0.45, 0.37, 0.27)) * (0.85 + 0.25 * n2 + 0.1 * (n3 - 0.5));
+        col = mix(col, dirt, path * (1.0 - 0.5 * sandy));
+        rough = mix(rough, 0.92, path);
+        let mud = path * smoothstep(0.3, 0.75, max(soil_wet, env.weather.w));
+        let mud_col = lin(vec3<f32>(0.20, 0.14, 0.09)) * (0.85 + 0.3 * n2);
+        col = mix(col, mud_col, mud);
+        // Slick, with puddles standing in its hollows.
+        let puddle = smoothstep(0.55, 0.7, n1 + (n2 - 0.5) * 0.3);
+        rough = mix(rough, mix(0.35, 0.08, puddle), mud);
+    }
+
+    // Rain darkens dry ground and gives it a soft sheen; soaked soil stays dark after it stops.
+    let wetness = max(env.weather.w, soil_wet * 0.8) * smoothstep(-0.2, 0.3, above);
     col *= 1.0 - 0.35 * wetness;
     rough = mix(rough, 0.55, wetness);
+
+    // Water on the ground. Its surface (ground plus depth, both linear across a triangle) has
+    // its own slope, found from screen-space derivatives: about level in a pond, falling along a
+    // stream. It's constant per triangle, so it only tells ponds from streams; the shading itself
+    // follows the smooth ground. (Derivatives need uniform control flow: no branch before.)
+    let surf = p.y + water;
+    let ax = dpdx(p.xz);
+    let ay = dpdy(p.xz);
+    let det = ax.x * ay.y - ax.y * ay.x;
+    let sx = dpdx(surf);
+    let sy = dpdy(surf);
+    var grad = vec2<f32>(0.0);
+    if (abs(det) > 1e-8) {
+        grad = vec2<f32>(ay.y * sx - ax.y * sy, ax.x * sy - ay.x * sx) / det;
+    }
+    let cover = smoothstep(0.005, 0.05, water) * on_land;
+    if (cover > 0.001) {
+        let deep = smoothstep(0.03, 0.5, water);
+        let body = mix(col * 0.5, lin(vec3<f32>(0.12, 0.25, 0.27)), deep * 0.7);
+        col = mix(col, body, cover);
+        rough = mix(rough, 0.05, cover);
+        // A stream lies along its bed and runs down it; a pond lies level.
+        let running = smoothstep(0.015, 0.06, length(grad));
+        let fall = length(n.xz) * running;
+        let downhill = n.xz / max(length(n.xz), 1e-4);
+        // Ripples carried downstream, faster where it falls faster; a pond only shivers. Each
+        // octave fades out before it's fine enough to alias.
+        let drift = downhill * t * (0.3 + 5.0 * fall) + vec2<f32>(t * 0.05, 0.0);
+        let q1 = p.xz * 2.3 - drift;
+        let q2 = p.xz * 0.9 - drift * 0.6;
+        let ripple = (vec2<f32>(vnoise(q1), vnoise(q1 + 17.3)) - 0.5) * 0.16 * band(px, 2.3)
+            + (vec2<f32>(vnoise(q2 + 5.1), vnoise(q2 + 23.7)) - 0.5) * 0.1 * band(px, 0.9);
+        let surface = normalize(mix(vec3<f32>(0.0, 1.0, 0.0), n, running));
+        pbr.N = normalize(mix(pbr.N, normalize(surface + vec3<f32>(-ripple.x, 0.0, -ripple.y)), cover));
+    }
 
     // Bumps from two octaves of noise, much stronger on rock than on grass or sand. Skipped far
     // away where they would only shimmer.
     // Faces turned from the light keep flat normals, or bumps would catch spots of sun.
     let toward = smoothstep(-0.05, 0.3, dot(n, env.light.xyz));
-    let bump = (0.1 + 0.3 * rockiness * (1.0 - sandy)) * band(px, 2.1) * toward;
+    let bump = (0.1 + 0.3 * rockiness * (1.0 - sandy)) * band(px, 2.1) * toward * (1.0 - cover);
     if (bump > 0.01) {
         let e = 0.08;
         var grad = vec3<f32>(0.0);
@@ -168,6 +227,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let ndv = max(dot(pbr.N, pbr.V), 0.0001);
     let lost = col * (1.0 - shade) * F_AB(1.0, ndv).x * lights.ambient_color.rgb * pbr.diffuse_occlusion;
     out.color = vec4<f32>(out.color.rgb + lost * view.exposure, out.color.a);
+    // Water on the ground mirrors the sky.
+    if (cover > 0.001) {
+        let wn = clamp(dot(pbr.N, pbr.V), 0.0, 1.0);
+        let fresnel = 0.02 + 0.98 * pow(1.0 - wn, 5.0);
+        var r = reflect(-pbr.V, pbr.N);
+        r.y = abs(r.y);
+        out.color = vec4<f32>(mix(out.color.rgb, sky_clear(r, false), fresnel * cover), out.color.a);
+    }
     out.color = main_pass_post_lighting_processing(pbr, out.color);
     return out;
 }

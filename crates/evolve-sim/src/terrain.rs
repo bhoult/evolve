@@ -5,6 +5,10 @@ use crate::math::Vec3;
 use crate::noise::Perlin;
 use crate::params::SimParams;
 
+/// Trampling (kg·m/m²) at which ground is about two-thirds worn: a 50 kg creature walking over
+/// the same spot a few dozen times.
+pub const WEAR_SCALE: f32 = 1200.0;
+
 /// A square heightfield centered on the origin: an island in an ocean. Rows (i) run along z,
 /// columns (j) along x, matching parry's heightfield layout, so `height_at` agrees with the
 /// physics surface.
@@ -20,6 +24,20 @@ pub struct Terrain {
     /// before earthworks (then it's the current ground).
     #[serde(default)]
     pub ground: Vec<f32>,
+    /// How far running water has worn the ground down from `ground`, m. Kept apart from what
+    /// creatures dug, so a stream bed isn't counted as their earthworks.
+    #[serde(default)]
+    pub eroded: Vec<f32>,
+    /// Trampling: body mass times distance moved over each grid point, per m², fading as the
+    /// ground recovers. See `worn`.
+    #[serde(default)]
+    pub wear: Vec<f32>,
+    /// Standing or running water on the ground (streams, ponds, puddles), m deep.
+    #[serde(default)]
+    pub water: Vec<f32>,
+    /// How wet the soil is, 0 (dry) to 1 (soaked).
+    #[serde(default)]
+    pub moisture: Vec<f32>,
     /// Grid rows and columns changed since the last `take_dirty` (i0, i1, j0, j1, inclusive).
     #[serde(skip)]
     pub dirty: Option<(usize, usize, usize, usize)>,
@@ -36,6 +54,10 @@ impl Default for Terrain {
             heights: vec![0.0; 4],
             fertility: vec![0.0; 4],
             ground: vec![0.0; 4],
+            eroded: vec![0.0; 4],
+            wear: vec![0.0; 4],
+            water: vec![0.0; 4],
+            moisture: vec![0.0; 4],
             dirty: None,
             version: 0,
         }
@@ -78,15 +100,65 @@ impl Terrain {
                 fertility[i * res + j] = (f * 1.2 + 0.6).clamp(0.05, 1.0);
             }
         }
+        let n = res * res;
         Self {
             size,
             res,
             ground: heights.clone(),
             heights,
             fertility,
+            eroded: vec![0.0; n],
+            wear: vec![0.0; n],
+            water: vec![0.0; n],
+            moisture: vec![0.0; n],
             version,
             dirty: None,
         }
+    }
+
+    /// Fills in layers missing from saves made before they existed.
+    pub fn ensure_layers(&mut self) {
+        let n = self.heights.len();
+        if self.ground.len() != n {
+            self.ground = self.heights.clone();
+        }
+        for layer in [&mut self.eroded, &mut self.wear, &mut self.water, &mut self.moisture] {
+            if layer.len() != n {
+                *layer = vec![0.0; n];
+            }
+        }
+    }
+
+    /// The ground as nature has it now: as the world made it, less what water has worn away.
+    /// Creatures dig and pile relative to this.
+    pub fn natural(&self, k: usize) -> f32 {
+        self.ground.get(k).map_or(self.heights[k], |g| g - self.eroded.get(k).copied().unwrap_or(0.0))
+    }
+
+    /// How trampled a grid point looks and feels, 0 (untouched) to 1 (a bare path).
+    pub fn worn(&self, k: usize) -> f32 {
+        1.0 - (-self.wear.get(k).copied().unwrap_or(0.0) / WEAR_SCALE).exp()
+    }
+
+    /// Water on the ground at a spot, m deep (streams, ponds, puddles; not the sea).
+    pub fn water_at(&self, x: f32, z: f32) -> f32 {
+        if self.water.len() != self.heights.len() {
+            return 0.0;
+        }
+        let (i, j, fx, fz) = self.cell_coords(x, z);
+        let r = self.res;
+        let w = &self.water;
+        let a = w[i * r + j] * (1.0 - fx) + w[i * r + j + 1] * fx;
+        let b = w[(i + 1) * r + j] * (1.0 - fx) + w[(i + 1) * r + j + 1] * fx;
+        a * (1.0 - fz) + b * fz
+    }
+
+    /// The grid point nearest a spot.
+    pub fn nearest_point(&self, x: f32, z: f32) -> usize {
+        let (i, j, fx, fz) = self.cell_coords(x, z);
+        let i = if fz > 0.5 { i + 1 } else { i };
+        let j = if fx > 0.5 { j + 1 } else { j };
+        i * self.res + j
     }
 
     /// Moves earth at a spot: `volume` m³, positive to pile it up, negative to dig it out, spread
@@ -94,9 +166,7 @@ impl Terrain {
     /// piled at most `max_pile` m above where the world made it. Returns the volume actually moved
     /// (with the sign of the request).
     pub fn reshape(&mut self, x: f32, z: f32, volume: f32, max_dig: f32, max_pile: f32) -> f32 {
-        if self.ground.len() != self.heights.len() {
-            self.ground = self.heights.clone();
-        }
+        self.ensure_layers();
         let (i, j, fx, fz) = self.cell_coords(x, z);
         let r = self.res;
         let area = self.cell() * self.cell();
@@ -109,7 +179,8 @@ impl Terrain {
         let mut moved = 0.0;
         for (ci, cj, w) in corners {
             let k = ci * r + cj;
-            let (lo, hi) = (self.ground[k] - max_dig, self.ground[k] + max_pile);
+            let natural = self.natural(k);
+            let (lo, hi) = (natural - max_dig, natural + max_pile);
             let (now, want) = (self.heights[k], volume * w / area);
             // Only ever moves the way asked: ground already past a limit (the limits are live
             // params) stays put rather than snapping back.
@@ -118,19 +189,26 @@ impl Terrain {
             self.heights[k] = h;
         }
         if moved != 0.0 {
-            let (i1, j1) = (i + 1, j + 1);
-            self.dirty = Some(match self.dirty {
-                Some((a, b, c, d)) => (a.min(i), b.max(i1), c.min(j), d.max(j1)),
-                None => (i, i1, j, j1),
-            });
-            self.version += 1;
+            self.mark_dirty(i, i + 1, j, j + 1);
         }
         moved
     }
 
-    /// How far the ground at a grid point is from where the world made it, m (positive: piled).
+    /// How far creatures have moved the ground at a grid point, m (positive: piled).
     pub fn disturbance(&self, k: usize) -> f32 {
-        self.ground.get(k).map_or(0.0, |g| self.heights[k] - g)
+        if self.ground.len() != self.heights.len() {
+            return 0.0;
+        }
+        self.heights[k] - self.natural(k)
+    }
+
+    /// Marks grid rows i0..=i1 and columns j0..=j1 as reshaped.
+    pub fn mark_dirty(&mut self, i0: usize, i1: usize, j0: usize, j1: usize) {
+        self.dirty = Some(match self.dirty {
+            Some((a, b, c, d)) => (a.min(i0), b.max(i1), c.min(j0), d.max(j1)),
+            None => (i0, i1, j0, j1),
+        });
+        self.version += 1;
     }
 
     /// The region changed since the last call, if any.
@@ -209,7 +287,12 @@ impl Terrain {
         let span = (terrain_height * 0.8).max(2.0);
         let elev = (1.0 - (above / span)).clamp(0.05, 1.0);
         let slope = self.normal_at(x, z).y.clamp(0.0, 1.0);
-        elev * slope * slope * self.fertility_at(x, z)
+        // Nothing grows in a stream or a pond, and little on a trampled path.
+        if self.water_at(x, z) > 0.03 {
+            return 0.0;
+        }
+        let worn = self.worn(self.nearest_point(x, z));
+        elev * slope * slope * self.fertility_at(x, z) * (1.0 - 0.85 * worn)
     }
 
     pub fn contains(&self, x: f32, z: f32, margin: f32) -> bool {

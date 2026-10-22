@@ -280,6 +280,22 @@ params! {
         dig_depth: f32 = 3.0, [0, 20], Live;
         pile_height: f32 = 3.0, [0, 20], Live;
     }
+    "Land and water" {
+        /// Rain runs downhill into streams and collects in hollows, and running water slowly
+        /// cuts the land into channels.
+        hydrology: bool = true, [0, 1], Live;
+        /// How much of the rain runs off downhill (bigger: bigger streams).
+        runoff: f32 = 1.0, [0, 5], Live;
+        /// How fast running water cuts its bed, m per hour for a stream draining 100 m² of hillside
+        /// at a 1-in-10 slope in steady rain (a big valley's stream cuts several times faster).
+        erosion_rate: f32 = 0.08, [0, 20], Live;
+        /// The deepest water can wear the land below where the world made it, m.
+        erosion_max_depth: f32 = 2.5, [0, 20], Live;
+        /// How quickly feet wear the ground bare (1: a few dozen passes of a 50 kg creature).
+        trampling: f32 = 1.0, [0, 20], Live;
+        /// Minutes for trampled ground to grow halfway back.
+        wear_recovery: f32 = 60.0, [1, 2000], Live;
+    }
     "Voices" {
         /// How far a full-throated call carries, m (quieter calls carry less).
         call_range: f32 = 40.0, [1, 300], Live;

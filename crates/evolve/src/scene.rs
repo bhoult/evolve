@@ -72,8 +72,12 @@ fn update_terrain(
         && let Some(handle) = state.mesh.clone()
     {
         let same_world = old.ground == t.ground && old.fertility == t.fertility;
+        // Points whose shape changed, or whose look did (trampling, water, wet soil): those
+        // change a little everywhere every update, so only a visible step counts.
         let moved: Vec<usize> = if same_world {
-            (0..t.heights.len()).filter(|&k| old.heights[k] != t.heights[k]).collect()
+            (0..t.heights.len())
+                .filter(|&k| old.heights[k] != t.heights[k] || surface_step(&old, k) != surface_step(t, k))
+                .collect()
         } else {
             Vec::new()
         };
@@ -83,10 +87,11 @@ fn update_terrain(
         }
         if let Some(mesh) = meshes.get_mut(&handle) {
             if !(same_world && patch_terrain(mesh, t, &moved)) {
-                let (positions, normals, colors) = terrain_attributes(t);
+                let (positions, normals, colors, surfaces) = terrain_attributes(t);
                 mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
                 mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
                 mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, surfaces);
             }
             state.built_from = Some(t.clone());
             return;
@@ -123,32 +128,46 @@ fn grid_xz(t: &Terrain, k: usize) -> (f32, f32) {
     (x, z)
 }
 
-/// Fertility in red, moved earth in green, and blue set where it was dug rather than piled.
+/// Fertility in red, moved earth in green, blue set where it was dug rather than piled, and
+/// how trampled the ground is in alpha.
 fn vertex_color(t: &Terrain, k: usize) -> [f32; 4] {
     let d = t.disturbance(k);
-    [t.fertility[k], (d.abs() / 0.6).min(1.0), if d < 0.0 { 1.0 } else { 0.0 }, 1.0]
+    [t.fertility[k], (d.abs() / 0.6).min(1.0), if d < 0.0 { 1.0 } else { 0.0 }, t.worn(k)]
 }
 
-/// Per-vertex positions, normals and colors.
+/// Water standing or running on the ground (m) and how wet the soil is, for the UV channel (unused otherwise: the material has no textures).
+fn vertex_surface(t: &Terrain, k: usize) -> [f32; 2] {
+    [t.water.get(k).copied().unwrap_or(0.0), t.moisture.get(k).copied().unwrap_or(0.0)]
+}
+
+/// The look of a point in coarse steps, to tell when it has visibly changed.
+fn surface_step(t: &Terrain, k: usize) -> [u16; 3] {
+    let [water, wet] = vertex_surface(t, k);
+    [(t.worn(k) * 64.0) as u16, (water * 200.0).min(4000.0) as u16, (wet * 32.0) as u16]
+}
+
+/// Per-vertex positions, normals, colors and surface water.
 #[allow(clippy::type_complexity)]
-fn terrain_attributes(t: &Terrain) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>) {
+fn terrain_attributes(t: &Terrain) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>, Vec<[f32; 2]>) {
     let count = t.res * t.res;
     let mut positions = Vec::with_capacity(count);
     let mut normals = Vec::with_capacity(count);
     let mut colors = Vec::with_capacity(count);
+    let mut surfaces = Vec::with_capacity(count);
     for k in 0..count {
         let (x, z) = grid_xz(t, k);
         positions.push([x, t.heights[k], z]);
         normals.push(t.normal_at(x, z).to_array());
         colors.push(vertex_color(t, k));
+        surfaces.push(vertex_surface(t, k));
     }
-    (positions, normals, colors)
+    (positions, normals, colors, surfaces)
 }
 
 /// Updates the vertices at `moved` grid points, and the normals around them, in a mesh built
 /// from an earlier copy of the same terrain. False if the mesh lacks the expected attributes.
 fn patch_terrain(mesh: &mut Mesh, t: &Terrain, moved: &[usize]) -> bool {
-    use bevy::mesh::VertexAttributeValues::{Float32x3, Float32x4};
+    use bevy::mesh::VertexAttributeValues::{Float32x2, Float32x3, Float32x4};
     let n = t.res;
     let mut near = vec![false; n * n];
     for &k in moved {
@@ -171,6 +190,12 @@ fn patch_terrain(mesh: &mut Mesh, t: &Terrain, moved: &[usize]) -> bool {
     for &k in moved {
         colors[k] = vertex_color(t, k);
     }
+    let Some(Float32x2(surfaces)) = mesh.attribute_mut(Mesh::ATTRIBUTE_UV_0) else {
+        return false;
+    };
+    for &k in moved {
+        surfaces[k] = vertex_surface(t, k);
+    }
     let Some(Float32x3(normals)) = mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL) else {
         return false;
     };
@@ -185,7 +210,7 @@ fn patch_terrain(mesh: &mut Mesh, t: &Terrain, moved: &[usize]) -> bool {
 /// Fertility rides along in the vertex color's red channel.
 fn terrain_mesh(t: &Terrain) -> Mesh {
     let n = t.res;
-    let (positions, normals, colors) = terrain_attributes(t);
+    let (positions, normals, colors, surfaces) = terrain_attributes(t);
     let idx = |i: usize, j: usize| (i * n + j) as u32;
     let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
     for i in 0..n - 1 {
@@ -198,5 +223,6 @@ fn terrain_mesh(t: &Terrain) -> Mesh {
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, surfaces)
         .with_inserted_indices(Indices::U32(indices))
 }

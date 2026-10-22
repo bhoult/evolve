@@ -239,6 +239,12 @@ pub struct Sim {
     /// Sim time the physics ground last took on the reshaped terrain.
     #[serde(skip)]
     pub settled_at: f64,
+    /// Recent rain, 0 to 1, averaged over about half an hour: how soaked the land is.
+    #[serde(default)]
+    pub soak: f32,
+    /// Simulated seconds of running water not yet worn into the land.
+    #[serde(default)]
+    pub erosion_due: f32,
     #[serde(skip)]
     pub index: HashMap<u64, usize>,
     #[serde(skip)]
@@ -320,6 +326,8 @@ impl Sim {
             brain_price: 1.0,
             gpu_headroom: 0.0,
             settled_at: 0.0,
+            soak: 0.0,
+            erosion_due: 0.0,
             index: HashMap::new(),
             perf: Perf::default(),
             events: Vec::new(),
@@ -892,6 +900,8 @@ impl Sim {
     // ── Stepping ───────────────────────────────────────────────────────
 
     pub fn step(&mut self) {
+        // Water is moved on every couple of seconds (rain changes slowly).
+        const HYDROLOGY_EVERY: u64 = 2;
         let brain_every = (TICKS_PER_SECOND as f32 / self.params.brain_hz.max(0.1))
             .round()
             .max(1.0) as u64;
@@ -916,6 +926,9 @@ impl Sim {
         }
         if self.tick % TICKS_PER_SECOND == 0 {
             self.ecology(1.0);
+        }
+        if self.tick % (TICKS_PER_SECOND * HYDROLOGY_EVERY) == 0 {
+            self.hydrology(HYDROLOGY_EVERY as f32);
         }
         if self.tick % (TICKS_PER_SECOND * 2) == 0 {
             self.sample_history();
@@ -1147,8 +1160,10 @@ impl Sim {
                 }
             }
 
-            // Drinking: any water will do, as long as the mouth is in it.
-            if mouth.y < p.water_level + 0.1 {
+            // Drinking: any water will do, sea, stream or pond, as long as the mouth is in it.
+            let pool = self.terrain.water_at(mouth.x, mouth.z);
+            let surface = if pool > 0.02 { self.terrain.height_at(mouth.x, mouth.z) + pool } else { f32::MIN };
+            if mouth.y < p.water_level.max(surface) + 0.1 {
                 c.hydration += p.drink_rate * DT;
             }
             c.hydration += p.rain_drinking * rain * DT;

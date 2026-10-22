@@ -232,6 +232,7 @@ impl Sim {
     }
 
     pub(crate) fn interact(&mut self, bdt: f32) {
+        self.trample(bdt);
         self.eat(bdt);
         self.fight();
         self.breed();
@@ -639,6 +640,53 @@ impl Sim {
     }
 
     /// Once per simulated second: plants grow and seed, meat rots, distances are tallied.
+    /// Rain runs off, collects and wears the land (see `hydro`).
+    pub(crate) fn hydrology(&mut self, dt: f32) {
+        // Running water is worn into the land in batches, so the physics ground (a full
+        // heightfield rebuild) changes every half minute rather than every update.
+        const EROSION_EVERY: f32 = 30.0;
+        if !self.params.hydrology {
+            if self.terrain.water.iter().any(|&w| w > 0.0) {
+                self.terrain.water.fill(0.0);
+                self.terrain.version += 1;
+            }
+            return;
+        }
+        let rain = self.weather.rain;
+        self.soak += (rain - self.soak) * (1.0 - (-dt / 1800.0).exp());
+        self.erosion_due += dt;
+        let erode = (self.erosion_due >= EROSION_EVERY).then(|| std::mem::take(&mut self.erosion_due));
+        crate::hydro::update(&mut self.terrain, &self.params, rain, self.soak, dt, erode);
+    }
+
+    /// Feet wear the ground they move over: heavier and faster, more.
+    fn trample(&mut self, bdt: f32) {
+        let scale = self.params.trampling;
+        if scale <= 0.0 {
+            return;
+        }
+        self.terrain.ensure_layers();
+        let wl = self.params.water_level;
+        let area = self.terrain.cell() * self.terrain.cell();
+        for c in &self.creatures {
+            for (k, part) in c.parts.iter().enumerate() {
+                let Some(b) = self.world.bodies.get(part.body) else {
+                    continue;
+                };
+                let pos = b.translation();
+                let ground = self.terrain.height_at(pos.x, pos.z);
+                let reach = c.plan[k].shape.vertical_radius() + 0.15;
+                if ground <= wl || pos.y - ground > reach {
+                    continue;
+                }
+                let v = b.linvel();
+                let speed = (v.x * v.x + v.z * v.z).sqrt().min(5.0);
+                let at = self.terrain.nearest_point(pos.x, pos.z);
+                self.terrain.wear[at] += b.mass() * speed * bdt / area * scale;
+            }
+        }
+    }
+
     pub(crate) fn ecology(&mut self, dt: f32) {
         let p = self.params.clone();
         let rain = 1.0 + p.rain_plant_growth * self.weather.rain;
@@ -772,7 +820,10 @@ const WATER_SENSE_RANGE: f32 = 24.0;
 /// (the reward for closing in on water needs small steps, not ring-sized jumps).
 fn nearest_water(sim: &Sim, pos: Vec3) -> Option<Vec3> {
     let wl = sim.params.water_level;
-    let wet = |d: Vec3| sim.terrain.height_at(pos.x + d.x, pos.z + d.z) < wl;
+    let wet = |d: Vec3| {
+        let (x, z) = (pos.x + d.x, pos.z + d.z);
+        sim.terrain.height_at(x, z) < wl || sim.terrain.water_at(x, z) > 0.04
+    };
     if wet(Vec3::ZERO) {
         return Some(Vec3::ZERO);
     }
@@ -782,7 +833,9 @@ fn nearest_water(sim: &Sim, pos: Vec3) -> Option<Vec3> {
         for k in 0..12 {
             let a = k as f32 * std::f32::consts::TAU / 12.0;
             let d = Vec3::new(a.cos() * r, 0.0, a.sin() * r);
-            let depth = wl - sim.terrain.height_at(pos.x + d.x, pos.z + d.z);
+            let (x, z) = (pos.x + d.x, pos.z + d.z);
+            let pool = sim.terrain.water_at(x, z);
+            let depth = (wl - sim.terrain.height_at(x, z)).max(if pool > 0.04 { pool } else { 0.0 });
             if depth > 0.0 && best.is_none_or(|(b, _)| depth > b) {
                 best = Some((depth, d));
             }

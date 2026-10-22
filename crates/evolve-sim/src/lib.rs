@@ -8,6 +8,7 @@ pub mod genome;
 pub mod grid;
 pub mod islands;
 pub mod gpu;
+pub mod hydro;
 mod life;
 pub mod math;
 pub mod noise;

@@ -302,6 +302,25 @@ evolution moving until the population can sustain itself.
 - *Starting out:* random creatures start with digging off and upgraded ones with it silent, so
   evolution has to find it worth the effort.
 
+**Land and water** (`hydrology`, hydro.rs). Rain runs off the island and the island wears.
+- *Streams:* every couple of simulated seconds the island is drained toward the sea. Each point
+  passes its water to a downhill neighbour, and water in a hollow fills it and spills over its
+  lowest edge. Where enough water gathers from uphill, a stream runs (`runoff` sets how big).
+  Streams swell in rain and dwindle over the next half hour or so as the ground dries.
+- *Ponds:* hollows, including holes creatures dig, fill with water while the ground is soaked and
+  dry out afterwards.
+- *Drinking:* streams and ponds count as water for drinking and for the water sense.
+- *Erosion:* streams slowly cut their beds deeper, faster with more water behind them, on steeper
+  ground, and on trampled ground (`erosion_rate`). The cut can go `erosion_max_depth` (2.5 m) below
+  the original land. A long wet spell carves gullies down the hillsides; dry spells don't.
+- *Trampling:* feet wear the ground they move over, more for heavier and faster creatures
+  (`trampling`). Busy ground turns to bare earth, then to slick mud with puddles when wet. Plants
+  grow poorly on it, and nothing grows in a stream. Left alone, worn ground grows back, halfway in
+  `wear_recovery` (60) minutes.
+- *Looks:* soaked soil stays dark after rain; streams ripple downhill and ponds lie level,
+  reflecting the sky.
+- *Cost:* about 1.6 ms of one core every 2 simulated seconds per world.
+
 **Swimming.** Water gives buoyancy and costs breath. Drag acts at two points along every body
 part, so a limb sweeping about its joint feels more push at its fast end. Drag has a linear part
 and a pressure part that grows with the square of speed (`swim_drag`). A fast stroke therefore
@@ -442,6 +461,9 @@ Tests: `cargo test --release -p evolve-sim`. These check:
   dozens of random creatures;
 - that snakes, tentacles and legs stay within their joints' range;
 - thirst and drinking;
+- rain draining to the sea through every point, streams forming in valleys and cutting them
+  deeper (within the limit, never below the sea floor), streams and ponds drying up after rain,
+  feet wearing paths that plants avoid, and drinking from a stream;
 - that old brains behave exactly the same after the upgrade;
 - that the learning rule learns (a toy task where reward follows one output), that the GPU hands
   back exactly what a brain learned, and that parents pass on the set fraction of it;
