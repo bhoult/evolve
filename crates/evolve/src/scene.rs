@@ -41,6 +41,7 @@ struct TerrainState {
     /// freshly generated world starts at version 1.
     built_from: Option<std::sync::Arc<Terrain>>,
     material: Option<Handle<TerrainMaterial>>,
+    mesh: Option<Handle<Mesh>>,
 }
 
 impl Plugin for ScenePlugin {
@@ -64,6 +65,18 @@ fn update_terrain(
     if t.res < 3 || state.built_from.as_ref().is_some_and(|b| std::sync::Arc::ptr_eq(b, t)) {
         return;
     }
+    // The same ground reshaped by creatures (same grid): update the mesh in place.
+    let same_grid = state.built_from.as_ref().is_some_and(|b| b.res == t.res && b.size == t.size && b.ground == t.ground);
+    if same_grid
+        && let Some(mesh) = state.mesh.as_ref().and_then(|h| meshes.get_mut(h))
+    {
+        let (positions, normals, colors) = terrain_attributes(t);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        state.built_from = Some(t.clone());
+        return;
+    }
     for e in &old {
         commands.entity(e).despawn();
     }
@@ -81,18 +94,15 @@ fn update_terrain(
             })
         })
         .clone();
-    commands.spawn((
-        Mesh3d(meshes.add(terrain_mesh(t))),
-        MeshMaterial3d(material),
-        Transform::default(),
-        TerrainMesh,
-    ));
+    let mesh = meshes.add(terrain_mesh(t));
+    state.mesh = Some(mesh.clone());
+    commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::default(), TerrainMesh));
     state.built_from = Some(t.clone());
 }
 
-/// Triangulated exactly like the physics heightfield (diagonal from (x0, z1) to (x1, z0)).
-/// Fertility rides along in the vertex color's red channel.
-fn terrain_mesh(t: &Terrain) -> Mesh {
+/// Per-vertex positions, normals and colors (fertility in red, moved earth in green).
+#[allow(clippy::type_complexity)]
+fn terrain_attributes(t: &Terrain) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>) {
     let n = t.res;
     let mut positions = Vec::with_capacity(n * n);
     let mut normals = Vec::with_capacity(n * n);
@@ -101,11 +111,20 @@ fn terrain_mesh(t: &Terrain) -> Mesh {
         for j in 0..n {
             let x = (j as f32 / (n - 1) as f32 - 0.5) * t.size;
             let z = (i as f32 / (n - 1) as f32 - 0.5) * t.size;
-            positions.push([x, t.heights[i * n + j], z]);
+            let k = i * n + j;
+            positions.push([x, t.heights[k], z]);
             normals.push(t.normal_at(x, z).to_array());
-            colors.push([t.fertility[i * n + j], 0.0, 0.0, 1.0]);
+            colors.push([t.fertility[k], (t.disturbance(k).abs() / 0.6).min(1.0), 0.0, 1.0]);
         }
     }
+    (positions, normals, colors)
+}
+
+/// Triangulated exactly like the physics heightfield (diagonal from (x0, z1) to (x1, z0)).
+/// Fertility rides along in the vertex color's red channel.
+fn terrain_mesh(t: &Terrain) -> Mesh {
+    let n = t.res;
+    let (positions, normals, colors) = terrain_attributes(t);
     let idx = |i: usize, j: usize| (i * n + j) as u32;
     let mut indices = Vec::with_capacity((n - 1) * (n - 1) * 6);
     for i in 0..n - 1 {

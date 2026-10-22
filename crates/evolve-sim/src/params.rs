@@ -263,6 +263,19 @@ params! {
         /// Fraction of a full drink per second from catching rain, in a downpour.
         rain_drinking: f32 = 0.03, [0, 1], Live;
     }
+    "Earthworks" {
+        /// Earth a 30 kg creature moves per second digging or piling flat out, m³ (scaled by
+        /// the square root of body mass).
+        dig_rate: f32 = 0.05, [0, 2], Live;
+        /// Earth a creature can carry per kg of body, m³.
+        soil_per_kg: f32 = 0.01, [0, 0.2], Live;
+        /// Energy per m³ of earth dug or piled.
+        dig_cost: f32 = 10.0, [0, 500], Live;
+        /// How deep below the original ground creatures can dig, and how high above it they can
+        /// pile earth, m.
+        dig_depth: f32 = 3.0, [0, 20], Live;
+        pile_height: f32 = 3.0, [0, 20], Live;
+    }
     "Voices" {
         /// How far a full-throated call carries, m (quieter calls carry less).
         call_range: f32 = 40.0, [1, 300], Live;

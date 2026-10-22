@@ -259,8 +259,9 @@ fn check_upgrade(n_in: usize, n_out: usize, map_in: impl Fn(usize) -> usize, map
     for (i, &v) in x_old.iter().enumerate() {
         x_new[map_in(i)] = v;
     }
-    // The new senses read something, but nothing listens to them yet.
-    for k in [input::HEAR + 2, input::HEAR_LIKE] {
+    // Senses the old layout didn't have read something, but nothing listens to them yet.
+    let mapped: HashSet<usize> = (0..n_in).map(&map_in).collect();
+    for k in (0..input::JOINTS).filter(|k| !mapped.contains(k)) {
         x_new[k] = 0.9;
     }
     let hidden: Vec<f32> = (0..h)
@@ -277,7 +278,10 @@ fn check_upgrade(n_in: usize, n_out: usize, map_in: impl Fn(usize) -> usize, map
         let new = st.outputs[map_out(k)];
         assert!((old - new).abs() < 1e-4, "{n_in}-input brain, output {k}: old {old}, upgraded {new}");
     }
-    assert!(st.outputs[output::CALL] < 0.2, "upgraded creatures start silent");
+    assert!(st.outputs[output::DIG] < 0.2 && st.outputs[output::PILE] < 0.2, "upgraded creatures don't dig");
+    if n_in < 127 {
+        assert!(st.outputs[output::CALL] < 0.2, "upgraded creatures start silent");
+    }
 }
 
 #[test]
@@ -304,6 +308,17 @@ fn brains_from_before_the_mating_drive_and_voices_upgrade_without_changing_behav
             _ => input::JOINTS + i - 40,
         },
         out,
+    );
+    // Before digging: hearing up to 41, then memories and joint angles; calls at 85-86.
+    check_upgrade(
+        127,
+        90,
+        |i| match i {
+            0..42 => i,
+            42..45 => input::MEMORY + i - 42,
+            _ => input::JOINTS + i - 45,
+        },
+        |k| if k < 87 { k } else { output::MEMORY + k - 87 },
     );
 }
 
@@ -417,4 +432,43 @@ fn specks_too_small_to_feed_a_child_cannot_breed() {
     let bigs: u32 = sim.creatures.iter().filter(|c| c.mass >= 5.0).map(|c| c.life.children).sum();
     assert_eq!(specks, 0, "specks bred");
     assert!(bigs > 0, "a well-fed normal pair should still breed");
+}
+
+#[test]
+fn moving_earth_is_conserved_and_limited() {
+    use evolve_sim::terrain::Terrain;
+    let mut t = Terrain::generate(&quiet_params(), 1);
+    let before = t.heights.clone();
+    let dug = t.reshape(3.3, -7.1, -0.4, 3.0, 3.0);
+    assert!((dug + 0.4).abs() < 1e-4, "dug {dug}");
+    let piled = t.reshape(3.3, -7.1, 0.4, 3.0, 3.0);
+    assert!((piled - 0.4).abs() < 1e-4);
+    let diff: f32 = t.heights.iter().zip(&before).map(|(a, b)| (a - b).abs()).sum();
+    assert!(diff < 1e-3, "piling back what was dug restores the ground");
+    // Digging stops at the depth limit.
+    let deep = t.reshape(3.3, -7.1, -1000.0, 0.5, 3.0);
+    let area = t.cell() * t.cell();
+    assert!(deep < 0.0 && deep >= -0.5 * area * 4.0 - 1e-3, "dug {deep}, limit {}", -0.5 * area * 4.0);
+}
+
+#[test]
+fn a_digging_creature_carries_earth_and_leaves_a_hole() {
+    let mut p = quiet_params();
+    p.dig_rate = 0.3;
+    let mut sim = Sim::new(p);
+    let at = sim.random_land_point(20.0);
+    let id = sim.spawn_creature(always(legged(), output::DIG), at, 0.3, f32::MAX, 0, None);
+    let before = sim.terrain.heights.clone();
+    for _ in 0..600 {
+        sim.step();
+    }
+    let c = sim.creature(id).expect("the digger should survive (and not fall through its hole)");
+    assert!(c.soil > 0.0, "it should be carrying earth");
+    let removed: f32 = before.iter().zip(&sim.terrain.heights).map(|(b, a)| (b - a).max(0.0)).sum::<f32>()
+        * sim.terrain.cell()
+        * sim.terrain.cell();
+    assert!((removed - c.soil).abs() < 0.01 + c.soil * 0.05, "earth removed {removed} vs carried {}", c.soil);
+    // The physics ground follows: the torso sits above the terrain surface.
+    let t = sim.world.bodies[c.parts[0].body].translation();
+    assert!(t.y > sim.terrain.height_at(t.x, t.z) - 0.2);
 }

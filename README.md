@@ -172,21 +172,22 @@ through mutation, by about 20% at a time (`brain_resize_rate`, with a slight upw
 parents up neuron by neuron. A brain costs `brain_energy_cost` per million connections per
 second. Connections grow with the square of the neuron count: a 2048-neuron brain has 4.3 million
 of them and costs about as much as resting metabolism, so a big brain has to pay for itself.
-- *Senses (127):*
+- *Senses (128):*
   - the rhythm, energy, health, oxygen, thirst and age;
   - a mating drive: an urge that builds while the creature is mature, past its cooldown and fed
     enough to breed (over `mate_drive_time`, faster with a high libido gene), fades when it goes
     hungry, and resets after mating;
   - hearing: the direction and loudness of the loudest call it can hear, its pitch, and how much
     the caller's voice is like its own;
+  - how much earth it's carrying;
   - posture and speed;
   - the direction and closeness of the nearest plant, meat, open water and creature;
   - how related that creature is, its size and aggression;
   - the direction of the nearest potential mate (mature and close enough genetically);
   - three obstacle rays, pain, how submerged it is, and three memory values;
   - every joint angle (82 channels, most of them unused by any one body).
-- *Actions (90):* a target angle for every joint axis (82 channels), eat, attack, mate, call
-  (and its pitch), and memory.
+- *Actions (92):* a target angle for every joint axis (82 channels), eat, attack, mate, call
+  (and its pitch), dig, pile, and memory.
 - *Voices:* every creature has a voice of its own, set by four genes: natural pitch, timbre (how
   inharmonic and bright), rasp and warble. Kin sound alike.
   - *Calling:* a creature calls when its brain says so, louder or softer and pitched up or down.
@@ -276,6 +277,20 @@ evolution moving until the population can sustain itself.
   - Rain makes plants grow faster and gives a little water.
   - Wind pushes on creatures with real air drag, up to about 20 m/s in a storm.
   - The weather is a function of the world's clock and seed, so a saved world keeps its sky.
+
+**Earthworks.** Creatures can reshape the island.
+- *Digging and piling:* a creature digs earth out at its mouth when its brain's dig output is
+  up, carries it (up to `soil_per_kg` of its body mass), and piles it back wherever its pile
+  output says.
+- *Limits:* earth is conserved and moving it costs energy (`dig_cost` per m³). Ground can be dug
+  `dig_depth` (3 m) below and piled `pile_height` (3 m) above where the world made it.
+- *What it can build:* pits, ponds where a hole goes below sea level, mounds, walls, ramps and
+  dams. There are no tunnels or overhangs: the ground stays a smooth surface, reshaped in place.
+- *What follows:* the physics ground, plants, water and rendering follow the new shape. Freshly
+  moved earth shows as bare soil.
+- *Senses:* the brain feels how full its load is.
+- *Starting out:* random creatures start with digging off and upgraded ones with it silent, so
+  evolution has to find it worth the effort.
 
 **Swimming.** Water gives buoyancy and costs breath. Drag acts at two points along every body
 part, so a limb sweeping about its joint feels more push at its fast end. Drag has a linear part

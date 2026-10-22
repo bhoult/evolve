@@ -227,6 +227,69 @@ impl Sim {
         self.eat(bdt);
         self.fight();
         self.breed();
+        self.earthworks(bdt);
+    }
+
+    /// Creatures digging earth out at their mouth (carrying it, up to a load set by their size)
+    /// or piling what they carry. Moving earth costs energy. The ground can't be dug or piled
+    /// more than `dig_depth` / `pile_height` from where the world made it.
+    fn earthworks(&mut self, bdt: f32) {
+        let p = self.params.clone();
+        if p.dig_rate <= 0.0 {
+            return;
+        }
+        for ci in 0..self.creatures.len() {
+            let c = &self.creatures[ci];
+            let (dig, pile) = (c.output(output::DIG), c.output(output::PILE));
+            let want = ((dig - 0.2) / 0.8).max(0.0) - ((pile - 0.2) / 0.8).max(0.0);
+            if want == 0.0 || c.dead.is_some() {
+                continue;
+            }
+            let Some(torso) = self.world.bodies.get(c.parts[0].body) else {
+                continue;
+            };
+            let half = c.torso_half();
+            let mouth = torso.position().transform_point(Vec3::new(half.x + 0.1, 0.0, 0.0));
+            // It has to reach the ground.
+            if mouth.y - self.terrain.height_at(mouth.x, mouth.z) > 0.4 + half.y {
+                continue;
+            }
+            let capacity = p.soil_per_kg * c.mass;
+            let rate = p.dig_rate * (c.mass / 30.0).sqrt() * bdt;
+            let volume = if want > 0.0 {
+                -(rate * want).min(capacity - c.soil).max(0.0)
+            } else {
+                (rate * -want).min(c.soil)
+            };
+            if volume == 0.0 {
+                continue;
+            }
+            let moved = self.terrain.reshape(mouth.x, mouth.z, volume, p.dig_depth, p.pile_height);
+            let c = &mut self.creatures[ci];
+            c.soil = (c.soil - moved).clamp(0.0, capacity);
+            c.energy -= p.dig_cost * moved.abs();
+        }
+        self.settle_terrain();
+    }
+
+    /// After earth moved: the physics ground takes the new shape, and plants on changed ground
+    /// settle onto it.
+    pub(crate) fn settle_terrain(&mut self) {
+        let Some((i0, i1, j0, j1)) = self.terrain.take_dirty() else {
+            return;
+        };
+        if let Some(col) = self.world.colliders.get_mut(self.terrain_collider) {
+            col.set_shape(self.terrain.shape());
+        }
+        let (n, size) = ((self.terrain.res - 1) as f32, self.terrain.size);
+        let at = |k: usize| (k as f32 / n - 0.5) * size;
+        let (x0, x1, z0, z1) = (at(j0) - 1.0, at(j1) + 1.0, at(i0) - 1.0, at(i1) + 1.0);
+        for k in 0..self.plants.len() {
+            let pos = self.plants[k].pos;
+            if pos.x >= x0 && pos.x <= x1 && pos.z >= z0 && pos.z <= z1 {
+                self.plants[k].pos.y = self.ground_under(pos.x, pos.z, crate::sim::PLANT_FOOTPRINT);
+            }
+        }
     }
 
     fn eat(&mut self, bdt: f32) {
@@ -787,6 +850,7 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
     x[IN_WATER] = c.in_water;
     x[HYDRATION] = c.hydration;
     x[MATE_DRIVE] = c.mate_drive;
+    x[SOIL] = (c.soil / (p.soil_per_kg * c.mass).max(1e-6)).min(1.0);
     // Hearing: the call that sounds loudest from here (louder calls carry further).
     let range = p.call_range.max(1.0);
     let heard = cx

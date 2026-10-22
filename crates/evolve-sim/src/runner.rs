@@ -101,6 +101,9 @@ impl Drop for Runner {
 struct Caches {
     terrain_version: u64,
     terrain: Arc<Terrain>,
+    /// When the terrain was last copied out: creatures digging change it every tick, so the copy
+    /// for the renderer is refreshed a few times a second at most.
+    terrain_at: Instant,
     history_len: usize,
     history_time: f32,
     history: Arc<Vec<Sample>>,
@@ -111,6 +114,7 @@ impl Caches {
         Self {
             terrain_version: sim.terrain.version,
             terrain: Arc::new(sim.terrain.clone()),
+            terrain_at: Instant::now(),
             history_len: sim.history.len(),
             history_time: sim.history.last().map(|s| s.time).unwrap_or(-1.0),
             history: Arc::new(sim.history.clone()),
@@ -118,9 +122,10 @@ impl Caches {
     }
 
     fn refresh(&mut self, sim: &Sim) {
-        if sim.terrain.version != self.terrain_version {
-            *self = Caches::new(sim);
-            return;
+        if sim.terrain.version != self.terrain_version && self.terrain_at.elapsed() >= Duration::from_millis(250) {
+            self.terrain_version = sim.terrain.version;
+            self.terrain = Arc::new(sim.terrain.clone());
+            self.terrain_at = Instant::now();
         }
         let last = sim.history.last().map(|s| s.time).unwrap_or(-1.0);
         if sim.history.len() != self.history_len || last != self.history_time {

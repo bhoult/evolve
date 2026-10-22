@@ -95,6 +95,9 @@ pub struct Creature {
     /// Muscle power per kg of body, smoothed over about a second, W/kg.
     #[serde(skip)]
     pub exertion: f32,
+    /// Earth it's carrying, m³.
+    #[serde(default)]
+    pub soil: f32,
     pub rained: bool,
     pub dead: Option<DeathCause>,
 }
@@ -666,6 +669,7 @@ impl Sim {
             fall: Vec::new(),
             call_timer: 0.0,
             exertion: 0.0,
+            soil: 0.0,
             rained: parents.is_none(),
             dead: None,
         };

@@ -385,7 +385,13 @@ impl Genome {
                 seek: rng.f32(),
                 voice: std::array::from_fn(|_| rng.f32()),
             },
-            brain: BrainGenes::random(rng, n_hidden),
+            brain: {
+                // Born idle with a spade: digging is costly, so evolution has to find it worth it.
+                let mut b = BrainGenes::random(rng, n_hidden);
+                b.b_out[crate::brain::output::DIG] = -1.0;
+                b.b_out[crate::brain::output::PILE] = -1.0;
+                b
+            },
         }
     }
 

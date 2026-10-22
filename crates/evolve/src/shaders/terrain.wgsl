@@ -1,5 +1,6 @@
 // Island ground: beaches, wet sand, sea floor with caustics, grass and rock, with noise detail,
-// rain wetness and moving cloud shadows. The vertex color's red channel carries fertility.
+// rain wetness and moving cloud shadows. The vertex color's red channel carries fertility, the
+// green channel how much creatures have dug or piled the ground there (0 untouched, 1 a lot).
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
@@ -115,6 +116,14 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
             * (1.0 - env.weather.x * 0.7) * smoothstep(0.35, 0.1, slope);
         col *= 1.0 + 1.6 * c * band(px, 2.0);
         rough = 0.9;
+    }
+
+    // Earth creatures have dug out or piled up: bare soil, darker in pits than on heaps.
+    let moved = in.color.g;
+    if (moved > 0.01 && above > -0.2) {
+        let soil = lin(vec3<f32>(0.40, 0.30, 0.20)) * (0.85 + 0.25 * n2 + 0.1 * (n3 - 0.5));
+        col = mix(col, soil, smoothstep(0.0, 0.35, moved) * (1.0 - wet * 0.5));
+        rough = mix(rough, 0.97, smoothstep(0.0, 0.35, moved));
     }
 
     // Rain darkens dry ground and gives it a soft sheen.

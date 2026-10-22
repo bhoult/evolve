@@ -103,7 +103,9 @@ pub mod input {
     pub const HEAR_PITCH: usize = 40;
     /// How much the caller's voice is like its own, 0..1 (kin sound alike).
     pub const HEAR_LIKE: usize = 41;
-    pub const MEMORY: usize = 42;
+    /// How full its load of carried earth is, 0..1.
+    pub const SOIL: usize = 42;
+    pub const MEMORY: usize = 43;
     pub const JOINTS: usize = MEMORY + N_MEMORY;
     pub const COUNT: usize = JOINTS + N_MOTORS;
 }
@@ -118,7 +120,10 @@ pub mod output {
     pub const CALL: usize = N_MOTORS + 3;
     /// The call's pitch, -1..1 around the voice's natural pitch.
     pub const CALL_PITCH: usize = N_MOTORS + 4;
-    pub const MEMORY: usize = N_MOTORS + 5;
+    /// Digging out the ground at its mouth (above 0.2), and piling carried earth there.
+    pub const DIG: usize = N_MOTORS + 5;
+    pub const PILE: usize = N_MOTORS + 6;
+    pub const MEMORY: usize = N_MOTORS + 7;
     pub const COUNT: usize = MEMORY + N_MEMORY;
 }
 
@@ -133,7 +138,7 @@ pub fn input_label(i: usize) -> String {
         "meat fwd", "meat side", "meat near", "other fwd", "other side", "other near", "other kin",
         "other size", "other aggro", "ray left", "ray mid", "ray right", "pain", "in water",
         "mate fwd", "mate side", "mate near", "hydration", "water fwd", "water side", "water near",
-        "mating drive", "hear fwd", "hear side", "hear loud", "hear pitch", "hear kin",
+        "mating drive", "hear fwd", "hear side", "hear loud", "hear pitch", "hear kin", "soil carried",
     ];
     if i < fixed.len() {
         fixed[i].to_string()
@@ -152,6 +157,8 @@ pub fn output_label(i: usize) -> String {
         MATE => "mate".into(),
         CALL => "call".into(),
         CALL_PITCH => "call pitch".into(),
+        DIG => "dig".into(),
+        PILE => "pile".into(),
         _ if i >= MEMORY => format!("memory {}", i - MEMORY),
         _ => format!("{} target", motor_label(i)),
     }
@@ -367,6 +374,7 @@ impl BrainGenes {
     ///   get small random weights for evolution to work with.
     /// - 121 inputs, 88 outputs: before the mating drive.
     /// - 122 inputs, 88 outputs: before calls and hearing.
+    /// - 127 inputs, 90 outputs: before digging.
     pub fn upgrade_io(&mut self, rng: &mut Rng) -> bool {
         let h = self.h;
         let (n_in, n_out) = (self.w_in.0.len() / h.max(1), self.b_out.len());
@@ -411,6 +419,18 @@ impl BrainGenes {
                         false,
                     )
                 }
+                (127, 90) => (
+                    Box::new(|i| match i {
+                        0..42 => i,
+                        _ if i < 42 + N_MEMORY => input::MEMORY + i - 42,
+                        _ => input::JOINTS + i - 42 - N_MEMORY,
+                    }),
+                    Box::new(|k| match k {
+                        0..87 => k,
+                        _ => output::MEMORY + k - 87,
+                    }),
+                    false,
+                ),
                 _ => return false,
             };
         let sigma_in = 1.5 / TYPICAL_INPUTS.sqrt();
@@ -441,10 +461,13 @@ impl BrainGenes {
             w_out[nk * h..(nk + 1) * h].copy_from_slice(&self.w_out.0[k * h..(k + 1) * h]);
             b_out[nk] = self.b_out[k];
         }
-        // Silent until evolution finds a use for a voice.
-        for k in [output::CALL, output::CALL_PITCH] {
+        // Silent and idle until evolution finds a use for a voice or a spade.
+        for k in [output::CALL, output::CALL_PITCH, output::DIG, output::PILE] {
+            if (n_in, n_out) == (127, 90) && k < output::DIG {
+                continue;
+            }
             w_out[k * h..(k + 1) * h].fill(f16::ZERO);
-            b_out[k] = if k == output::CALL { -1.0 } else { 0.0 };
+            b_out[k] = if k == output::CALL_PITCH { 0.0 } else { -1.0 };
         }
         self.w_in = HalfVec(w_in);
         self.w_out = HalfVec(w_out);

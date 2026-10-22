@@ -1,4 +1,4 @@
-use rapier3d::prelude::{Array2, ColliderBuilder};
+use rapier3d::prelude::{Array2, ColliderBuilder, SharedShape};
 use serde::{Deserialize, Serialize};
 
 use crate::math::Vec3;
@@ -16,6 +16,13 @@ pub struct Terrain {
     pub heights: Vec<f32>,
     /// Patchiness of plant growth in [0, 1], same layout as `heights`.
     pub fertility: Vec<f32>,
+    /// The ground as the world made it, before creatures dug or piled earth; empty in saves from
+    /// before earthworks (then it's the current ground).
+    #[serde(default)]
+    pub ground: Vec<f32>,
+    /// Grid rows and columns changed since the last `take_dirty` (i0, i1, j0, j1, inclusive).
+    #[serde(skip)]
+    pub dirty: Option<(usize, usize, usize, usize)>,
     /// Bumped whenever the shape changes so renderers know to rebuild.
     pub version: u64,
 }
@@ -28,6 +35,8 @@ impl Default for Terrain {
             res: 2,
             heights: vec![0.0; 4],
             fertility: vec![0.0; 4],
+            ground: vec![0.0; 4],
+            dirty: None,
             version: 0,
         }
     }
@@ -72,10 +81,59 @@ impl Terrain {
         Self {
             size,
             res,
+            ground: heights.clone(),
             heights,
             fertility,
             version,
+            dirty: None,
         }
+    }
+
+    /// Moves earth at a spot: `volume` m³, positive to pile it up, negative to dig it out, spread
+    /// over the four grid points around the spot. Ground can be dug at most `max_dig` m below and
+    /// piled at most `max_pile` m above where the world made it. Returns the volume actually moved
+    /// (with the sign of the request).
+    pub fn reshape(&mut self, x: f32, z: f32, volume: f32, max_dig: f32, max_pile: f32) -> f32 {
+        if self.ground.len() != self.heights.len() {
+            self.ground = self.heights.clone();
+        }
+        let (i, j, fx, fz) = self.cell_coords(x, z);
+        let r = self.res;
+        let area = self.cell() * self.cell();
+        let corners = [
+            (i, j, (1.0 - fx) * (1.0 - fz)),
+            (i, j + 1, fx * (1.0 - fz)),
+            (i + 1, j, (1.0 - fx) * fz),
+            (i + 1, j + 1, fx * fz),
+        ];
+        let mut moved = 0.0;
+        for (ci, cj, w) in corners {
+            let k = ci * r + cj;
+            let (lo, hi) = (self.ground[k] - max_dig, self.ground[k] + max_pile);
+            let want = volume * w / area;
+            let h = (self.heights[k] + want).clamp(lo, hi.max(lo));
+            moved += (h - self.heights[k]) * area;
+            self.heights[k] = h;
+        }
+        if moved != 0.0 {
+            let (i1, j1) = (i + 1, j + 1);
+            self.dirty = Some(match self.dirty {
+                Some((a, b, c, d)) => (a.min(i), b.max(i1), c.min(j), d.max(j1)),
+                None => (i, i1, j, j1),
+            });
+            self.version += 1;
+        }
+        moved
+    }
+
+    /// How far the ground at a grid point is from where the world made it, m (positive: piled).
+    pub fn disturbance(&self, k: usize) -> f32 {
+        self.ground.get(k).map_or(0.0, |g| self.heights[k] - g)
+    }
+
+    /// The region changed since the last call, if any.
+    pub fn take_dirty(&mut self) -> Option<(usize, usize, usize, usize)> {
+        self.dirty.take()
     }
 
     pub fn cell(&self) -> f32 {
@@ -87,10 +145,15 @@ impl Terrain {
     }
 
     pub fn collider(&self) -> ColliderBuilder {
+        ColliderBuilder::new(self.shape())
+    }
+
+    /// The physics surface: a heightfield over the grid.
+    pub fn shape(&self) -> SharedShape {
         let res = self.res;
         let h = &self.heights;
         let arr = Array2::from_fn(res, res, |i, j| h[i * res + j]);
-        ColliderBuilder::heightfield(arr, Vec3::new(self.size, 1.0, self.size))
+        SharedShape::heightfield(arr, Vec3::new(self.size, 1.0, self.size))
     }
 
     fn cell_coords(&self, x: f32, z: f32) -> (usize, usize, f32, f32) {
