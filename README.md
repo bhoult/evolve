@@ -355,6 +355,9 @@ At **Max** speed the program is built to keep the whole machine busy.
 The default parameters come out of a series of headless runs, compared across three seeds rather
 than single runs, because evolution's "takeoff" moment varies a lot from run to run.
 
+**Caveat:** every lesson below was learned while a bug made motor work free (fixed 2026-10-22).
+Motion now costs energy, so these conclusions may no longer hold and deserve re-testing.
+
 - **Measure progress, not motion.** Distance was first tallied once a second, and the gene pool
   promptly selected creatures that flailed violently in place. Distance now counts net progress
   over 5-second windows, and median travel went from 0.35 m to about 4 m per 10 seconds.
