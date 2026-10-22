@@ -67,7 +67,8 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
   best swimmer, the fastest steady walker, the most evolved creature, the biggest brain, the
   strangest body, or the island itself at sunrise, at sunset, at night and in storms.
 - *How it moves:* it circles the subject slowly, then glides to the next thing, flying up and over
-  for long moves.
+  for long moves. It follows the subject's center of mass on a damped spring (as does F), so a
+  creature thrashing about doesn't shake the view.
 - *Variety:* it avoids repeating itself, and cuts early for a kill, a birth or a record somewhere
   else.
 - *Screen:* a caption says what you're looking at, and the panels hide for a clean screen (tick
@@ -94,7 +95,8 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
   hard landings and kills (−16), bites and splashes (−20), and a gale (−22). Heavy rain sits under
   everything at −27, and birds and crickets lower still.
 - *Device:* plays through PipeWire or PulseAudio when available, so it follows the desktop's
-  choice of speakers, and reconnects by itself if the device goes away.
+  choice of speakers, and reconnects by itself if the device reports an error, or stops asking for
+  sound for 4 seconds after it had started. (A device can take a while to start.)
 - *Controls:* M or the toolbar mutes; the slider next to it sets the volume. `--mute` starts
   silent, and screenshot runs are always silent.
 
@@ -165,6 +167,9 @@ a joint a radian past its limit.
 - *Swivels* bend about two axes, with twisting along the bone locked: a hip or shoulder, or, all
   the way down a limb, a tentacle. They're more flexible, but each unit of work costs
   `swivel_energy_cost` (2x) what a hinge's does.
+- *Speed:* the angle a joint aims for moves at most `max_joint_speed` (8 rad/s for a half-meter
+  segment; longer segments slower, shorter ones faster, like pendulums). The brain can change its
+  mind 30 times a second, but a limb swings rather than snapping back and forth in a blur.
 
 Every joint axis has its own fixed brain channel tied to its gene, so growing a knee on one leg
 never rewires another.

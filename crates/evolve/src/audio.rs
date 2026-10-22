@@ -468,7 +468,7 @@ struct Health {
     started: Instant,
     /// Set by any stream error.
     broken: AtomicBool,
-    /// When audio was last asked for, in milliseconds since `started`.
+    /// When audio was last asked for, in milliseconds since `started` (0: not yet).
     last_callback_ms: AtomicU64,
     /// When an error was last logged, likewise (errors can repeat thousands of times a second).
     last_log_ms: AtomicU64,
@@ -491,9 +491,13 @@ impl Health {
         self.started.elapsed().as_millis() as u64
     }
 
+    /// Not broken, and not stalled. A stream can take several seconds to ask for its first
+    /// audio, and tearing it down then only starts the wait over, so only a stream that has
+    /// played and then stopped counts as stalled.
     fn ok(&self) -> bool {
-        let idle = self.now_ms().saturating_sub(self.last_callback_ms.load(Ordering::Relaxed));
-        !self.broken.load(Ordering::Relaxed) && idle < STALL.as_millis() as u64
+        let last = self.last_callback_ms.load(Ordering::Relaxed);
+        let stalled = last > 0 && self.now_ms().saturating_sub(last) >= STALL.as_millis() as u64;
+        !self.broken.load(Ordering::Relaxed) && !stalled
     }
 }
 
@@ -584,7 +588,7 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device.build_output_stream(
         config,
         move |data: &mut [T], _| {
-            health.last_callback_ms.store(health.now_ms(), Ordering::Relaxed);
+            health.last_callback_ms.store(health.now_ms().max(1), Ordering::Relaxed);
             buf.resize(data.len(), 0.0);
             match synth.try_lock() {
                 Ok(mut s) => s.render(&mut buf, channels),

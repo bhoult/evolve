@@ -17,6 +17,14 @@ pub enum PartShape {
 }
 
 impl PartShape {
+    /// Its longest extent.
+    pub fn length(&self) -> f32 {
+        match *self {
+            PartShape::Box { half } => 2.0 * half[0].max(half[1]).max(half[2]),
+            PartShape::Capsule { half_height, radius } => 2.0 * (half_height + radius),
+        }
+    }
+
     pub fn volume(&self) -> f32 {
         match *self {
             PartShape::Box { half } => 8.0 * half[0] * half[1] * half[2],

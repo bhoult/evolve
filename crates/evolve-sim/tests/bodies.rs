@@ -457,7 +457,8 @@ fn a_digging_creature_carries_earth_and_leaves_a_hole() {
     p.dig_rate = 0.3;
     let mut sim = Sim::new(p);
     let at = sim.random_land_point(20.0);
-    let id = sim.spawn_creature(always(legged(), output::DIG), at, 0.3, f32::MAX, 0, None);
+    // A legless body, so its mouth rests on the ground (tall legs only reach it by flailing).
+    let id = sim.spawn_creature(always(base(11), output::DIG), at, 0.3, f32::MAX, 0, None);
     let before = sim.terrain.heights.clone();
     for _ in 0..600 {
         sim.step();

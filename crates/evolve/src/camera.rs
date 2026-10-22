@@ -24,6 +24,8 @@ pub struct OrbitCam {
     pub pitch: f32,
     pub distance: f32,
     pub follow: bool,
+    /// How fast the focus is moving while following a creature (see `spring`).
+    pub follow_vel: Vec3,
 }
 
 impl Default for OrbitCam {
@@ -34,6 +36,7 @@ impl Default for OrbitCam {
             pitch: 0.75,
             distance: 150.0,
             follow: false,
+            follow_vel: Vec3::ZERO,
         }
     }
 }
@@ -63,6 +66,7 @@ fn spawn_camera(mut commands: Commands, args: Res<Args>, mut cam: ResMut<OrbitCa
             pitch,
             distance: d,
             follow: false,
+            follow_vel: Vec3::ZERO,
         };
     }
     // HDR so the sun, lightning and highlights can bloom; env.rs drives the fog every frame.
@@ -175,9 +179,34 @@ fn follow_selected(snap: Res<Snap>, time: Res<Time>, mut cam: ResMut<OrbitCam>) 
     let Some(c) = snap.0.creatures.iter().find(|c| c.id == sel.id) else {
         return;
     };
-    let target = Vec3::from_array(c.parts[0].pos);
-    let k = 1.0 - (-6.0 * time.delta_secs()).exp();
-    cam.focus = cam.focus.lerp(target, k);
+    let cam = &mut *cam;
+    spring(&mut cam.focus, &mut cam.follow_vel, center_of_mass(c), FOLLOW_RATE, time.delta_secs());
+}
+
+/// How quickly a following camera catches up, in 1/s. Low enough that a creature thrashing
+/// several times a second barely moves the view.
+pub const FOLLOW_RATE: f32 = 3.0;
+
+/// Where a creature's mass is. Limbs flailing about move it far less than they move the torso.
+pub fn center_of_mass(c: &evolve_sim::snapshot::CreatureView) -> Vec3 {
+    let (mut sum, mut total) = (Vec3::ZERO, 0.0);
+    for p in &c.parts {
+        let v = p.shape.volume();
+        sum += Vec3::from_array(p.pos) * v;
+        total += v;
+    }
+    if total > 0.0 { sum / total } else { Vec3::from_array(c.parts[0].pos) }
+}
+
+/// Moves `pos` toward `target` as a critically damped spring of rate `omega`: no overshoot,
+/// and shaking faster than `omega` is smoothed away far better than by easing alone. Exact for
+/// a still target, so it's stable at any frame time.
+pub fn spring(pos: &mut Vec3, vel: &mut Vec3, target: Vec3, omega: f32, dt: f32) {
+    let x = *pos - target;
+    let e = (-omega * dt).exp();
+    let k = (*vel + x * omega) * dt;
+    *pos = target + (x + k) * e;
+    *vel = (*vel - k * omega) * e;
 }
 
 pub fn apply_camera(

@@ -214,9 +214,15 @@ impl Sim {
                 // Out of breath, muscles weaken (to a quarter at worst).
                 let breath = (c.oxygen / 0.3).clamp(0.25, 1.0);
                 let force = p.motor_torque_per_kg * j.strength * c.mass * breath;
+                // The angle the joint aims for moves at most this far per brain tick, so a limb
+                // swings rather than snapping between whatever the brain asks from tick to tick.
+                let len = c.plan.get(j.child).map_or(0.5, |s| s.shape.length()).max(0.05);
+                let step = p.max_joint_speed * (0.5 / len).sqrt().clamp(0.5, 1.5) * bdt;
                 if let Some(joint) = self.world.impulse_joints.get_mut(j.handle, false) {
                     for &(axis, d) in j.axes() {
-                        let target = mid + c.output(output::JOINTS + j.slot + d) * half;
+                        let want = mid + c.output(output::JOINTS + j.slot + d) * half;
+                        let was = joint.data.motors[axis as usize].target_pos;
+                        let target = was + (want - was).clamp(-step, step);
                         joint.data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
                         joint.data.set_motor_max_force(axis, force);
                     }

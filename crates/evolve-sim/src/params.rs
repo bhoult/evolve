@@ -159,6 +159,10 @@ params! {
         motor_damping: f32 = 20.0, [0, 500], Live;
         /// Maximum motor torque per kg of creature mass (scaled by each limb's strength gene).
         motor_torque_per_kg: f32 = 3.0, [0, 30], Live;
+        /// Fastest a joint can swing, rad/s, for a limb segment half a meter long; longer
+        /// segments swing slower and shorter ones faster, like pendulums. Keeps limbs from
+        /// flicking between extremes faster than a body could.
+        max_joint_speed: f32 = 8.0, [0.5, 60], Live;
         /// Energy per unit of work for two-axis swivel joints (tentacles), relative to hinges.
         swivel_energy_cost: f32 = 2.0, [1, 10], Live;
     }

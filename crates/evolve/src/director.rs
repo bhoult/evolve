@@ -10,7 +10,7 @@ use bevy::prelude::*;
 use bevy_egui::input::EguiWantsInput;
 use evolve_sim::snapshot::{CreatureView, HighlightKind, Snapshot};
 
-use crate::camera::OrbitCam;
+use crate::camera::{FOLLOW_RATE, OrbitCam, center_of_mass, spring};
 use crate::env::{Env, VisualOverride};
 use crate::tools::ToolState;
 use crate::{Args, Snap};
@@ -96,6 +96,10 @@ struct Shot {
     /// Extra pull-back halfway through a long glide, so it flies over rather than through.
     arc: f32,
     focus: Vec3,
+    /// How fast `focus` is moving, for the spring that follows the subject.
+    focus_vel: Vec3,
+    /// The camera distance the shot is easing toward (two subjects drifting apart widen it).
+    spread: f32,
     /// When the subject disappeared (died, or left the world).
     lost: Option<f64>,
 }
@@ -312,11 +316,11 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
     let r2 = d.random();
     let (focus, distance, yaw, pitch, yaw_rate) = match find(snap, c.subject) {
         Some(s) => {
-            let mut focus = torso(s);
+            let mut focus = center_of_mass(s);
             let mut distance = (size(s) * 5.0 + 3.0).clamp(4.5, 22.0);
             if let Some(o) = find(snap, c.other) {
-                focus = (focus + torso(o)) * 0.5;
-                distance = distance.max(torso(s).distance(torso(o)) * 1.6 + 4.0);
+                distance = distance.max(focus.distance(center_of_mass(o)) * 1.6 + 4.0);
+                focus = (focus + center_of_mass(o)) * 0.5;
             }
             // Side on to where it's heading, from either side.
             let rot = Quat::from_array(s.parts[0].rot);
@@ -367,6 +371,8 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
         glide: (1.6 + jump as f64 / 80.0).min(4.0),
         arc: (jump * 0.35).min(120.0),
         focus,
+        focus_vel: Vec3::ZERO,
+        spread: distance,
         lost: None,
     });
 }
@@ -511,16 +517,20 @@ fn direct(
     let mut target = shot.place;
     let mut distance = shot.distance;
     if let Some(s) = find(snap, shot.subject) {
-        target = torso(s);
+        // The body's center of mass, not its torso, and followed by a spring: a creature
+        // thrashing about would otherwise shake the camera with it.
+        target = center_of_mass(s);
         if let Some(o) = find(snap, shot.other) {
-            target = (target + torso(o)) * 0.5;
-            distance = distance.max(torso(s).distance(torso(o)) * 1.6 + 4.0);
+            let other = center_of_mass(o);
+            distance = distance.max(target.distance(other) * 1.6 + 4.0);
+            target = (target + other) * 0.5;
         }
     } else if shot.subject.is_some() {
         target = shot.focus;
     }
-    let k = 1.0 - (-4.0 * dt).exp();
-    shot.focus = shot.focus.lerp(target, k);
+    spring(&mut shot.focus, &mut shot.focus_vel, target, FOLLOW_RATE, dt);
+    shot.spread += (distance - shot.spread) * (1.0 - (-1.5 * dt).exp());
+    let distance = shot.spread;
     let yaw = shot.yaw + shot.yaw_rate * held as f32;
     let s = smoothstep(held / shot.glide);
     let (f0, d0, y0, p0) = shot.from;
