@@ -8,6 +8,23 @@
 #import evolve::env::{env, sky_clear, sky_over, fog_factor, fog_color, vnoise, fbm, hash3i}
 #import evolve::heights::terrain_height
 
+// Where creatures stir the surface; written each frame by splash.rs.
+struct Ripple {
+    // x, z, start time (env clock), strength
+    a: vec4<f32>,
+    // size of what made it (m), foam, how far it reaches right now squared, unused
+    b: vec4<f32>,
+}
+struct Ripples {
+    count: vec4<f32>,
+    // The box (min x, min z, max x, max z) they all fit in.
+    bounds: vec4<f32>,
+    list: array<Ripple, 64>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var<storage, read> ripples: Ripples;
+// Must match splash.rs.
+const RIPPLE_LIFE: f32 = 2.6;
+
 struct Vertex {
     @builtin(instance_index) instance_index: u32,
     @location(0) position: vec3<f32>,
@@ -83,6 +100,42 @@ fn rain_ripples(p: vec2<f32>, t: f32) -> vec2<f32> {
     return g * 0.35;
 }
 
+/// Rings spreading from where creatures move through the surface: the slope they add, and foam
+/// where the surface was broken hard. `fw` is meters per pixel.
+fn creature_ripples(p: vec2<f32>, t: f32, fw: f32) -> vec3<f32> {
+    var g = vec2<f32>(0.0);
+    var foam = 0.0;
+    let n = min(u32(ripples.count.x), 64u);
+    for (var i = 0u; i < n; i++) {
+        let r = ripples.list[i];
+        let to = p - r.a.xy;
+        let d2 = dot(to, to);
+        let age = t - r.a.z;
+        if (d2 > r.b.z || age < 0.0 || age > RIPPLE_LIFE) {
+            continue;
+        }
+        let size = r.b.x;
+        // Bigger splashes make longer waves, which spread faster. Must match splash.rs.
+        let lambda = 0.22 + 0.2 * size;
+        let front = size * 0.5 + (0.45 + 0.35 * size) * age;
+        let d = sqrt(d2);
+        let x = d - front;
+        // A short train of crests behind the front, spreading out as it goes; little ahead.
+        let width = select(lambda * (0.9 + 1.3 * age), lambda * 0.45, x > 0.0);
+        let shape = exp(-x * x / (width * width));
+        let fade = (1.0 - age / RIPPLE_LIFE) * (1.0 - age / RIPPLE_LIFE);
+        let spread = inverseSqrt(1.0 + 2.0 * front);
+        // Rings finer than a few pixels would only shimmer.
+        let resolved = 1.0 - smoothstep(lambda * 0.12, lambda * 0.5, fw);
+        let slope = r.a.w * 0.35 * fade * spread * resolved * shape * sin(6.2831853 / lambda * x);
+        g += to / max(d, 1e-3) * slope;
+        // White water where it was broken, then a fading ring of it.
+        let core = 1.0 - smoothstep(size * 0.2, size * 0.6 + 0.1, d);
+        foam = max(foam, r.b.y * (core * exp(-age * 2.5) + 0.5 * exp(-age * 1.6) * exp(-x * x / 0.02)));
+    }
+    return vec3<f32>(g, foam);
+}
+
 @fragment
 fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let xz = in.rest;
@@ -129,6 +182,13 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let rain = env.weather.y;
     if (rain > 0.01 && fw < 0.2) {
         g += rain_ripples(xz, t) * rain * (1.0 - smoothstep(0.03, 0.2, fw));
+    }
+    var stirred = vec3<f32>(0.0);
+    let rb = ripples.bounds;
+    if (ripples.count.x > 0.5 && fw < 0.6 && water_depth > 0.0
+        && all(xz >= rb.xy) && all(xz <= rb.zw)) {
+        stirred = creature_ripples(xz, t, fw);
+        g += stirred.xy;
     }
     let N = normalize(vec3<f32>(-g.x, 1.0, -g.y));
 
@@ -177,6 +237,11 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let breaking = smoothstep(0.55, 0.75, vnoise(xz * 0.04 + t * 0.01));
     let caps = smoothstep(0.5, 0.9, in.crest) * smoothstep(0.3, 0.9, sea) * breaking * smoothstep(0.45, 0.7, streak * 0.6 + fnoise * 0.5);
     foam = max(foam * (1.0 - smoothstep(0.3, 2.5, fw)), caps * env.sea.z * (1.0 - smoothstep(0.1, 0.8, fw)));
+    if (stirred.z > 0.001) {
+        // Broken up, not a disc.
+        let churn = smoothstep(0.4, 0.7, fbm(xz * 4.0 + vec2<f32>(t * 0.7, -t * 0.5), 2));
+        foam = max(foam, clamp(stirred.z, 0.0, 1.0) * churn * (1.0 - smoothstep(0.2, 0.6, fw)));
+    }
     foam = clamp(foam, 0.0, 1.0);
     let foam_col = (env.ambient.rgb * 1.6 + env.sun_color.rgb * max(env.sun.y, 0.0) * 0.55
         + env.moon_color.rgb * max(env.moon.y, 0.0) * 0.5) * 0.9;

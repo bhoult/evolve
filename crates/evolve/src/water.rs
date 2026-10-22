@@ -9,7 +9,9 @@ use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
-use bevy::render::render_resource::{AsBindGroup, Buffer, RenderPipelineDescriptor, SpecializedMeshPipelineError};
+use bevy::render::render_resource::{
+    AsBindGroup, Buffer, BufferDescriptor, BufferUsages, RenderPipelineDescriptor, SpecializedMeshPipelineError,
+};
 use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::shader::ShaderRef;
 use evolve_sim::terrain::Terrain;
@@ -31,12 +33,18 @@ pub struct Heights {
     from: Option<Arc<Terrain>>,
 }
 
+/// Where creatures are stirring the surface, written each frame by splash.rs.
+#[derive(Resource)]
+pub struct RippleBuffer(pub Buffer);
+
 #[derive(Asset, TypePath, AsBindGroup, Clone)]
 pub struct WaterMaterial {
     #[storage(100, read_only, buffer)]
     env: Buffer,
     #[storage(101, read_only, buffer)]
     heights: Buffer,
+    #[storage(102, read_only, buffer)]
+    ripples: Buffer,
 }
 
 impl Material for WaterMaterial {
@@ -90,11 +98,20 @@ impl Plugin for WaterPlugin {
     }
 }
 
-fn create_heights(mut commands: Commands, device: Res<RenderDevice>) {
+fn create_heights(mut commands: Commands, device: Res<RenderDevice>, queue: Res<RenderQueue>) {
     commands.insert_resource(Heights {
         buffer: heights_buffer(&device, &Terrain::default()),
         from: None,
     });
+    let ripples = device.create_buffer(&BufferDescriptor {
+        label: Some("evolve ripples"),
+        size: crate::splash::RIPPLE_BYTES,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    // No ripples yet.
+    queue.write_buffer(&ripples, 0, &[0; 32]);
+    commands.insert_resource(RippleBuffer(ripples));
 }
 
 fn spawn_ocean(
@@ -103,10 +120,12 @@ fn spawn_ocean(
     mut materials: ResMut<Assets<WaterMaterial>>,
     gpu: Res<EnvGpu>,
     heights: Res<Heights>,
+    ripples: Res<RippleBuffer>,
 ) {
     let mat = materials.add(WaterMaterial {
         env: gpu.buffer.clone(),
         heights: heights.buffer.clone(),
+        ripples: ripples.0.clone(),
     });
     commands.spawn((
         Mesh3d(meshes.add(polar_grid())),

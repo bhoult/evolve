@@ -120,6 +120,9 @@ pub struct Env {
     pub flash_dir: Vec3,
     /// How high the wave crests reach above the water level in open water, m.
     pub wave_crest: f32,
+    /// The waves as the ocean shader gets them: direction, wavenumber, phase; and amplitudes.
+    pub waves: [Vec4; 8],
+    pub wave_amps: [f32; 8],
     /// How far the rain has fallen, wrapped to the box of rain around the camera, and seconds of
     /// rain for the streaks' own extra speed (see weather_fx.rs).
     rain_fall: bevy::math::DVec3,
@@ -151,11 +154,27 @@ impl Default for Env {
             flash: 0.0,
             flash_dir: Vec3::Y,
             wave_crest: 0.0,
+            waves: [Vec4::ZERO; 8],
+            wave_amps: [0.0; 8],
             rain_fall: bevy::math::DVec3::ZERO,
             rain_time: 0.0,
             wave_phase: [0.0; 8],
             shadow_key: (0, 0),
         }
+    }
+}
+
+impl Env {
+    /// Height of the sea surface above the water level at a point in water `depth` m deep, as the
+    /// ocean shader moves it (vertically; the sideways chop is left out).
+    pub fn wave_height(&self, xz: Vec2, depth: f32) -> f32 {
+        // Waves die down in the shallows, as in water.wgsl.
+        let shore = 0.2 + 0.8 * smoothstep(0.0, 5.0, depth);
+        let mut y = 0.0;
+        for (w, a) in self.waves.iter().zip(&self.wave_amps) {
+            y += a * shore * (w.z * Vec2::new(w.x, w.y).dot(xz) - w.w).sin();
+        }
+        y
     }
 }
 
@@ -506,6 +525,8 @@ fn update_env(
         amps[i] = steep * len / std::f32::consts::TAU * WAVE_WEIGHT[i] * 0.8 * present;
     }
     env.wave_crest = amps.iter().sum();
+    env.waves = waves;
+    env.wave_amps = amps;
 
     // Stars turn with the sun around the celestial pole.
     let lat = 0.5f32;

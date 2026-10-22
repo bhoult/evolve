@@ -333,6 +333,8 @@ At **Max** speed the program is built to keep the whole machine busy.
     with the wind and darken in storms.
   - *Ocean:* Gerstner waves that grow with the wind, depth-tinted from turquoise shallows to deep
     blue, with shoreline and whitecap foam and rain ripples, reaching the horizon.
+  - *Splashes:* creatures moving through the sea leave spreading rings; hitting the water fast
+    throws spray and white water, and parts bursting out drip (splash.rs).
   - *Land:* island terrain shading with wet sand, rock and cloud shadows.
   - *Plants:* trees and bushes that sway in the wind.
   - *Weather:* rain streaks, and lightning with flashes.

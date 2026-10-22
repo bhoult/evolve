@@ -8,6 +8,7 @@ mod env;
 mod preview;
 mod scene;
 mod sky;
+mod splash;
 mod sync;
 mod tools;
 mod trees;
@@ -221,6 +222,7 @@ fn main() -> AppExit {
             env::EnvPlugin,
             sky::SkyPlugin,
             water::WaterPlugin,
+            splash::SplashPlugin,
             weather_fx::WeatherFxPlugin,
             trees::TreesPlugin,
             scene::ScenePlugin,
