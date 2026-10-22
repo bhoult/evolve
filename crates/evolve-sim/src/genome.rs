@@ -255,7 +255,7 @@ impl LimbGene {
             swivel_root: rng.chance(0.3),
             swivel_knees: rng.chance(0.15),
             paddle: if rng.chance(0.15) { rng.range(0.2, 1.0) } else { 0.0 },
-            segment: if rng.chance(0.7) { 0 } else { rng.range_u32(0, MAX_SPINE as u32 + 1) as u8 },
+            segment: if rng.chance(0.7) { 0 } else { rng.range_u32(0, MAX_SPINE as u32) as u8 },
         }
     }
 
@@ -280,7 +280,7 @@ impl LimbGene {
             self.swivel_knees = !self.swivel_knees;
         }
         if rng.chance(q * 0.5) {
-            self.segment = rng.range_u32(0, MAX_SPINE as u32 + 1) as u8;
+            self.segment = rng.range_u32(0, MAX_SPINE as u32) as u8;
         }
         for k in 0..3 {
             mutate_f(rng, &mut self.attach[k], UNIT, rate, s);
@@ -340,7 +340,7 @@ impl SpineGene {
         let segments = match rng.f32() {
             x if x < 0.5 => 0,
             x if x < 0.85 => rng.range_u32(1, 3) as u8,
-            _ => rng.range_u32(3, MAX_SPINE as u32 + 1) as u8,
+            _ => rng.range_u32(3, MAX_SPINE as u32) as u8,
         };
         Self {
             segments,
@@ -387,9 +387,14 @@ impl Genome {
             },
             brain: {
                 // Born idle with a spade: digging is costly, so evolution has to find it worth it.
+                // (Unwired as well as biased off, the way `upgrade_io` idles new actions: random
+                // output weights alone would push a good share of them over the threshold.)
                 let mut b = BrainGenes::random(rng, n_hidden);
-                b.b_out[crate::brain::output::DIG] = -1.0;
-                b.b_out[crate::brain::output::PILE] = -1.0;
+                let h = b.h;
+                for k in [crate::brain::output::DIG, crate::brain::output::PILE] {
+                    b.w_out.0[k * h..(k + 1) * h].fill(half::f16::ZERO);
+                    b.b_out[k] = -1.0;
+                }
                 b
             },
         }

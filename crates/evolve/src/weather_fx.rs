@@ -65,6 +65,17 @@ struct Bolt;
 
 const STREAKS: usize = 12_000;
 
+/// The box of rain that wraps around the camera, m. Must match rain.wgsl.
+pub const RAIN_BOX: Vec3 = Vec3::new(44.0, 26.0, 44.0);
+/// Streaks fall at one of eight extra speeds, 0.25 m/s apart. After this many seconds each has
+/// fallen a whole number of boxes, so the clock for them can wrap without a jump.
+pub const RAIN_EXTRA_PERIOD: f64 = 104.0;
+
+/// How fast rain falls, before each streak's own extra speed. Must match rain.wgsl.
+pub fn rain_velocity(wind: Vec2, storm: f32) -> Vec3 {
+    Vec3::new(wind.x * 0.7, -(8.5 + 3.0 * storm), wind.y * 0.7)
+}
+
 /// A small xorshift generator; lightning only needs to look random.
 struct Rng(u64);
 

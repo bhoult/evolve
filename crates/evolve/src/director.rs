@@ -12,6 +12,7 @@ use evolve_sim::snapshot::{CreatureView, HighlightKind, Snapshot};
 
 use crate::camera::OrbitCam;
 use crate::env::{Env, VisualOverride};
+use crate::tools::ToolState;
 use crate::{Args, Snap};
 
 /// The sky as shown on screen (which command-line overrides can differ from the world's).
@@ -116,6 +117,9 @@ pub struct Director {
     recent: VecDeque<(Kind, Option<u64>)>,
     /// Highlights not yet used, with the wall time they arrived.
     pending: Vec<(f64, evolve_sim::snapshot::Highlight)>,
+    /// Calls are many and minor, so only the latest few are kept, apart from `pending` so they
+    /// never crowd out a kill or a birth.
+    calls: VecDeque<(f64, evolve_sim::snapshot::Highlight)>,
     last_seq: u64,
     epoch: u64,
     /// Smoothed ground speed of each creature, to find steady walkers rather than tumblers.
@@ -180,6 +184,9 @@ fn who(c: &CreatureView) -> String {
     format!("#{} ({}, generation {}, {} parts)", c.id, diet(c), c.generation, c.parts.len())
 }
 
+/// How long a highlight stays worth cutting to, seconds.
+const FRESH: f64 = 6.0;
+
 fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Candidate> {
     let mut out = Vec::new();
     let mut push = |d: &mut Director, kind, subject, other, place, score: f32, title: &str, detail: String| {
@@ -195,7 +202,8 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
         });
     };
     let pending = std::mem::take(&mut d.pending);
-    for &(_, h) in &pending {
+    let calls = std::mem::take(&mut d.calls);
+    for &(_, h) in pending.iter().chain(&calls) {
         let Some(s) = find(snap, Some(h.subject)) else {
             continue;
         };
@@ -234,7 +242,8 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
         }
     }
     // Keep recent highlights around for a few seconds in case nothing better comes along.
-    d.pending = pending.into_iter().filter(|(t, _)| now - t < 6.0).collect();
+    d.pending = pending.into_iter().filter(|(t, _)| now - t < FRESH).collect();
+    d.calls = calls.into_iter().filter(|(t, _)| now - t < FRESH).collect();
 
     let best = |f: &dyn Fn(&CreatureView) -> Option<f32>| {
         snap.creatures
@@ -242,7 +251,7 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
             .filter_map(|c| f(c).map(|v| (c, v)))
             .max_by(|a, b| a.1.total_cmp(&b.1))
     };
-    let speeds = d.speeds.clone();
+    let speeds = std::mem::take(&mut d.speeds);
     if let Some((c, v)) = best(&|c| (c.in_water > 0.5 && !c.drowning && c.speed > 0.35).then_some(c.speed)) {
         let detail = format!("{} swims at {v:.1} m/s", who(c));
         push(d, Kind::Swimmer, Some(c.id), None, torso(c), 4.0 + v, "A swimmer", detail);
@@ -254,6 +263,7 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
         let detail = format!("{} keeps up {v:.1} m/s", who(c));
         push(d, Kind::Sprinter, Some(c.id), None, torso(c), 3.0 + v, "The fastest walker", detail);
     }
+    d.speeds = speeds;
     if let Some((c, score)) = best(&|c| Some(c.score)) {
         let detail = format!("{}: scored {score:.1} so far eating, hunting, breeding and travelling", who(c));
         push(d, Kind::Star, Some(c.id), None, torso(c), 2.5 + score.min(10.0) * 0.2, "The island's best", detail);
@@ -328,6 +338,9 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
             (c.place, (reach * 1.9).clamp(60.0, 400.0), yaw, pitch, 0.025)
         }
     };
+    // Turn the short way round, worked out once: unwrapping every frame instead would flip by a
+    // full turn mid-glide whenever the slowly circling yaw crossed the half-turn mark.
+    let yaw = from.2 + wrap(yaw - from.2);
     let jump = from.0.distance(focus);
     d.recent.push_back((c.kind, c.subject));
     if d.recent.len() > 8 {
@@ -381,6 +394,7 @@ fn direct(
     egui: Res<EguiWantsInput>,
     env: Res<Env>,
     over: Res<VisualOverride>,
+    tools: Res<ToolState>,
 ) {
     let d = &mut *d;
     let snap = &*snap.0;
@@ -394,23 +408,40 @@ fn direct(
         d.epoch = snap.world_epoch;
         d.last_seq = 0;
         d.pending.clear();
+        d.calls.clear();
         d.speeds.clear();
+        d.recent.clear();
         d.shot = None;
+        d.caption = None;
     }
     for h in snap.highlights.iter() {
-        if h.seq > d.last_seq {
-            d.last_seq = h.seq;
-            d.pending.push((now, *h));
+        if h.seq <= d.last_seq {
+            continue;
+        }
+        d.last_seq = h.seq;
+        match h.kind {
+            // Bodies thud against the ground all the time; never worth a shot.
+            HighlightKind::Impact => {}
+            HighlightKind::Call => {
+                d.calls.push_back((now, *h));
+                if d.calls.len() > 8 {
+                    d.calls.pop_front();
+                }
+            }
+            _ => d.pending.push((now, *h)),
         }
     }
+    // Rebuilt each frame from the creatures alive, which also forgets the dead.
     let k = 1.0 - (-dt / 3.0).exp();
-    let mut speeds = std::mem::take(&mut d.speeds);
-    speeds.retain(|id, _| snap.creatures.iter().any(|c| c.id == *id));
-    for c in &snap.creatures {
-        let v = speeds.entry(c.id).or_insert(0.0);
-        *v += (c.speed - *v) * k;
-    }
-    d.speeds = speeds;
+    let old = std::mem::take(&mut d.speeds);
+    d.speeds = snap
+        .creatures
+        .iter()
+        .map(|c| {
+            let v = old.get(&c.id).copied().unwrap_or(0.0);
+            (c.id, v + (c.speed - v) * k)
+        })
+        .collect();
     if d.pending.len() > 64 {
         let n = d.pending.len() - 64;
         d.pending.drain(..n);
@@ -419,7 +450,7 @@ fn direct(
         return;
     }
 
-    // Any camera control hands it back.
+    // Any camera control hands it back, and so does carrying a creature.
     let pointer_free = !egui.wants_any_pointer_input();
     let dragging = (buttons.pressed(MouseButton::Right) || buttons.pressed(MouseButton::Middle))
         && motion.delta != Vec2::ZERO;
@@ -427,7 +458,7 @@ fn direct(
         && [KeyCode::KeyW, KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyD, KeyCode::KeyQ, KeyCode::KeyE, KeyCode::KeyF]
             .iter()
             .any(|k| keys.pressed(*k));
-    if (pointer_free && (dragging || scroll.delta.y != 0.0)) || moving {
+    if (pointer_free && (dragging || scroll.delta.y != 0.0)) || moving || tools.drag.is_some() {
         d.toggle();
         return;
     }
@@ -443,9 +474,13 @@ fn direct(
             }
             let subject = shot.subject;
             let patience = if shot.kind.urgent() { 6.0 } else { 4.0 };
+            let started = shot.started;
+            // Only news since this shot began: what it already passed over stays passed over.
             let big_news = held >= patience
-                && d.pending.iter().any(|(_, h)| {
-                    matches!(h.kind, HighlightKind::Kill | HighlightKind::Birth | HighlightKind::Record)
+                && d.pending.iter().any(|&(t, h)| {
+                    t > started
+                        && now - t < FRESH
+                        && matches!(h.kind, HighlightKind::Kill | HighlightKind::Birth | HighlightKind::Record)
                         && Some(h.subject) != subject
                         && find(snap, Some(h.subject)).is_some()
                 });
@@ -492,6 +527,6 @@ fn direct(
     cam.follow = false;
     cam.focus = f0.lerp(shot.focus, s);
     cam.distance = d0 + (distance - d0) * s + shot.arc * (std::f32::consts::PI * s).sin();
-    cam.yaw = y0 + wrap(yaw - y0) * s;
+    cam.yaw = y0 + (yaw - y0) * s;
     cam.pitch = p0 + (shot.pitch - p0) * s;
 }

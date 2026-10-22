@@ -207,7 +207,7 @@ pub fn apply_camera(
         let ground = t.height_at(pos.x, pos.z) + 0.5;
         pos.y = pos.y.max(ground);
     }
-    // Stay above the waves.
-    pos.y = pos.y.max(snap.0.params.water_level + 0.6 + 1.2 * env.storm);
+    // Stay above the highest crests the waves can make.
+    pos.y = pos.y.max(snap.0.params.water_level + 0.6 + env.wave_crest);
     **tf = Transform::from_translation(pos).looking_at(cam.focus, Vec3::Y);
 }

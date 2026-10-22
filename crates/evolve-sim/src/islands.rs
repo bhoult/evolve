@@ -33,11 +33,15 @@ pub fn world_pool(name: &str, threads: usize) -> rayon::ThreadPool {
 pub type Board = Arc<Mutex<GenePool>>;
 
 /// Sends this world's best genomes to the board and takes the board's best into its own pool.
-pub fn migrate(pool: &mut GenePool, board: &Board, interval: f32) {
+/// Only the world you watch passes an `age_by` (its migration interval), so the board ages at
+/// one rate however many worlds there are.
+pub fn migrate(pool: &mut GenePool, board: &Board, age_by: f32) {
     let Ok(mut b) = board.lock() else {
         return;
     };
-    b.age(0.998f32.powf(interval));
+    if age_by > 0.0 {
+        b.age(0.998f32.powf(age_by));
+    }
     for e in pool.entries.iter().take(MIGRANTS) {
         b.consider(e.score, e.generation, &e.genome);
     }
@@ -56,6 +60,8 @@ pub struct WorldStatus {
     pub births: u64,
     pub steps_per_sec: f32,
     pub gpu_busy: f32,
+    /// The world's thread has stopped (it panicked).
+    pub stopped: bool,
 }
 
 impl WorldStatus {
@@ -70,6 +76,7 @@ impl WorldStatus {
             births: sim.stats.births,
             steps_per_sec,
             gpu_busy: sim.perf.gpu_busy,
+            stopped: false,
         }
     }
 }
@@ -118,6 +125,11 @@ impl Worker {
 
     pub fn send(&self, c: WorkerCtl) {
         let _ = self.tx.send(c);
+    }
+
+    /// False once the world's thread has stopped (it panicked: the reason is on stderr).
+    pub fn alive(&self) -> bool {
+        self.handle.as_ref().is_some_and(|h| !h.is_finished())
     }
 }
 
@@ -240,14 +252,8 @@ fn worker_loop(
                     sim.brain_price = x;
                     sim.gpu_headroom = room;
                 }
-                Ok(WorkerCtl::Params(p)) => {
-                    let p = island_params(index, &p);
-                    let regen = p.world_shape_differs(&sim.params);
-                    sim.set_params(p);
-                    if regen {
-                        sim.regenerate_terrain();
-                    }
-                }
+                // Like the world you watch, a new island shape waits for a new world.
+                Ok(WorkerCtl::Params(p)) => sim.set_params(island_params(index, &p)),
                 Err(TryRecvError::Empty) => break,
             }
         }
@@ -255,9 +261,8 @@ fn worker_loop(
         sim.events.clear();
         sim.highlights.clear();
         if sim.time >= next_migration {
-            let interval = sim.params.migration_interval;
-            migrate(&mut sim.pool, &board, interval);
-            next_migration = sim.time + interval as f64;
+            migrate(&mut sim.pool, &board, 0.0);
+            next_migration = sim.time + sim.params.migration_interval as f64;
         }
         if sim.time >= next_zoo {
             store_best(&zoo, &sim, index);

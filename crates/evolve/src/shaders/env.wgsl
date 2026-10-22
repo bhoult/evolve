@@ -34,8 +34,11 @@ struct Env {
     flash_dir: vec4<f32>,
     // rgb fog glow toward the light, w its exponent.
     fog_sun: vec4<f32>,
-    // clouds on, sway on, unused, wall time in seconds.
+    // clouds on, sway on, unused, wall time in seconds (wrapped).
     misc: vec4<f32>,
+    // xyz how far the rain has fallen (wrapped to its box), w seconds of rain for the streaks'
+    // extra speeds (wrapped).
+    rain: vec4<f32>,
     // per wave: direction xy, wavenumber, phase.
     waves: array<vec4<f32>, 8>,
     wave_amp: array<vec4<f32>, 2>,
@@ -185,7 +188,8 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
     let star = bright * (1.0 - smoothstep(0.0, 0.16, dist));
     let tint = mix(vec3<f32>(0.75, 0.85, 1.0), vec3<f32>(1.0, 0.9, 0.75), r.z);
     // A faint band of milky way.
-    let band = exp(-pow(dot(d, normalize(vec3<f32>(0.3, 0.2, 0.93))) * 4.0, 2.0));
+    let across = dot(d, normalize(vec3<f32>(0.3, 0.2, 0.93))) * 4.0;
+    let band = exp(-across * across);
     let milky = band * (0.5 + fbm(vec2<f32>(atan2(d.z, d.x), d.y) * 6.0, 3)) * 0.012;
     return tint * star * 2.5 + vec3<f32>(0.75, 0.8, 1.0) * milky;
 }
@@ -193,7 +197,7 @@ fn stars(dir: vec3<f32>) -> vec3<f32> {
 /// The clear sky along `dir` without clouds: gradient, glow around the sun, sun and moon disks,
 /// stars at night.
 fn sky_clear(dir: vec3<f32>, disks: bool) -> vec3<f32> {
-    let up = max(dir.y, 0.0);
+    let up = clamp(dir.y, 0.0, 1.0);
     let h = pow(1.0 - up, 4.0);
     var col = mix(env.zenith.rgb, env.horizon.rgb, h);
     let cs = dot(dir, env.sun.xyz);
@@ -276,7 +280,12 @@ fn clouds(origin: vec3<f32>, dir: vec3<f32>, octaves: i32, lit: bool) -> vec4<f3
 
 /// The full sky along `dir` as seen from `origin`.
 fn sky_color(origin: vec3<f32>, dir: vec3<f32>, octaves: i32, lit: bool, disks: bool) -> vec3<f32> {
-    var col = sky_clear(dir, disks);
+    return sky_over(sky_clear(dir, disks), origin, dir, octaves, lit);
+}
+
+/// The full sky along `dir` from `origin`, given the clear sky there (from `sky_clear`).
+fn sky_over(clear: vec3<f32>, origin: vec3<f32>, dir: vec3<f32>, octaves: i32, lit: bool) -> vec3<f32> {
+    var col = clear;
     let c = clouds(origin, dir, octaves, lit);
     col = col * (1.0 - c.a) + c.rgb;
     let flash = env.ambient.w;

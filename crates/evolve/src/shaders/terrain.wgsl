@@ -1,10 +1,13 @@
 // Island ground: beaches, wet sand, sea floor with caustics, grass and rock, with noise detail,
 // rain wetness and moving cloud shadows. The vertex color's red channel carries fertility, the
-// green channel how much creatures have dug or piled the ground there (0 untouched, 1 a lot).
+// green channel how much creatures have dug or piled the ground there (0 untouched, 1 a lot),
+// and the blue channel is 1 where it was dug out rather than piled up.
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
+    lighting::F_AB,
+    mesh_view_bindings::{lights, view},
 }
 #import evolve::env::{env, vnoise, gnoise, fbm, cloud_shadow}
 
@@ -121,7 +124,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // Earth creatures have dug out or piled up: bare soil, darker in pits than on heaps.
     let moved = in.color.g;
     if (moved > 0.01 && above > -0.2) {
-        let soil = lin(vec3<f32>(0.40, 0.30, 0.20)) * (0.85 + 0.25 * n2 + 0.1 * (n3 - 0.5));
+        let pit = 1.0 - 0.3 * in.color.b;
+        let soil = lin(vec3<f32>(0.40, 0.30, 0.20)) * (0.85 + 0.25 * n2 + 0.1 * (n3 - 0.5)) * pit;
         col = mix(col, soil, smoothstep(0.0, 0.35, moved) * (1.0 - wet * 0.5));
         rough = mix(rough, 0.97, smoothstep(0.0, 0.35, moved));
     }
@@ -131,7 +135,6 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     col *= 1.0 - 0.35 * wetness;
     rough = mix(rough, 0.55, wetness);
 
-    // Bumps from the noise, stronger on rock.
     // Bumps from two octaves of noise, much stronger on rock than on grass or sand. Skipped far
     // away where they would only shimmer.
     // Faces turned from the light keep flat normals, or bumps would catch spots of sun.
@@ -155,13 +158,16 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 
     pbr.material.perceptual_roughness = rough;
-    // Cloud shadows dim the direct light only; keep the ambient as it was.
+    // Cloud shadows dim the direct light only. Darkening the base color dims the ambient diffuse
+    // too, so that part is added back (Bevy's ambient diffuse term with the albedo lost).
     let shade = cloud_shadow(p);
     pbr.material.base_color = vec4<f32>(col * shade, 1.0);
-    pbr.diffuse_occlusion = pbr.diffuse_occlusion / max(shade, 0.05);
 
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr);
+    let ndv = max(dot(pbr.N, pbr.V), 0.0001);
+    let lost = col * (1.0 - shade) * F_AB(1.0, ndv).x * lights.ambient_color.rgb * pbr.diffuse_occlusion;
+    out.color = vec4<f32>(out.color.rgb + lost * view.exposure, out.color.a);
     out.color = main_pass_post_lighting_processing(pbr, out.color);
     return out;
 }

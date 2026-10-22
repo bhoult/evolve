@@ -123,6 +123,11 @@ from the zoo, in pairs of copies of randomly chosen creatures so they can breed,
 same genomes in its gene pool. The rest are random. Zoo scores worked out before the scoring
 change are marked with a * and listed after newer ones. When the zoo is full (500), those go
 first, then the weakest; pinned ones never.
+- Pruned and removed creatures go to `zoo/trash` (the newest 500 are kept there), not deleted.
+- Only one evolve at a time can change the zoo. A second one (another window, or
+  `evolve-headless` with `EVOLVE_ZOO_DIR` pointing at the real zoo) can read it but stores nothing.
+- If `index.json` can't be read, it is renamed `index.json.bad-<time>` and the zoo is rebuilt
+  from the genome files (scores start at 0, marked *).
 - Each row shows a side view of the creature's body.
 - Click a row to see it in 3D, spinning slowly; drag the picture to turn it.
 - Joints are marked: yellow for hinges, pink for swivels.
@@ -223,7 +228,7 @@ of them and costs about as much as resting metabolism, so a big brain has to pay
     calling, and the mechanical work the joint motors actually do (double for swivels).
   - *Motor work:* until 2026-10-22 a bug meant motor work cost nothing, so flailing was free and
     tentacles were no dearer than hinges. Now ordinary movement costs little and a creature
-    thrashing at 20 W per kg pays about twice its resting metabolism.
+    thrashing at 80 W per kg pays about twice its resting metabolism.
   - *Starving:* a creature with no energy starves.
 - *Breath:* muscles burn oxygen in proportion to their power per kg (`exertion_oxygen`), and a
   creature breathes it back in while its head is above water (`breath_rate`, scaled by the lung

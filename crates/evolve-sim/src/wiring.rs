@@ -54,7 +54,7 @@ pub fn sketch(c: &Creature) -> Wiring {
     }
     inputs.sort_unstable();
     outputs.sort_unstable();
-    outputs.extend([output::EAT, output::ATTACK, output::MATE]);
+    outputs.extend([output::EAT, output::ATTACK, output::MATE, output::CALL, output::CALL_PITCH, output::DIG, output::PILE]);
     outputs.extend(output::MEMORY..output::MEMORY + N_MEMORY);
 
     let w_in = |i: usize, k: usize| g.w_in.0[i * N_IN + k].to_f32();

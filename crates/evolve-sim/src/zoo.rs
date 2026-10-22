@@ -54,7 +54,13 @@ pub struct Zoo {
     /// Bumped on every change, so readers know when to refresh.
     pub version: u64,
     next_id: u64,
+    /// Held while this process owns the zoo. Without it (another evolve has the zoo open) the
+    /// zoo is read-only, so two processes never overwrite each other's index.
+    lock: Option<File>,
 }
+
+/// Pruned and removed creatures are moved here rather than deleted, up to this many.
+const TRASH_KEEP: usize = 500;
 
 /// A pronounceable name derived from the genome, so the same creature always gets the same one.
 fn name_for(fp: u64, generation: u32) -> String {
@@ -94,21 +100,60 @@ impl Zoo {
     }
 
     pub fn open(dir: PathBuf) -> Self {
-        let entries: Vec<ZooMeta> = std::fs::read(dir.join("index.json"))
-            .ok()
-            .and_then(|b| serde_json::from_slice(&b).ok())
-            .unwrap_or_default();
-        let mut zoo = Self {
-            next_id: entries.iter().map(|e| e.id + 1).max().unwrap_or(1),
+        let lock = take_lock(&dir);
+        let index = dir.join("index.json");
+        let (mut entries, damaged): (Vec<ZooMeta>, bool) = match std::fs::read(&index) {
+            Ok(b) => match serde_json::from_slice(&b) {
+                Ok(v) => (v, false),
+                Err(e) => {
+                    eprintln!("evolve: zoo: {} is unreadable ({e}); rebuilding it from the genome files", index.display());
+                    (Vec::new(), true)
+                }
+            },
+            Err(_) => (Vec::new(), false),
+        };
+        if damaged && lock.is_some() {
+            let aside = dir.join(format!("index.json.bad-{}", unix_now()));
+            if let Err(e) = std::fs::rename(&index, &aside) {
+                eprintln!("evolve: zoo: couldn't set {} aside: {e}", index.display());
+            }
+        }
+        // Forget entries whose genome file has gone missing, and take in genome files the index
+        // doesn't list (all of them, if the index was lost or damaged).
+        let before = entries.len();
+        entries.retain(|e| genome_path(&dir, e.id).exists());
+        let mut changed = entries.len() != before;
+        let listed: std::collections::HashSet<u64> = entries.iter().map(|e| e.id).collect();
+        for id in genome_ids(&dir) {
+            if listed.contains(&id) {
+                continue;
+            }
+            match read_genome(&genome_path(&dir, id)) {
+                Ok(g) => {
+                    entries.push(meta_for(id, &g, 0.0, 0, "recovered", 0));
+                    changed = true;
+                }
+                Err(e) => eprintln!("evolve: zoo: skipping {id}.genome: {e}"),
+            }
+        }
+        entries.sort_by_key(|e| e.id);
+        let next_id = entries
+            .iter()
+            .map(|e| e.id)
+            .chain(genome_ids(&dir))
+            .chain(genome_ids(&dir.join("trash")))
+            .max()
+            .map_or(1, |m| m + 1);
+        let zoo = Self {
+            next_id,
             dir,
             entries,
             version: 1,
+            lock,
         };
-        // Forget entries whose genome file has gone missing.
-        let before = zoo.entries.len();
-        let dir = zoo.dir.clone();
-        zoo.entries.retain(|e| genome_path(&dir, e.id).exists());
-        if zoo.entries.len() != before {
+        if zoo.lock.is_none() {
+            eprintln!("evolve: zoo: another evolve has {} open; this one won't change it", zoo.dir.display());
+        } else if changed {
             let _ = zoo.save_index();
         }
         zoo
@@ -132,10 +177,18 @@ impl Zoo {
         pinned: bool,
         max_entries: usize,
     ) -> Result<Option<u64>, String> {
+        self.writable()?;
+        let score = if score.is_finite() { score } else { 0.0 };
         let fp = genome.fingerprint();
         if let Some(e) = self.entries.iter_mut().find(|e| e.fingerprint == fp) {
-            if pinned && !e.pinned {
-                e.pinned = true;
+            // Already here; a score worked out the old way is replaced by this one.
+            let rescore = e.score_version < SCORE_VERSION;
+            if rescore {
+                e.score = score;
+                e.score_version = SCORE_VERSION;
+            }
+            if rescore || (pinned && !e.pinned) {
+                e.pinned |= pinned;
                 self.version += 1;
                 self.save_index()?;
             }
@@ -145,23 +198,9 @@ impl Zoo {
         let id = self.next_id;
         self.next_id += 1;
         write_genome(&genome_path(&self.dir, id), genome)?;
-        let plan = body::body_plan(genome);
-        self.entries.push(ZooMeta {
-            id,
-            name: name_for(fp, generation),
-            score,
-            generation,
-            neurons: genome.brain.h,
-            limbs: plan.len() - 1,
-            mass: body::plan_mass(&plan, SimParams::default().body_density),
-            diet: genome.traits.diet,
-            color: genome.color(),
-            source: source.to_string(),
-            saved_unix: unix_now(),
-            pinned,
-            fingerprint: fp,
-            score_version: SCORE_VERSION,
-        });
+        let mut meta = meta_for(id, genome, score, generation, source, SCORE_VERSION);
+        meta.pinned = pinned;
+        self.entries.push(meta);
         self.prune(max_entries);
         self.version += 1;
         self.save_index()?;
@@ -177,15 +216,21 @@ impl Zoo {
     }
 
     pub fn remove(&mut self, id: u64) {
+        if self.writable().is_err() {
+            return;
+        }
         if let Some(i) = self.entries.iter().position(|e| e.id == id) {
             self.entries.remove(i);
-            let _ = std::fs::remove_file(genome_path(&self.dir, id));
+            self.trash(id);
             self.version += 1;
             let _ = self.save_index();
         }
     }
 
     pub fn set_pinned(&mut self, id: u64, pinned: bool) {
+        if self.writable().is_err() {
+            return;
+        }
         if let Some(e) = self.entries.iter_mut().find(|e| e.id == id) {
             e.pinned = pinned;
             self.version += 1;
@@ -208,11 +253,48 @@ impl Zoo {
                 break;
             };
             let e = self.entries.remove(i);
-            let _ = std::fs::remove_file(genome_path(&self.dir, e.id));
+            self.trash(e.id);
+        }
+    }
+
+    /// Whether this process may change the zoo.
+    pub fn read_only(&self) -> bool {
+        self.lock.is_none()
+    }
+
+    fn writable(&self) -> Result<(), String> {
+        if self.read_only() {
+            Err(format!("another evolve has {} open", self.dir.display()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Moves a creature's genome into `trash/`, keeping only the newest `TRASH_KEEP` there.
+    fn trash(&self, id: u64) {
+        let trash = self.dir.join("trash");
+        if std::fs::create_dir_all(&trash).is_err()
+            || std::fs::rename(genome_path(&self.dir, id), genome_path(&trash, id)).is_err()
+        {
+            let _ = std::fs::remove_file(genome_path(&self.dir, id));
+            return;
+        }
+        let mut old: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&trash)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|f| Some((f.metadata().ok()?.modified().ok()?, f.path())))
+            .collect();
+        if old.len() > TRASH_KEEP {
+            old.sort();
+            for (_, p) in &old[..old.len() - TRASH_KEEP] {
+                let _ = std::fs::remove_file(p);
+            }
         }
     }
 
     fn save_index(&self) -> Result<(), String> {
+        self.writable()?;
         std::fs::create_dir_all(&self.dir).map_err(|e| e.to_string())?;
         let tmp = self.dir.join("index.json.tmp");
         let json = serde_json::to_vec_pretty(&self.entries).map_err(|e| e.to_string())?;
@@ -223,6 +305,52 @@ impl Zoo {
 
 fn genome_path(dir: &Path, id: u64) -> PathBuf {
     dir.join(format!("{id}.genome"))
+}
+
+/// The ids of the `<id>.genome` files in a directory.
+fn genome_ids(dir: &Path) -> Vec<u64> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|f| f.file_name().to_str()?.strip_suffix(".genome")?.parse().ok())
+        .collect()
+}
+
+/// Locks `<dir>/lock` for this process, or returns None if another process holds it.
+fn take_lock(dir: &Path) -> Option<File> {
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        eprintln!("evolve: zoo: create {}: {e}", dir.display());
+        return None;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join("lock"))
+        .ok()?;
+    file.try_lock().ok().map(|()| file)
+}
+
+fn meta_for(id: u64, genome: &Genome, score: f32, generation: u32, source: &str, score_version: u32) -> ZooMeta {
+    let fp = genome.fingerprint();
+    let plan = body::body_plan(genome);
+    ZooMeta {
+        id,
+        name: name_for(fp, generation),
+        score,
+        generation,
+        neurons: genome.brain.h,
+        limbs: plan.len() - 1,
+        mass: body::plan_mass(&plan, SimParams::default().body_density),
+        diet: genome.traits.diet,
+        color: genome.color(),
+        source: source.to_string(),
+        saved_unix: unix_now(),
+        pinned: false,
+        fingerprint: fp,
+        score_version,
+    }
 }
 
 fn write_genome(path: &Path, g: &Genome) -> Result<(), String> {

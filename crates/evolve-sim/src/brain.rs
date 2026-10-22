@@ -260,7 +260,8 @@ fn geometric(rng: &mut Rng, p: f32) -> usize {
         return 0;
     }
     let u = rng.f32().max(1e-12);
-    (u.ln() / (1.0 - p).ln()).floor().min(1e12) as usize
+    // ln_1p keeps tiny rates from rounding 1 - p to 1, which would make every skip 0.
+    (u.ln() / (-p).ln_1p()).floor().min(1e12) as usize
 }
 
 fn mutate_halves(rng: &mut Rng, v: &mut [f16], rate: f32, sigma: f32) {
@@ -630,6 +631,10 @@ pub struct Learning {
     pub trace_decay: f32,
     /// Per-tick fade of the learned offsets back toward the inherited weights.
     pub plastic_decay: f32,
+    /// The outputs are acted on a tick after they're computed (the GPU pipeline), so by the
+    /// time a reward arrives the newest noise hasn't been acted on yet: credit the traces first,
+    /// then take the new noise in. The GPU kernel always works this way.
+    pub pipelined: bool,
 }
 
 impl Learning {
@@ -637,6 +642,7 @@ impl Learning {
         lr: 0.0,
         trace_decay: 0.0,
         plastic_decay: 1.0,
+        pipelined: false,
     };
 }
 
@@ -659,6 +665,7 @@ pub fn per_tick_decay(half_life: f32, dt: f32) -> f32 {
 /// 1. Learning, from last tick: each trace fades and takes in the exploration noise that was
 ///    on that output times the hidden activity behind it; then the learned offsets move along
 ///    the traces by `lr` (rate times reward surprise) and fade toward the inherited weights.
+///    (`pipelined` moves them along the traces as they were before the new noise came in.)
 /// 2. h' = tanh(W_in x + W_rec h + b)
 /// 3. o = tanh((W_out + P) h' + b_out + leanings)
 pub fn step_cpu(g: &BrainGenes, bias: OutputBias, st: &mut BrainState, x: &[f32; N_IN], learn: Learning) {
@@ -670,8 +677,9 @@ pub fn step_cpu(g: &BrainGenes, bias: OutputBias, st: &mut BrainState, x: &[f32;
         let row = &mut st.plastic[k * h..(k + 1) * h];
         for i in 0..h {
             let e = traces[i] * learn.trace_decay + n * st.hidden[i];
+            let credited = if learn.pipelined { traces[i] } else { e };
             traces[i] = e;
-            row[i] = ((row[i] + learn.lr * e) * learn.plastic_decay).clamp(-2.0, 2.0);
+            row[i] = ((row[i] + learn.lr * credited) * learn.plastic_decay).clamp(-2.0, 2.0);
         }
     }
     let mut next = vec![0.0f32; h];

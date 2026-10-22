@@ -155,6 +155,7 @@ impl Sim {
         let rate = self.params.learning_rate * brain::LEARNING_RATE;
         let plastic_decay = brain::per_tick_decay(self.params.learned_memory, bdt);
         let exploration = self.params.exploration;
+        let pipelined = self.brains.is_some();
         let learning = |c: &mut Creature, x: &[f32; N_IN]| {
             approach_reward(c, x);
             // Variations are measured against the creature's own exploration, so a creature
@@ -164,6 +165,7 @@ impl Sim {
                 lr: brain::learning_signal(&mut c.brain, rate * c.genome.traits.plasticity / sigma, bdt),
                 trace_decay: brain::per_tick_decay(c.genome.traits.trace_time, bdt),
                 plastic_decay,
+                pipelined,
             }
         };
         match self.brains.as_mut() {
@@ -234,8 +236,10 @@ impl Sim {
     /// or piling what they carry. Moving earth costs energy. The ground can't be dug or piled
     /// more than `dig_depth` / `pile_height` from where the world made it.
     fn earthworks(&mut self, bdt: f32) {
-        let p = self.params.clone();
-        if p.dig_rate <= 0.0 {
+        let p = &self.params;
+        let (dig_rate, soil_per_kg, dig_cost, dig_depth, pile_height) =
+            (p.dig_rate, p.soil_per_kg, p.dig_cost, p.dig_depth, p.pile_height);
+        if dig_rate <= 0.0 {
             return;
         }
         for ci in 0..self.creatures.len() {
@@ -254,8 +258,8 @@ impl Sim {
             if mouth.y - self.terrain.height_at(mouth.x, mouth.z) > 0.4 + half.y {
                 continue;
             }
-            let capacity = p.soil_per_kg * c.mass;
-            let rate = p.dig_rate * (c.mass / 30.0).sqrt() * bdt;
+            let capacity = soil_per_kg * c.mass;
+            let rate = dig_rate * (c.mass / 30.0).sqrt() * bdt;
             let volume = if want > 0.0 {
                 -(rate * want).min(capacity - c.soil).max(0.0)
             } else {
@@ -264,17 +268,24 @@ impl Sim {
             if volume == 0.0 {
                 continue;
             }
-            let moved = self.terrain.reshape(mouth.x, mouth.z, volume, p.dig_depth, p.pile_height);
+            let moved = self.terrain.reshape(mouth.x, mouth.z, volume, dig_depth, pile_height);
             let c = &mut self.creatures[ci];
             c.soil = (c.soil - moved).clamp(0.0, capacity);
-            c.energy -= p.dig_cost * moved.abs();
+            c.energy -= dig_cost * moved.abs();
         }
         self.settle_terrain();
     }
 
-    /// After earth moved: the physics ground takes the new shape, and plants on changed ground
-    /// settle onto it.
+    /// After earth moved: the physics ground takes the new shape, plants and meat on changed
+    /// ground settle onto it, and loose obstacles resting there wake up to fall or roll.
     pub(crate) fn settle_terrain(&mut self) {
+        // Swapping in a new ground shape costs a full heightfield rebuild and drops the cached
+        // contacts of everything touching the ground, so it's done twice a simulated second at
+        // most; earth moves only centimeters in that time.
+        if self.terrain.dirty.is_none() || self.time - self.settled_at < 0.5 {
+            return;
+        }
+        self.settled_at = self.time;
         let Some((i0, i1, j0, j1)) = self.terrain.take_dirty() else {
             return;
         };
@@ -284,10 +295,23 @@ impl Sim {
         let (n, size) = ((self.terrain.res - 1) as f32, self.terrain.size);
         let at = |k: usize| (k as f32 / n - 0.5) * size;
         let (x0, x1, z0, z1) = (at(j0) - 1.0, at(j1) + 1.0, at(i0) - 1.0, at(i1) + 1.0);
+        let inside = |pos: Vec3| pos.x >= x0 && pos.x <= x1 && pos.z >= z0 && pos.z <= z1;
         for k in 0..self.plants.len() {
             let pos = self.plants[k].pos;
-            if pos.x >= x0 && pos.x <= x1 && pos.z >= z0 && pos.z <= z1 {
+            if inside(pos) {
                 self.plants[k].pos.y = self.ground_under(pos.x, pos.z, crate::sim::PLANT_FOOTPRINT);
+            }
+        }
+        for f in &mut self.meat {
+            if inside(f.pos) {
+                f.pos.y = self.terrain.height_at(f.pos.x, f.pos.z);
+            }
+        }
+        for o in self.obstacles.iter().filter(|o| o.dynamic) {
+            if let Some(b) = self.world.bodies.get_mut(o.body)
+                && inside(b.translation())
+            {
+                b.wake_up(true);
             }
         }
     }
@@ -402,6 +426,7 @@ impl Sim {
         v.health -= damage;
         v.pain = 1.0;
         v.last_attacker = Some(attacker);
+        v.attacked_ago = 0.0;
         v.brain.reward -= damage / v.max_health * 2.0;
         let a = &mut self.creatures[ai];
         a.energy -= cost;
@@ -736,12 +761,16 @@ fn approach_reward(c: &mut Creature, x: &[f32; N_IN]) {
 
 const WATER_SENSE_RANGE: f32 = 24.0;
 
-/// Offset to the nearest open water within sensing range, by sampling rings around a point.
+/// Offset to the nearest open water within sensing range, by sampling rings around a point,
+/// then narrowing in on the shoreline so the distance changes smoothly as a creature walks
+/// (the reward for closing in on water needs small steps, not ring-sized jumps).
 fn nearest_water(sim: &Sim, pos: Vec3) -> Option<Vec3> {
     let wl = sim.params.water_level;
-    if sim.terrain.height_at(pos.x, pos.z) < wl {
+    let wet = |d: Vec3| sim.terrain.height_at(pos.x + d.x, pos.z + d.z) < wl;
+    if wet(Vec3::ZERO) {
         return Some(Vec3::ZERO);
     }
+    let mut inner = 0.0f32;
     for r in [1.5f32, 3.0, 6.0, 12.0, WATER_SENSE_RANGE] {
         let mut best: Option<(f32, Vec3)> = None;
         for k in 0..12 {
@@ -753,8 +782,19 @@ fn nearest_water(sim: &Sim, pos: Vec3) -> Option<Vec3> {
             }
         }
         if let Some((_, d)) = best {
-            return Some(d);
+            let dir = d / r;
+            let (mut dry, mut hit) = (inner, r);
+            for _ in 0..5 {
+                let mid = 0.5 * (dry + hit);
+                if wet(dir * mid) {
+                    hit = mid;
+                } else {
+                    dry = mid;
+                }
+            }
+            return Some(dir * hit);
         }
+        inner = r;
     }
     None
 }

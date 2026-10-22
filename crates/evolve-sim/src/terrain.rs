@@ -110,8 +110,10 @@ impl Terrain {
         for (ci, cj, w) in corners {
             let k = ci * r + cj;
             let (lo, hi) = (self.ground[k] - max_dig, self.ground[k] + max_pile);
-            let want = volume * w / area;
-            let h = (self.heights[k] + want).clamp(lo, hi.max(lo));
+            let (now, want) = (self.heights[k], volume * w / area);
+            // Only ever moves the way asked: ground already past a limit (the limits are live
+            // params) stays put rather than snapping back.
+            let h = if want < 0.0 { (now + want).max(lo.min(now)) } else { (now + want).min(hi.max(now)) };
             moved += (h - self.heights[k]) * area;
             self.heights[k] = h;
         }

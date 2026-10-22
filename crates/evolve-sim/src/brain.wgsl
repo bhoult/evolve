@@ -161,12 +161,15 @@ fn output(
     for (var w = t; w < m.hp / 2u; w += WG) {
         let wp = unpack2x16float(weights[w0 + w]);
         let i0 = 2u * w;
-        let ea = aux[e0 + i0] * m.trace_decay + noise * h_prev[m.h_off + i0];
-        let eb = aux[e0 + i0 + 1u] * m.trace_decay + noise * h_prev[m.h_off + i0 + 1u];
-        aux[e0 + i0] = ea;
-        aux[e0 + i0 + 1u] = eb;
-        let pa = clamp((aux[p0 + i0] + lr * ea) * decay, -2.0, 2.0);
-        let pb = clamp((aux[p0 + i0 + 1u] + lr * eb) * decay, -2.0, 2.0);
+        // The reward that just came in was earned by the action before this tick's noise
+        // (outputs are acted on a tick late), so the learned weights follow the traces as they
+        // were, and only then do the traces take in the new noise.
+        let ea0 = aux[e0 + i0];
+        let eb0 = aux[e0 + i0 + 1u];
+        aux[e0 + i0] = ea0 * m.trace_decay + noise * h_prev[m.h_off + i0];
+        aux[e0 + i0 + 1u] = eb0 * m.trace_decay + noise * h_prev[m.h_off + i0 + 1u];
+        let pa = clamp((aux[p0 + i0] + lr * ea0) * decay, -2.0, 2.0);
+        let pb = clamp((aux[p0 + i0 + 1u] + lr * eb0) * decay, -2.0, 2.0);
         aux[p0 + i0] = pa;
         aux[p0 + i0 + 1u] = pb;
         acc += (wp.x + pa) * h_next[m.h_off + i0] + (wp.y + pb) * h_next[m.h_off + i0 + 1u];

@@ -114,13 +114,26 @@ pub struct Env {
     /// How wet the ground is; lags the rain.
     pub wetness: f32,
     pub cloud_offset: bevy::math::DVec2,
-    /// Wall time in seconds, wrapped.
+    /// Wall time in seconds, wrapped (see `TIME_WRAP`).
     pub time: f32,
     pub flash: f32,
     pub flash_dir: Vec3,
+    /// How high the wave crests reach above the water level in open water, m.
+    pub wave_crest: f32,
+    /// How far the rain has fallen, wrapped to the box of rain around the camera, and seconds of
+    /// rain for the streaks' own extra speed (see weather_fx.rs).
+    rain_fall: bevy::math::DVec3,
+    rain_time: f64,
     wave_phase: [f32; 8],
     shadow_key: (u32, u32),
 }
+
+/// The shaders' clock wraps here. Wrapping makes animations jump, so it also restarts with each
+/// new world (when everything changes anyway); this is the backstop, long enough to be rare and
+/// short enough that f32 keeps millisecond steps.
+const TIME_WRAP: f32 = 16_384.0;
+/// Cloud scroll wraps here, m: the clouds jump then, but only after hours of wind.
+const CLOUD_WRAP: f64 = 4.0e6;
 
 impl Default for Env {
     fn default() -> Self {
@@ -137,6 +150,9 @@ impl Default for Env {
             time: 0.0,
             flash: 0.0,
             flash_dir: Vec3::Y,
+            wave_crest: 0.0,
+            rain_fall: bevy::math::DVec3::ZERO,
+            rain_time: 0.0,
             wave_phase: [0.0; 8],
             shadow_key: (0, 0),
         }
@@ -162,6 +178,7 @@ pub struct EnvUniform {
     flash_dir: Vec4,
     fog_sun: Vec4,
     misc: Vec4,
+    rain: Vec4,
     waves: [Vec4; 8],
     wave_amp: [Vec4; 2],
 }
@@ -220,17 +237,22 @@ fn init_settings(mut commands: Commands, args: Res<Args>, existing: Option<Res<G
     }
 }
 
-/// A storage buffer holding a terrain's heights, for the water and rain shaders.
-pub fn heights_buffer(device: &RenderDevice, t: &Terrain) -> Buffer {
-    let bytes: Vec<u8> = if t.heights.is_empty() {
+/// A terrain's heights as the bytes of the shaders' heights buffer.
+pub fn heights_bytes(t: &Terrain) -> Vec<u8> {
+    if t.heights.is_empty() {
         vec![0; 16]
     } else {
         t.heights.iter().flat_map(|h| h.to_le_bytes()).collect()
-    };
+    }
+}
+
+/// A storage buffer holding a terrain's heights, for the water and rain shaders. Rewritten in
+/// place while the terrain keeps its size.
+pub fn heights_buffer(device: &RenderDevice, t: &Terrain) -> Buffer {
     device.create_buffer_with_data(&BufferInitDescriptor {
         label: Some("evolve heights"),
-        contents: &bytes,
-        usage: BufferUsages::STORAGE,
+        contents: &heights_bytes(t),
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
     })
 }
 
@@ -344,6 +366,8 @@ fn update_env(
             env.storm = storm;
             env.wind = wind;
             env.wetness = rain;
+            env.time = 0.0;
+            env.cloud_offset = bevy::math::DVec2::ZERO;
             env.ready = valid || over.time_of_day.is_some();
             if valid {
                 env.epoch = snap.0.world_epoch;
@@ -361,9 +385,15 @@ fn update_env(
     env.wind += (wind - env.wind) * kw;
     let wet_tau = if env.rain > env.wetness { 6.0 } else { 25.0 };
     env.wetness += (env.rain - env.wetness) * (1.0 - (-dt / wet_tau).exp());
-    env.time = (env.time + dt) % 3600.0;
+    env.time = (env.time + dt) % TIME_WRAP;
     let wind_now = env.wind;
-    env.cloud_offset -= (wind_now * dt * 4.0).as_dvec2();
+    env.cloud_offset = (env.cloud_offset - (wind_now * dt * 4.0).as_dvec2()) % CLOUD_WRAP;
+    // Rain falls by the integral of its speed, so a change of wind or storm changes how fast the
+    // streaks move, not where they are.
+    let fall = crate::weather_fx::rain_velocity(env.wind, env.storm).as_dvec3() * dt as f64;
+    let rain_box = crate::weather_fx::RAIN_BOX.as_dvec3();
+    env.rain_fall = (env.rain_fall + fall).rem_euclid(rain_box);
+    env.rain_time = (env.rain_time + dt as f64) % crate::weather_fx::RAIN_EXTRA_PERIOD;
 
     let sun = env.sun_dir;
     let elev = sun.y;
@@ -475,6 +505,7 @@ fn update_env(
         waves[i] = Vec4::new(d.x, d.y, kk, env.wave_phase[i]);
         amps[i] = steep * len / std::f32::consts::TAU * WAVE_WEIGHT[i] * 0.8 * present;
     }
+    env.wave_crest = amps.iter().sum();
 
     // Stars turn with the sun around the celestial pole.
     let lat = 0.5f32;
@@ -496,18 +527,14 @@ fn update_env(
         horizon: horizon.extend(density),
         ambient: amb_disp.extend(flash),
         weather: Vec4::new(env.cloud, env.rain, env.storm, env.wetness),
-        wind: Vec4::new(
-            env.wind.x,
-            env.wind.y,
-            (env.cloud_offset.x % 1.0e6) as f32,
-            (env.cloud_offset.y % 1.0e6) as f32,
-        ),
+        wind: Vec4::new(env.wind.x, env.wind.y, env.cloud_offset.x as f32, env.cloud_offset.y as f32),
         world: Vec4::new(p.water_level, t.size, t.res as f32, p.terrain_height),
         sea: Vec4::new(0.35 + 0.5 * sea, sea, smoothstep(0.3, 0.8, sea), 0.0),
         stars: axis.extend(hour),
         flash_dir: env.flash_dir.extend(0.0),
         fog_sun: (light_disp * glow_k).extend(glow_exp),
         misc: Vec4::new(settings.clouds as u32 as f32, settings.sway as u32 as f32, 0.0, env.time),
+        rain: env.rain_fall.as_vec3().extend(env.rain_time as f32),
         waves,
         wave_amp: [
             Vec4::new(amps[0], amps[1], amps[2], amps[3]),

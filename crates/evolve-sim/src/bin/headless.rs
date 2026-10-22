@@ -83,7 +83,7 @@ fn main() {
     }
 
     if let Some(n) = islands {
-        run_islands(sim, n, wall, report);
+        run_islands(sim, n, wall, report, save_to);
         return;
     }
     println!(
@@ -160,7 +160,7 @@ fn main() {
 
 /// Runs the world through the real `Runner` at maximum speed with `n` background worlds, for
 /// `wall` seconds of real time, reporting every `report` seconds: how hard the hardware works.
-fn run_islands(mut sim: Sim, n: u32, wall: f64, report: f64) {
+fn run_islands(mut sim: Sim, n: u32, wall: f64, report: f64, save_to: Option<PathBuf>) {
     let mut p = sim.params.clone();
     p.parallel_worlds = n;
     sim.set_params(p);
@@ -193,6 +193,17 @@ fn run_islands(mut sim: Sim, n: u32, wall: f64, report: f64) {
                 "   world {:>2}: sim {:>6.0}s  pop {:>3}  maxG {:>3}  neurons {:>7.1}  {:>5.0} steps/s  brain gpu busy {:>3.0}%",
                 w.index, w.time, w.population, w.max_generation, w.mean_neurons, w.steps_per_sec, w.gpu_busy * 100.0
             );
+        }
+    }
+    if let Some(p) = save_to {
+        // Saving happens on the runner's thread, ahead of the quit that dropping it sends.
+        let modified = |p: &PathBuf| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let before = modified(&p);
+        runner.send(evolve_sim::Control::Save(p.clone()));
+        drop(runner);
+        match std::fs::metadata(&p) {
+            Ok(m) if modified(&p) != before => println!("saved {} ({} bytes)", p.display(), m.len()),
+            _ => die(&format!("couldn't save {}", p.display())),
         }
     }
 }

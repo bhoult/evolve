@@ -316,6 +316,7 @@ fn gpu_brains_match_cpu() {
                 lr: if tick % 3 == 2 { 0.0 } else { 0.05 * rng.signed() },
                 trace_decay: 0.9,
                 plastic_decay: 0.995,
+                pipelined: true,
             };
             let noise: [f32; N_OUT] = std::array::from_fn(|_| 0.2 * rng.signed());
             states[i].noise = noise.to_vec();
@@ -390,6 +391,45 @@ fn zoo_stores_dedupes_prunes_and_drops() {
     assert!(sim.creatures.iter().any(|c| c.genome.fingerprint() != g.fingerprint()));
     let t = sim.params.species_threshold;
     assert!(sim.creatures.iter().all(|c| c.genome.distance(&g) < t * 0.5));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Pruned creatures go to the trash, a second process can only read the zoo, and a damaged
+/// index is set aside and rebuilt from the genome files.
+#[test]
+fn zoo_survives_damage_and_a_second_process() {
+    use evolve_sim::zoo::Zoo;
+    let dir = std::env::temp_dir().join(format!("evolve-zoo-damage-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let p = SimParams::default();
+    let mut rng = Rng::new(10);
+    let genomes: Vec<Genome> = (0..4).map(|_| Genome::random(&mut rng, &p)).collect();
+    let mut zoo = Zoo::open(dir.clone());
+    assert!(!zoo.read_only());
+    for (k, g) in genomes.iter().take(3).enumerate() {
+        zoo.add(g, k as f32, 1, "test", false, 2).unwrap();
+    }
+    assert_eq!(zoo.entries.len(), 2);
+    let trashed: Vec<_> = std::fs::read_dir(dir.join("trash")).unwrap().flatten().collect();
+    assert_eq!(trashed.len(), 1, "the pruned creature is in the trash, not deleted");
+
+    let mut second = Zoo::open(dir.clone());
+    assert!(second.read_only(), "the zoo is locked by the first");
+    assert_eq!(second.entries.len(), 2, "but can still be read");
+    assert!(second.add(&genomes[3], 9.0, 1, "test", false, 10).is_err());
+    drop(second);
+    drop(zoo);
+
+    std::fs::write(dir.join("index.json"), b"{ not json").unwrap();
+    let mut zoo = Zoo::open(dir.clone());
+    assert_eq!(zoo.entries.len(), 2, "rebuilt from the genome files");
+    let set_aside = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .any(|f| f.file_name().to_string_lossy().starts_with("index.json.bad-"));
+    assert!(set_aside, "the damaged index is kept");
+    let id = zoo.add(&genomes[3], 9.0, 1, "test", false, 10).unwrap().unwrap();
+    assert!(id > 3, "new ids don't reuse ones in the zoo or the trash");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

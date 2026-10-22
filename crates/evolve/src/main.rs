@@ -246,7 +246,9 @@ fn refresh_snapshot(link: Res<SimLink>, time: Res<Time>, mut snap: ResMut<Snap>,
     let gap = (now - interp.arrived).clamp(0.002, 0.25);
     interp.interval = interp.interval * 0.8 + gap * 0.2;
     interp.arrived = now;
-    interp.prev = std::mem::replace(&mut snap.0, latest);
+    let prev = std::mem::replace(&mut snap.0, latest);
+    // A new or loaded world reuses ids, so never blend a creature from one world into another.
+    interp.prev = if prev.world_epoch == snap.0.world_epoch { prev } else { snap.0.clone() };
     interp.prev_index = interp
         .prev
         .creatures

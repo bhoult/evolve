@@ -85,7 +85,15 @@ impl Runner {
     }
 
     pub fn snapshot(&self) -> Arc<Snapshot> {
-        self.shared.snapshot.lock().unwrap().clone()
+        match self.shared.snapshot.lock() {
+            Ok(s) => s.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// False once the simulation thread has stopped (it panicked: the reason is on stderr).
+    pub fn alive(&self) -> bool {
+        self.thread.as_ref().is_some_and(|t| !t.is_finished())
     }
 }
 
@@ -164,10 +172,15 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         crate::zoo::seed_world(&zoo, &mut sim);
     }
 
+    // Background worlds whose thread stopped, already reported.
+    let mut reported_stopped: Vec<usize> = Vec::new();
     loop {
         // Background worlds must exist before commands that target them are handled.
         sync_workers(&mut workers, &sim, speed, paused, &board, &zoo);
         let mut reset_islands = false;
+        // Zoo creatures bound for background worlds go out after a new or loaded world has
+        // restarted them, so a drop sent alongside a new world isn't lost with the old workers.
+        let mut worker_drops: Vec<(ZooTarget, Box<crate::genome::Genome>, u32, u32)> = Vec::new();
         loop {
             match rx.try_recv() {
                 Ok(Control::Quit) | Err(TryRecvError::Disconnected) => return,
@@ -239,14 +252,14 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             if here {
                                 sim.drop_genome(&genome, meta.generation, pos.map(Vec3::from), count);
                             }
-                            for (k, w) in workers.iter().enumerate() {
-                                if target == ZooTarget::All || target == ZooTarget::World(k + 1) {
-                                    w.send(WorkerCtl::Spawn {
-                                        genome: Box::new(genome.clone()),
-                                        generation: meta.generation,
-                                        count,
-                                    });
+                            let worlds = sim.params.parallel_worlds as usize;
+                            match target {
+                                ZooTarget::World(k) if k == 0 || k > worlds => {
+                                    sim.log(format!("Zoo: there is no background world {k}"));
+                                    continue;
                                 }
+                                ZooTarget::This => {}
+                                _ => worker_drops.push((target, Box::new(genome), meta.generation, count)),
                             }
                             let whom = match target {
                                 ZooTarget::This => "this world".to_string(),
@@ -282,6 +295,22 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             next_migration = sim.time;
         }
         sync_workers(&mut workers, &sim, speed, paused, &board, &zoo);
+        if reset_islands {
+            reported_stopped.clear();
+        }
+        for (target, genome, generation, count) in worker_drops {
+            for (k, w) in workers.iter().enumerate() {
+                if target == ZooTarget::All || target == ZooTarget::World(k + 1) {
+                    w.send(WorkerCtl::Spawn { genome: genome.clone(), generation, count });
+                }
+            }
+        }
+        for (k, w) in workers.iter().enumerate() {
+            if !w.alive() && !reported_stopped.contains(&k) {
+                reported_stopped.push(k);
+                sim.log(format!("Background world {} stopped with an error (see the terminal)", k + 1));
+            }
+        }
 
         if step_once {
             sim.step();
@@ -309,7 +338,11 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             let steering = speed == 0.0 && !paused && sim.params.gpu_target > 0.0 && sim.brains.is_some();
             if steering {
                 let busy = sim.perf.gpu_busy
-                    + workers.iter().filter_map(|w| w.status.lock().ok().map(|s| s.gpu_busy)).sum::<f32>();
+                    + workers
+                        .iter()
+                        .filter(|w| w.alive())
+                        .filter_map(|w| w.status.lock().ok().map(|s| s.gpu_busy))
+                        .sum::<f32>();
                 let error = busy - sim.params.gpu_target;
                 // The price drifts (a factor of e in two minutes at full error, faster when over,
                 // so an overloaded GPU is relieved quickly); growth follows the error directly.
@@ -383,9 +416,15 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             snap.events = events.clone();
             snap.highlights = highlights.clone();
             snap.worlds = std::iter::once(WorldStatus::of(0, &sim, steps_per_sec))
-                .chain(workers.iter().filter_map(|w| w.status.lock().ok().map(|s| s.clone())))
+                .chain(workers.iter().filter_map(|w| {
+                    let mut s = w.status.lock().ok()?.clone();
+                    s.stopped = !w.alive();
+                    Some(s)
+                }))
                 .collect();
-            *shared.snapshot.lock().unwrap() = Arc::new(snap);
+            if let Ok(mut s) = shared.snapshot.lock() {
+                *s = Arc::new(snap);
+            }
         }
 
         if paused || speed > 0.0 {

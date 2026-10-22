@@ -296,6 +296,12 @@ fn sync_creatures(
             },
         );
     }
+    // A long-running world sees many body sizes come and go: forget the capsules nothing uses.
+    if shared.capsules.len() > 1024 {
+        shared
+            .capsules
+            .retain(|_, h| matches!(h, Handle::Strong(a) if std::sync::Arc::strong_count(a) > 1));
+    }
     let gone: Vec<u64> = mirror
         .creatures
         .keys()
@@ -317,12 +323,16 @@ fn reset_on_new_world(
     mut commands: Commands,
     snap: Res<Snap>,
     mut mirror: ResMut<Mirror>,
+    mut shared: ResMut<Shared3d>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     if snap.0.world_epoch == mirror.epoch {
         return;
     }
     mirror.epoch = snap.0.world_epoch;
+    // Every body size ever seen has a capsule mesh cached; start the new world's set afresh (the
+    // meshes are freed once the despawned parts below let go of them).
+    shared.capsules.clear();
     for (_, c) in mirror.creatures.drain() {
         for e in c.parts {
             commands.entity(e).despawn();

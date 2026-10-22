@@ -21,6 +21,11 @@ impl MaterialExtension for TreeExt {
     fn vertex_shader() -> ShaderRef {
         shader("tree.wgsl")
     }
+
+    // Shadows are drawn with the prepass pipeline; without this they wouldn't sway.
+    fn prepass_vertex_shader() -> ShaderRef {
+        shader("tree.wgsl")
+    }
 }
 
 type TreeMaterial = ExtendedMaterial<StandardMaterial, TreeExt>;

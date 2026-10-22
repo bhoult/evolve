@@ -16,6 +16,7 @@ struct VertexOutput {
     @location(2) color: vec3<f32>,
 }
 
+// Must match RAIN_BOX in weather_fx.rs.
 const BOX: vec3<f32> = vec3<f32>(44.0, 26.0, 44.0);
 
 fn hidden() -> VertexOutput {
@@ -36,11 +37,12 @@ fn vertex(v: Vertex) -> VertexOutput {
         return hidden();
     }
     let storm = env.weather.z;
-    let t = env.misc.w;
-    let vel = vec3<f32>(env.wind.x * 0.7, -(8.5 + 3.0 * storm + pick * 2.0), env.wind.y * 0.7);
+    // One of eight extra speeds; see RAIN_EXTRA_PERIOD in weather_fx.rs.
+    let extra = floor(pick * 8.0) * 0.25;
+    let vel = vec3<f32>(env.wind.x * 0.7, -(8.5 + 3.0 * storm + extra), env.wind.y * 0.7);
     let cam = view.world_position;
-    // Fall in world space, then wrap into a box around the camera.
-    var p = seed * BOX + vel * t;
+    // Fall in world space by what the CPU has added up, then wrap into a box around the camera.
+    var p = seed * BOX + env.rain.xyz - vec3<f32>(0.0, extra * env.rain.w, 0.0);
     let center = cam + vec3<f32>(0.0, 4.0, 0.0);
     p = center + (fract((p - center) / BOX + 0.5) - 0.5) * BOX;
     let ground = max(terrain_height(p.xz), env.world.x);

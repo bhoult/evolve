@@ -564,9 +564,10 @@ impl GpuBrains {
         if placed.is_none() {
             let start = (l.words() * 2).max(8 << 20).min(self.page_max_units);
             let mut page = Arena::new(&self.device, "brain weights", 1, start, self.page_max_units);
-            let o = page
-                .alloc(&self.device, &self.queue, l.words(), &mut grew)
-                .ok_or("brain does not fit in a fresh page")?;
+            let Some(o) = page.alloc(&self.device, &self.queue, l.words(), &mut grew) else {
+                self.dirty |= grew;
+                return Err("brain does not fit in a fresh page".into());
+            };
             self.pages.push(page);
             self.params.push(make_buffer(
                 &self.device,
@@ -581,6 +582,8 @@ impl GpuBrains {
         let aux_off = match self.aux.alloc(&self.device, &self.queue, l.aux_len() as u64, &mut grew) {
             Some(o) => o,
             None => {
+                // An arena may already have grown into new buffers; the bind groups must follow.
+                self.dirty |= grew;
                 self.pages[page].release(w_off, l.words());
                 return Err("GPU aux arena full".into());
             }
@@ -588,6 +591,7 @@ impl GpuBrains {
         let h_off = match self.hstate.alloc(&self.device, &self.queue, l.hp as u64, &mut grew) {
             Some(o) => o,
             None => {
+                self.dirty |= grew;
                 self.pages[page].release(w_off, l.words());
                 self.aux.release(aux_off, l.aux_len() as u64);
                 return Err("GPU hidden-state arena full".into());
@@ -679,6 +683,7 @@ impl GpuBrains {
             if pp.meta_count == 0 {
                 pp.meta_start = metas.len() as u32;
             }
+            debug_assert!(it.learn.pipelined || it.learn.lr == 0.0, "the GPU always learns pipelined");
             metas.push(Meta {
                 w_off: s.w_off as u32,
                 aux_off: s.aux_off as u32,

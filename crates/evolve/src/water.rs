@@ -10,13 +10,13 @@ use bevy::mesh::{Indices, MeshVertexBufferLayoutRef, PrimitiveTopology};
 use bevy::pbr::{Material, MaterialPipeline, MaterialPipelineKey, MaterialPlugin};
 use bevy::prelude::*;
 use bevy::render::render_resource::{AsBindGroup, Buffer, RenderPipelineDescriptor, SpecializedMeshPipelineError};
-use bevy::render::renderer::RenderDevice;
+use bevy::render::renderer::{RenderDevice, RenderQueue};
 use bevy::shader::ShaderRef;
 use evolve_sim::terrain::Terrain;
 
 use crate::Snap;
 use crate::camera::MainCamera;
-use crate::env::{EnvGpu, EnvSystems, heights_buffer, shader};
+use crate::env::{EnvGpu, EnvSystems, heights_buffer, heights_bytes, shader};
 
 pub struct WaterPlugin;
 
@@ -24,7 +24,7 @@ pub struct WaterPlugin;
 #[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
 pub struct WaterSystems;
 
-/// The terrain heights on the GPU, rebuilt for every new world.
+/// The terrain heights on the GPU. Marked changed only when the buffer itself is replaced.
 #[derive(Resource)]
 pub struct Heights {
     pub buffer: Buffer,
@@ -144,15 +144,26 @@ fn polar_grid() -> Mesh {
         .with_inserted_indices(Indices::U32(indices))
 }
 
+/// Copies changed heights into the buffer, or makes a new buffer (and tells the materials) when
+/// the terrain changes size.
 fn update_heights(
     snap: Res<Snap>,
     device: Res<RenderDevice>,
+    queue: Res<RenderQueue>,
     mut heights: ResMut<Heights>,
     ocean: Single<&Ocean>,
     mut materials: ResMut<Assets<WaterMaterial>>,
 ) {
     let t = &snap.0.terrain;
     if t.res < 3 || heights.from.as_ref().is_some_and(|f| Arc::ptr_eq(f, t)) {
+        return;
+    }
+    let bytes = heights_bytes(t);
+    if heights.buffer.size() == bytes.len() as u64 {
+        // Same buffer, so nothing that binds it needs to hear about it.
+        let h = heights.bypass_change_detection();
+        queue.write_buffer(&h.buffer, 0, &bytes);
+        h.from = Some(t.clone());
         return;
     }
     heights.buffer = heights_buffer(&device, t);

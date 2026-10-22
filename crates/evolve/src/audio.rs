@@ -7,9 +7,10 @@
 //! atomics and one-shot sounds through a channel, so the two never wait on each other.
 
 use std::f32::consts::{PI, TAU};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
 use evolve_sim::snapshot::HighlightKind;
@@ -285,6 +286,10 @@ impl Voice {
     }
 }
 
+/// Most one-shot sounds playing at once, and most of those that are calls.
+const MAX_VOICES: usize = 24;
+const MAX_CALLS: usize = 8;
+
 pub struct Synth {
     pub rate: f32,
     n: Noise,
@@ -322,7 +327,9 @@ impl Synth {
     /// Fills interleaved frames of `channels` channels (stereo in the first two).
     pub fn render(&mut self, out: &mut [f32], channels: usize) {
         while let Ok(e) = self.events.try_recv() {
-            if self.voices.len() < 24 {
+            // A crowd calling at once could otherwise take every voice.
+            let calls = self.voices.iter().filter(|v| v.sfx == Sfx::Call).count();
+            if self.voices.len() < MAX_VOICES && (e.sfx != Sfx::Call || calls < MAX_CALLS) {
                 let seed = self.n.unit();
                 self.voices.push(Voice {
                     sfx: e.sfx,
@@ -353,6 +360,10 @@ impl Synth {
         for frame in out.chunks_mut(channels) {
             for (s, t) in self.smooth.iter_mut().zip(target) {
                 *s += (t - *s) * 0.0004;
+                // Land on the target rather than creeping into denormals, which are slow.
+                if (t - *s).abs() < 1e-6 {
+                    *s = t;
+                }
             }
             let [master, wind, rain, surf] = self.smooth;
             self.t += dt;
@@ -426,7 +437,8 @@ impl Synth {
 #[derive(Resource)]
 struct Sound {
     levels: Arc<Levels>,
-    events: Sender<SoundEvent>,
+    /// Bounded, so sounds don't pile up while no device is draining them.
+    events: SyncSender<SoundEvent>,
     /// The device playing, or why there's none (the thread keeps trying).
     status: Arc<Mutex<Result<String, String>>>,
 }
@@ -451,35 +463,69 @@ fn output_devices(host: &cpal::Host) -> Vec<cpal::Device> {
     all
 }
 
-/// Starts playing on the first device that works. Returns the stream, its device's name, and a
-/// flag that goes up if the device later fails.
-fn open_any(synth: &Arc<Mutex<Synth>>) -> Result<(cpal::Stream, String, Arc<AtomicBool>), String> {
+/// How a stream is doing, as seen from its callbacks.
+struct Health {
+    started: Instant,
+    /// Set by any stream error.
+    broken: AtomicBool,
+    /// When audio was last asked for, in milliseconds since `started`.
+    last_callback_ms: AtomicU64,
+    /// When an error was last logged, likewise (errors can repeat thousands of times a second).
+    last_log_ms: AtomicU64,
+}
+
+/// A stream that hasn't asked for audio in this long has stalled.
+const STALL: Duration = Duration::from_secs(4);
+
+impl Health {
+    fn new() -> Self {
+        Self {
+            started: Instant::now(),
+            broken: AtomicBool::new(false),
+            last_callback_ms: AtomicU64::new(0),
+            last_log_ms: AtomicU64::new(0),
+        }
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    fn ok(&self) -> bool {
+        let idle = self.now_ms().saturating_sub(self.last_callback_ms.load(Ordering::Relaxed));
+        !self.broken.load(Ordering::Relaxed) && idle < STALL.as_millis() as u64
+    }
+}
+
+/// Starts playing on the first device that works. Returns the stream, its device's name, and how
+/// it's doing.
+fn open_any(synth: &Arc<Mutex<Synth>>) -> Result<(cpal::Stream, String, Arc<Health>), String> {
     use cpal::traits::{DeviceTrait, StreamTrait};
     let host = cpal::default_host();
     let mut why = String::from("no audio output device");
     for device in output_devices(&host) {
         let name = device.name().unwrap_or_else(|_| "audio".into());
-        let tried = (|| -> Result<(cpal::Stream, Arc<AtomicBool>), String> {
+        let tried = (|| -> Result<(cpal::Stream, Arc<Health>), String> {
             let supported = device.default_output_config().map_err(|e| e.to_string())?;
             let format = supported.sample_format();
             let config: cpal::StreamConfig = supported.into();
             if let Ok(mut s) = synth.lock() {
                 s.rate = config.sample_rate.0 as f32;
             }
-            let broken = Arc::new(AtomicBool::new(false));
+            let health = Arc::new(Health::new());
             let stream = match format {
-                cpal::SampleFormat::F32 => build::<f32>(&device, &config, synth.clone(), broken.clone()),
-                cpal::SampleFormat::I16 => build::<i16>(&device, &config, synth.clone(), broken.clone()),
-                cpal::SampleFormat::U16 => build::<u16>(&device, &config, synth.clone(), broken.clone()),
-                cpal::SampleFormat::I32 => build::<i32>(&device, &config, synth.clone(), broken.clone()),
+                cpal::SampleFormat::F32 => build::<f32>(&device, &config, synth.clone(), health.clone()),
+                cpal::SampleFormat::I16 => build::<i16>(&device, &config, synth.clone(), health.clone()),
+                cpal::SampleFormat::U16 => build::<u16>(&device, &config, synth.clone(), health.clone()),
+                cpal::SampleFormat::I32 => build::<i32>(&device, &config, synth.clone(), health.clone()),
                 other => return Err(format!("unsupported sample format {other}")),
             }
             .map_err(|e| e.to_string())?;
             stream.play().map_err(|e| e.to_string())?;
-            Ok((stream, broken))
+            Ok((stream, health))
         })();
         match tried {
-            Ok((stream, broken)) => return Ok((stream, name, broken)),
+            Ok((stream, health)) => return Ok((stream, name, health)),
             Err(e) => why = format!("{name}: {e}"),
         }
     }
@@ -487,8 +533,8 @@ fn open_any(synth: &Arc<Mutex<Synth>>) -> Result<(cpal::Stream, String, Arc<Atom
 }
 
 /// Runs the audio device on a thread of its own (a stream must stay on the thread that made it),
-/// reopening it whenever it fails or there was none: unplugged headsets, a call app taking the
-/// speakers, and so on.
+/// reopening it whenever it fails, stalls or there was none: unplugged headsets, a call app
+/// taking the speakers, and so on.
 fn run_output(synth: Arc<Mutex<Synth>>, status: Arc<Mutex<Result<String, String>>>) {
     let set = |s: Result<String, String>| {
         if let Ok(mut st) = status.lock() {
@@ -497,18 +543,29 @@ fn run_output(synth: Arc<Mutex<Synth>>, status: Arc<Mutex<Result<String, String>
     };
     loop {
         match open_any(&synth) {
-            Ok((stream, name, broken)) => {
+            Ok((stream, name, health)) => {
                 set(Ok(name));
-                while !broken.load(Ordering::Relaxed) {
-                    std::thread::sleep(std::time::Duration::from_millis(500));
+                while health.ok() {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                set(Err("audio device was lost; reconnecting".into()));
+                // Dropping a dead stream can block for good (cpal waits for its worker, which may
+                // be stuck retrying the device), so reconnect from a fresh thread and leave this
+                // one to drop it.
+                let (synth, status) = (synth.clone(), status.clone());
+                let respawned = std::thread::Builder::new().name("evolve-audio".into()).spawn(move || {
+                    std::thread::sleep(Duration::from_secs(1));
+                    run_output(synth, status);
+                });
+                if let Err(e) = respawned {
+                    set(Err(format!("audio thread: {e}")));
                 }
                 drop(stream);
-                set(Err("audio device was lost; reconnecting".into()));
-                std::thread::sleep(std::time::Duration::from_secs(1));
+                return;
             }
             Err(e) => {
                 set(Err(e));
-                std::thread::sleep(std::time::Duration::from_secs(5));
+                std::thread::sleep(Duration::from_secs(5));
             }
         }
     }
@@ -518,14 +575,16 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
     device: &cpal::Device,
     config: &cpal::StreamConfig,
     synth: Arc<Mutex<Synth>>,
-    broken: Arc<AtomicBool>,
+    health: Arc<Health>,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
     use cpal::traits::DeviceTrait;
     let channels = config.channels as usize;
     let mut buf: Vec<f32> = Vec::new();
+    let errors = health.clone();
     device.build_output_stream(
         config,
         move |data: &mut [T], _| {
+            health.last_callback_ms.store(health.now_ms(), Ordering::Relaxed);
             buf.resize(data.len(), 0.0);
             match synth.try_lock() {
                 Ok(mut s) => s.render(&mut buf, channels),
@@ -536,9 +595,17 @@ fn build<T: cpal::SizedSample + cpal::FromSample<f32>>(
             }
         },
         move |e| {
-            eprintln!("evolve: audio: {e}");
-            if matches!(e, cpal::StreamError::DeviceNotAvailable) {
-                broken.store(true, Ordering::Relaxed);
+            // Any error means a reconnect. A dead device can report errors in a tight loop, so
+            // log at most every 10 s, and slow the loop down once the stream is given up on.
+            let was_broken = errors.broken.swap(true, Ordering::Relaxed);
+            let now = errors.now_ms();
+            let last = errors.last_log_ms.load(Ordering::Relaxed);
+            if !was_broken || now.saturating_sub(last) >= 10_000 {
+                errors.last_log_ms.store(now, Ordering::Relaxed);
+                eprintln!("evolve: audio: {e}");
+            }
+            if was_broken {
+                std::thread::sleep(Duration::from_millis(100));
             }
         },
         None,
@@ -549,7 +616,7 @@ fn start_audio(mut commands: Commands, args: Res<Args>, mut settings: ResMut<Sou
     // Automated screenshot runs stay quiet.
     settings.muted = args.mute || args.screenshot.is_some();
     let levels = Arc::new(Levels::default());
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::sync_channel(256);
     let synth = Arc::new(Mutex::new(Synth::new(48_000.0, levels.clone(), rx)));
     let opening = "opening the audio device".to_string();
     settings.error = Some(opening.clone());
@@ -650,8 +717,12 @@ fn feed_audio(
     // Loudest at the shoreline, where land and water meet.
     store(&lv.surf, (4.0 * water * (1.0 - water) * 0.8 + water * 0.2) * near * (0.6 + 0.6 * wind.min(1.0)));
 
+    // Nothing plays without a device, so don't queue anything for it.
+    let playing = settings.error.is_none();
     let send = |sfx: Sfx, gain: f32, pan: f32, pitch: f32, voice: [f32; 4]| {
-        let _ = sound.events.send(SoundEvent { sfx, gain, pan, pitch, voice });
+        if playing {
+            let _ = sound.events.try_send(SoundEvent { sfx, gain, pan, pitch, voice });
+        }
     };
     // Thunder follows each lightning flash after the time sound takes to get here.
     let right = cam.right().as_vec3();

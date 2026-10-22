@@ -65,17 +65,32 @@ fn update_terrain(
     if t.res < 3 || state.built_from.as_ref().is_some_and(|b| std::sync::Arc::ptr_eq(b, t)) {
         return;
     }
-    // The same ground reshaped by creatures (same grid): update the mesh in place.
-    let same_grid = state.built_from.as_ref().is_some_and(|b| b.res == t.res && b.size == t.size && b.ground == t.ground);
-    if same_grid
-        && let Some(mesh) = state.mesh.as_ref().and_then(|h| meshes.get_mut(h))
+    // Ground reshaped by creatures (or any terrain on the same grid, so the same triangles and
+    // much the same bounds): the mesh is updated in place, only where the ground moved if it's
+    // the same world.
+    if let Some(old) = state.built_from.clone().filter(|b| b.res == t.res && b.size == t.size)
+        && let Some(handle) = state.mesh.clone()
     {
-        let (positions, normals, colors) = terrain_attributes(t);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
-        mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
-        state.built_from = Some(t.clone());
-        return;
+        let same_world = old.ground == t.ground && old.fertility == t.fertility;
+        let moved: Vec<usize> = if same_world {
+            (0..t.heights.len()).filter(|&k| old.heights[k] != t.heights[k]).collect()
+        } else {
+            Vec::new()
+        };
+        if same_world && moved.is_empty() {
+            state.built_from = Some(t.clone());
+            return;
+        }
+        if let Some(mesh) = meshes.get_mut(&handle) {
+            if !(same_world && patch_terrain(mesh, t, &moved)) {
+                let (positions, normals, colors) = terrain_attributes(t);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, positions);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+                mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+            }
+            state.built_from = Some(t.clone());
+            return;
+        }
     }
     for e in &old {
         commands.entity(e).despawn();
@@ -100,24 +115,70 @@ fn update_terrain(
     state.built_from = Some(t.clone());
 }
 
-/// Per-vertex positions, normals and colors (fertility in red, moved earth in green).
+/// Where grid point `k` sits on the ground plane.
+fn grid_xz(t: &Terrain, k: usize) -> (f32, f32) {
+    let n = t.res;
+    let x = ((k % n) as f32 / (n - 1) as f32 - 0.5) * t.size;
+    let z = ((k / n) as f32 / (n - 1) as f32 - 0.5) * t.size;
+    (x, z)
+}
+
+/// Fertility in red, moved earth in green, and blue set where it was dug rather than piled.
+fn vertex_color(t: &Terrain, k: usize) -> [f32; 4] {
+    let d = t.disturbance(k);
+    [t.fertility[k], (d.abs() / 0.6).min(1.0), if d < 0.0 { 1.0 } else { 0.0 }, 1.0]
+}
+
+/// Per-vertex positions, normals and colors.
 #[allow(clippy::type_complexity)]
 fn terrain_attributes(t: &Terrain) -> (Vec<[f32; 3]>, Vec<[f32; 3]>, Vec<[f32; 4]>) {
-    let n = t.res;
-    let mut positions = Vec::with_capacity(n * n);
-    let mut normals = Vec::with_capacity(n * n);
-    let mut colors = Vec::with_capacity(n * n);
-    for i in 0..n {
-        for j in 0..n {
-            let x = (j as f32 / (n - 1) as f32 - 0.5) * t.size;
-            let z = (i as f32 / (n - 1) as f32 - 0.5) * t.size;
-            let k = i * n + j;
-            positions.push([x, t.heights[k], z]);
-            normals.push(t.normal_at(x, z).to_array());
-            colors.push([t.fertility[k], (t.disturbance(k).abs() / 0.6).min(1.0), 0.0, 1.0]);
-        }
+    let count = t.res * t.res;
+    let mut positions = Vec::with_capacity(count);
+    let mut normals = Vec::with_capacity(count);
+    let mut colors = Vec::with_capacity(count);
+    for k in 0..count {
+        let (x, z) = grid_xz(t, k);
+        positions.push([x, t.heights[k], z]);
+        normals.push(t.normal_at(x, z).to_array());
+        colors.push(vertex_color(t, k));
     }
     (positions, normals, colors)
+}
+
+/// Updates the vertices at `moved` grid points, and the normals around them, in a mesh built
+/// from an earlier copy of the same terrain. False if the mesh lacks the expected attributes.
+fn patch_terrain(mesh: &mut Mesh, t: &Terrain, moved: &[usize]) -> bool {
+    use bevy::mesh::VertexAttributeValues::{Float32x3, Float32x4};
+    let n = t.res;
+    let mut near = vec![false; n * n];
+    for &k in moved {
+        let (i, j) = (k / n, k % n);
+        for ii in i.saturating_sub(1)..(i + 2).min(n) {
+            for jj in j.saturating_sub(1)..(j + 2).min(n) {
+                near[ii * n + jj] = true;
+            }
+        }
+    }
+    let Some(Float32x3(positions)) = mesh.attribute_mut(Mesh::ATTRIBUTE_POSITION) else {
+        return false;
+    };
+    for &k in moved {
+        positions[k][1] = t.heights[k];
+    }
+    let Some(Float32x4(colors)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR) else {
+        return false;
+    };
+    for &k in moved {
+        colors[k] = vertex_color(t, k);
+    }
+    let Some(Float32x3(normals)) = mesh.attribute_mut(Mesh::ATTRIBUTE_NORMAL) else {
+        return false;
+    };
+    for (k, _) in near.iter().enumerate().filter(|(_, n)| **n) {
+        let (x, z) = grid_xz(t, k);
+        normals[k] = t.normal_at(x, z).to_array();
+    }
+    true
 }
 
 /// Triangulated exactly like the physics heightfield (diagonal from (x0, z1) to (x1, z0)).

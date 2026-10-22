@@ -20,6 +20,7 @@ fn train(lr_scale: f32) -> (f32, f32) {
             lr,
             trace_decay: brain::per_tick_decay(0.3, dt),
             plastic_decay: 1.0,
+            pipelined: false,
         };
         brain::step_cpu(&g, OutputBias::default(), &mut st, &x, learn);
         st.noise[k] = 0.2 * rng.normal();

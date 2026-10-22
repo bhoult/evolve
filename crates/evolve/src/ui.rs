@@ -1,9 +1,10 @@
 //! The egui interface: toolbar, parameter panel (generated from `SimParams`), statistics and
 //! plots, creature inspector, save/load browser and help.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
@@ -61,8 +62,117 @@ pub struct UiState {
     /// for that creature).
     show_brain: bool,
     brain_closed_for: Option<u64>,
-    /// Body plans of zoo creatures, loaded as their rows come into view (None: unreadable).
-    sketches: HashMap<u64, Option<Arc<Sketch>>>,
+    /// Body plans of zoo creatures, read as their rows come into view.
+    sketches: Sketches,
+}
+
+/// A finished sketch: (zoo id, its body plan, or None if the genome is unreadable).
+type SketchDone = (u64, Option<Arc<Sketch>>);
+/// Where to ask the loader thread for a sketch, and where it leaves them.
+type SketchLoader = (Sender<(PathBuf, u64)>, Arc<Mutex<Vec<SketchDone>>>);
+
+/// Zoo creatures' body plans, read on a thread of its own (unpacking a big brain takes a while,
+/// and the zoo window shouldn't stall a frame for it), most recently asked for first.
+#[derive(Default)]
+struct Sketches {
+    done: HashMap<u64, Option<Arc<Sketch>>>,
+    asked: HashSet<u64>,
+    loader: Option<SketchLoader>,
+}
+
+fn read_sketch(dir: &Path, id: u64) -> Option<Arc<Sketch>> {
+    evolve_sim::zoo::load_genome(dir, id).ok().map(|g| Arc::new(sketch(&g)))
+}
+
+impl Sketches {
+    /// Takes in what the loader has finished.
+    fn collect(&mut self) {
+        if let Some((_, out)) = &self.loader
+            && let Ok(mut out) = out.lock()
+        {
+            self.done.extend(out.drain(..));
+        }
+    }
+
+    /// A creature's body plan if it has been read, asking for it if not.
+    fn get(&mut self, dir: &Path, id: u64) -> Option<Arc<Sketch>> {
+        if let Some(sk) = self.done.get(&id) {
+            return sk.clone();
+        }
+        if !self.asked.insert(id) {
+            return None;
+        }
+        if self.loader.is_none() {
+            self.loader = start_sketch_loader();
+        }
+        match &self.loader {
+            Some((ask, _)) if ask.send((dir.to_path_buf(), id)).is_ok() => None,
+            // No loader thread: read it here.
+            _ => {
+                let sk = read_sketch(dir, id);
+                self.done.insert(id, sk.clone());
+                sk
+            }
+        }
+    }
+}
+
+fn start_sketch_loader() -> Option<SketchLoader> {
+    let (ask, asks) = std::sync::mpsc::channel::<(PathBuf, u64)>();
+    let done = Arc::new(Mutex::new(Vec::new()));
+    let out = done.clone();
+    std::thread::Builder::new()
+        .name("evolve-zoo-sketches".into())
+        .spawn(move || {
+            let mut queue = Vec::new();
+            loop {
+                if queue.is_empty() {
+                    match asks.recv() {
+                        Ok(a) => queue.push(a),
+                        Err(_) => return,
+                    }
+                }
+                queue.extend(asks.try_iter());
+                // Newest first: those are the rows on screen now.
+                let Some((dir, id)) = queue.pop() else {
+                    continue;
+                };
+                let sk = read_sketch(&dir, id);
+                match out.lock() {
+                    Ok(mut out) => out.push((id, sk)),
+                    Err(_) => return,
+                }
+            }
+        })
+        .ok()?;
+    Some((ask, done))
+}
+
+/// Zoo table column widths, fixed so the header lines up with the rows scrolling under it.
+const ZOO_COLUMNS: [f32; 9] = [90.0, 150.0, 48.0, 56.0, 58.0, 44.0, 46.0, 50.0, 96.0];
+/// Height of a zoo table row (the body sketch's).
+const ZOO_ROW: f32 = 46.0;
+
+/// One zoo table row: `cell` fills each column in turn.
+fn zoo_row(ui: &mut egui::Ui, height: f32, stripe: bool, mut cell: impl FnMut(usize, &mut egui::Ui)) {
+    let width: f32 = ZOO_COLUMNS.iter().sum();
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    if stripe {
+        ui.painter().rect_filled(rect, 2.0, ui.visuals().faint_bg_color);
+    }
+    let mut x = rect.left();
+    for (k, w) in ZOO_COLUMNS.into_iter().enumerate() {
+        let r = egui::Rect::from_min_size(egui::pos2(x, rect.top()), egui::vec2(w, height));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(k)
+                .max_rect(r)
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        child.set_clip_rect(r.intersect(ui.clip_rect()));
+        cell(k, &mut child);
+        x += w;
+    }
 }
 
 impl Default for UiState {
@@ -96,7 +206,7 @@ impl Default for UiState {
             zoo_selected: None,
             show_brain: false,
             brain_closed_for: None,
-            sketches: HashMap::new(),
+            sketches: Sketches::default(),
         }
     }
 }
@@ -264,6 +374,12 @@ fn toolbar(
     fps: f64,
 ) {
     egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+        if !link.0.alive() {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 110, 90),
+                "The simulation stopped with an error (the reason is in the terminal). Restart evolve to continue.",
+            );
+        }
         ui.horizontal(|ui| {
             let label = if snap.paused { "▶ Run" } else { "⏸ Pause" };
             if ui.button(label).on_hover_text("Space").clicked() {
@@ -1057,6 +1173,12 @@ fn worlds_list(ui: &mut egui::Ui, snap: &Snapshot) {
                 ui.end_row();
                 for w in &snap.worlds {
                     ui.label(if w.index == 0 { "this".to_string() } else { format!("#{}", w.index) });
+                    if w.stopped {
+                        ui.colored_label(egui::Color32::from_rgb(255, 110, 90), "stopped")
+                            .on_hover_text("This world's thread stopped with an error; the reason is in the terminal.");
+                        ui.end_row();
+                        continue;
+                    }
                     ui.label(fmt_time(w.time));
                     ui.label(format!("{}", w.population));
                     ui.label(format!("{}", w.max_generation));
@@ -1135,88 +1257,94 @@ fn zoo_window(
                 st.zoo_selected = rows.first().map(|e| e.id);
             }
             let dir = PathBuf::from(&snap.zoo_dir);
-            // Reading a genome means unpacking its whole brain, so only a few per frame.
-            let mut budget = 4;
-            let mut load = |sketches: &mut HashMap<u64, Option<Arc<Sketch>>>, id: u64| -> Option<Arc<Sketch>> {
-                if let Some(sk) = sketches.get(&id) {
-                    return sk.clone();
-                }
-                if budget == 0 {
-                    return None;
-                }
-                budget -= 1;
-                let sk = evolve_sim::zoo::load_genome(&dir, id).ok().map(|g| Arc::new(sketch(&g)));
-                sketches.insert(id, sk.clone());
-                sk
-            };
+            st.sketches.collect();
             let selected = rows.iter().find(|e| Some(e.id) == st.zoo_selected).copied();
-            let sel_sketch = selected.and_then(|e| load(&mut st.sketches, e.id));
+            let sel_sketch = selected.and_then(|e| st.sketches.get(&dir, e.id));
             let now = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
             ui.horizontal_top(|ui| {
                 ui.vertical(|ui| {
-                    ui.set_width(560.0);
-                    egui::ScrollArea::vertical().max_height(520.0).show(ui, |ui| {
-                        egui::Grid::new("zoo_grid").num_columns(9).striped(true).show(ui, |ui| {
-                            for h in ["body (side)", "name", "score", "neurons", "parts", "meat", "", "", ""] {
-                                ui.label(egui::RichText::new(h).small().strong());
-                            }
-                            ui.end_row();
-                            for e in &rows {
-                                let sk = load(&mut st.sketches, e.id);
-                                let picked = st.zoo_selected == Some(e.id);
-                                if draw_sketch(ui, sk.as_deref(), e.color, picked, egui::vec2(84.0, 46.0))
-                                    .on_hover_text("Show this creature")
-                                    .clicked()
-                                {
-                                    st.zoo_selected = Some(e.id);
-                                }
-                                let pin = if e.pinned { " (pinned)" } else { "" };
-                                if ui.selectable_label(picked, format!("{}{pin}", e.name)).clicked() {
-                                    st.zoo_selected = Some(e.id);
-                                }
-                                if e.score_version == evolve_sim::zoo::SCORE_VERSION {
-                                    ui.label(format!("{:.1}", e.score));
-                                } else {
-                                    ui.label(egui::RichText::new(format!("{:.1}*", e.score)).weak())
-                                        .on_hover_text("Scored the old way (4 points per child, however little it was given), so it doesn't compare with newer scores");
-                                }
-                                ui.label(format!("{}", e.neurons));
-                                ui.label(match &sk {
-                                    Some(sk) => format!("{} + {}", sk.trunk, sk.limbs),
-                                    None => format!("{}", e.limbs + 1),
-                                })
-                                .on_hover_text("body segments + limb segments");
-                                ui.label(format!("{:.0}%", e.diet * 100.0));
-                                if ui.button("Drop").on_hover_text("Drop from the sky at a random spot").clicked() {
-                                    link.0.send(Control::ZooDrop {
-                                        id: e.id,
-                                        target: st.zoo_target,
-                                        pos: None,
-                                        count: st.zoo_count,
-                                    });
-                                }
-                                if ui.button("Place").on_hover_text("Click the ground in this world to drop it there").clicked() {
-                                    tools.zoo_place = Some((e.id, e.name.clone(), st.zoo_count));
-                                    tools.tool = Tool::Creature;
-                                }
-                                ui.horizontal(|ui| {
-                                    if ui
-                                        .small_button(if e.pinned { "unpin" } else { "pin" })
-                                        .on_hover_text("Pinned creatures are never pruned")
-                                        .clicked()
-                                    {
-                                        link.0.send(Control::ZooPin(e.id, !e.pinned));
+                    ui.set_width(ZOO_COLUMNS.iter().sum());
+                    zoo_row(ui, 18.0, false, |k, ui| {
+                        let h = ["body (side)", "name", "score", "neurons", "parts", "meat", "", "", ""][k];
+                        ui.label(egui::RichText::new(h).small().strong());
+                    });
+                    // Only the rows in view are laid out, and only their genomes are read.
+                    egui::ScrollArea::vertical().max_height(520.0).show_rows(ui, ZOO_ROW, rows.len(), |ui, range| {
+                        for (i, e) in rows[range.clone()].iter().enumerate() {
+                            let sk = st.sketches.get(&dir, e.id);
+                            let picked = st.zoo_selected == Some(e.id);
+                            let stripe = (range.start + i) % 2 == 1;
+                            ui.push_id(e.id, |ui| {
+                                zoo_row(ui, ZOO_ROW, stripe, |k, ui| match k {
+                                    0 => {
+                                        if draw_sketch(ui, sk.as_deref(), e.color, picked, egui::vec2(84.0, ZOO_ROW))
+                                            .on_hover_text("Show this creature")
+                                            .clicked()
+                                        {
+                                            st.zoo_selected = Some(e.id);
+                                        }
                                     }
-                                    if ui.small_button("delete").clicked() {
-                                        link.0.send(Control::ZooRemove(e.id));
+                                    1 => {
+                                        let pin = if e.pinned { " (pinned)" } else { "" };
+                                        if ui.selectable_label(picked, format!("{}{pin}", e.name)).clicked() {
+                                            st.zoo_selected = Some(e.id);
+                                        }
+                                    }
+                                    2 => {
+                                        if e.score_version == evolve_sim::zoo::SCORE_VERSION {
+                                            ui.label(format!("{:.1}", e.score));
+                                        } else {
+                                            ui.label(egui::RichText::new(format!("{:.1}*", e.score)).weak())
+                                                .on_hover_text("Scored the old way (4 points per child, however little it was given), so it doesn't compare with newer scores");
+                                        }
+                                    }
+                                    3 => {
+                                        ui.label(format!("{}", e.neurons));
+                                    }
+                                    4 => {
+                                        ui.label(match &sk {
+                                            Some(sk) => format!("{} + {}", sk.trunk, sk.limbs),
+                                            None => format!("{}", e.limbs + 1),
+                                        })
+                                        .on_hover_text("body segments + limb segments");
+                                    }
+                                    5 => {
+                                        ui.label(format!("{:.0}%", e.diet * 100.0));
+                                    }
+                                    6 => {
+                                        if ui.button("Drop").on_hover_text("Drop from the sky at a random spot").clicked() {
+                                            link.0.send(Control::ZooDrop {
+                                                id: e.id,
+                                                target: st.zoo_target,
+                                                pos: None,
+                                                count: st.zoo_count,
+                                            });
+                                        }
+                                    }
+                                    7 => {
+                                        if ui.button("Place").on_hover_text("Click the ground in this world to drop it there").clicked() {
+                                            tools.zoo_place = Some((e.id, e.name.clone(), st.zoo_count));
+                                            tools.tool = Tool::Creature;
+                                        }
+                                    }
+                                    _ => {
+                                        if ui
+                                            .small_button(if e.pinned { "unpin" } else { "pin" })
+                                            .on_hover_text("Pinned creatures are never pruned")
+                                            .clicked()
+                                        {
+                                            link.0.send(Control::ZooPin(e.id, !e.pinned));
+                                        }
+                                        if ui.small_button("delete").clicked() {
+                                            link.0.send(Control::ZooRemove(e.id));
+                                        }
                                     }
                                 });
-                                ui.end_row();
-                            }
-                        });
+                            });
+                        }
                     });
                 });
                 ui.separator();

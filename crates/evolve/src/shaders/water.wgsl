@@ -5,7 +5,7 @@
     mesh_view_bindings::view,
     view_transformations::position_world_to_clip,
 }
-#import evolve::env::{env, sky_color, fog_factor, fog_color, vnoise, fbm, hash3i}
+#import evolve::env::{env, sky_clear, sky_over, fog_factor, fog_color, vnoise, fbm, hash3i}
 #import evolve::heights::terrain_height
 
 struct Vertex {
@@ -16,11 +16,10 @@ struct Vertex {
 struct VertexOutput {
     @builtin(position) clip: vec4<f32>,
     @location(0) world: vec3<f32>,
-    // Where this point rests when the sea is flat, and how far below it the ground is.
+    // Where this point rests when the sea is flat.
     @location(1) rest: vec2<f32>,
-    @location(2) depth: f32,
     // Wave height relative to the sea state, for crest foam.
-    @location(3) crest: f32,
+    @location(2) crest: f32,
 }
 
 // Must match the ring layout in water.rs.
@@ -63,7 +62,6 @@ fn vertex(v: Vertex) -> VertexOutput {
     out.world = world;
     out.clip = position_world_to_clip(world);
     out.rest = xz;
-    out.depth = depth;
     out.crest = disp.y / max(total, 1e-4);
     return out;
 }
@@ -95,7 +93,9 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let t = env.misc.w;
     // Meters per pixel, to fade detail finer than a pixel.
     let fw = length(fwidth(xz));
-    let shore = shore_factor(in.depth);
+    // Per pixel: far out the grid is too coarse to follow the shoreline.
+    let water_depth = env.world.x - terrain_height(xz);
+    let shore = shore_factor(water_depth);
 
     // Slope of the wave field.
     var g = vec2<f32>(0.0);
@@ -133,13 +133,14 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let N = normalize(vec3<f32>(-g.x, 1.0, -g.y));
 
     // Reflection of the sky.
-    let ndv = max(dot(N, V), 0.0);
+    let ndv = clamp(dot(N, V), 0.0, 1.0);
     let F = 0.02 + 0.98 * pow(1.0 - ndv, 5.0);
     var R = reflect(-V, N);
     R.y = abs(R.y);
     // Waves blur what the sea reflects: clouds show soft and faint.
-    let clear_refl = sky_color(in.world, R, 0, false, false);
-    let refl = mix(sky_color(in.world, R, 2, false, false), clear_refl, 0.45);
+    let clear = sky_clear(R, false);
+    let clear_refl = sky_over(clear, in.world, R, 0, false);
+    let refl = mix(sky_over(clear, in.world, R, 2, false), clear_refl, 0.45);
 
     // Glints of the sun and moon.
     let Hs = normalize(V + env.sun.xyz);
@@ -151,7 +152,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     let spec = env.sun_color.rgb * spec_s + env.moon_color.rgb * spec_m;
 
     // Water body: turquoise over sand in the shallows, deep blue offshore.
-    let depth = max(in.depth, 0.0);
+    let depth = max(water_depth, 0.0);
     let shallow = exp(-depth * 0.35);
     let deep_col = vec3<f32>(0.004, 0.025, 0.055);
     let shallow_col = vec3<f32>(0.03, 0.22, 0.24);

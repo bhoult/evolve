@@ -53,6 +53,13 @@ fn full() -> f32 {
     1.0
 }
 
+fn long_ago() -> f32 {
+    1e9
+}
+
+/// A death within this many seconds of a bite counts as a kill, credited to the biter.
+const RECENT_ATTACK: f32 = 5.0;
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Creature {
     pub id: u64,
@@ -82,6 +89,9 @@ pub struct Creature {
     pub in_water: f32,
     pub drowning: bool,
     pub last_attacker: Option<u64>,
+    /// Seconds since it was last bitten.
+    #[serde(default = "long_ago")]
+    pub attacked_ago: f32,
     pub attack_flash: f32,
     pub mate_flash: f32,
     pub life: LifeStats,
@@ -226,6 +236,9 @@ pub struct Sim {
     /// Max speed and 0 otherwise.
     #[serde(skip)]
     pub gpu_headroom: f32,
+    /// Sim time the physics ground last took on the reshaped terrain.
+    #[serde(skip)]
+    pub settled_at: f64,
     #[serde(skip)]
     pub index: HashMap<u64, usize>,
     #[serde(skip)]
@@ -306,6 +319,7 @@ impl Sim {
             plant_spawn_acc: 0.0,
             brain_price: 1.0,
             gpu_headroom: 0.0,
+            settled_at: 0.0,
             index: HashMap::new(),
             perf: Perf::default(),
             events: Vec::new(),
@@ -369,9 +383,23 @@ impl Sim {
         }
         self.apply_gpu_budget();
         if let Some(g) = self.brains.as_mut() {
-            for c in &self.creatures {
-                if let Err(e) = g.register(c.id, &c.genome.brain, Some(&c.brain)) {
-                    self.events.push(format!("creature #{} has no brain on the GPU: {e}", c.id));
+            let (lo, _) = self.params.neuron_range();
+            for c in &mut self.creatures {
+                if g.register(c.id, &c.genome.brain, Some(&c.brain)).is_ok() {
+                    continue;
+                }
+                // A brain the GPU can't hold (a smaller GPU or budget than it was saved with)
+                // would never think: trim it until it fits, losing what it had learned.
+                let mut result = Err(String::new());
+                while result.is_err() && c.genome.brain.h > lo as usize {
+                    let nh = (c.genome.brain.h / 2).max(lo as usize);
+                    c.genome.brain = c.genome.brain.resize(nh, &mut self.rng);
+                    c.brain = BrainState::new(&c.genome.brain);
+                    result = g.register(c.id, &c.genome.brain, None);
+                }
+                match result {
+                    Ok(()) => self.events.push(format!("creature #{}'s brain was trimmed to fit the GPU", c.id)),
+                    Err(e) => self.events.push(format!("creature #{} has no brain on the GPU: {e}", c.id)),
                 }
             }
         }
@@ -515,10 +543,13 @@ impl Sim {
             let Some(pos) = self.world.bodies.get(torso).map(|b| b.translation()) else {
                 continue;
             };
-            let x = pos.x.clamp(-half, half);
-            let z = pos.z.clamp(-half, half);
+            // As at birth: clear of the walls and above the highest ground the body reaches.
+            let extent = body::plan_extent(&self.creatures[ci].plan);
+            let room = (self.terrain.half() - 1.0 - extent).max(0.0);
+            let x = pos.x.clamp(-room, room);
+            let z = pos.z.clamp(-room, room);
             let depth = body::plan_depth(&self.creatures[ci].plan);
-            let y = self.terrain.height_at(x, z) + depth + 1.0;
+            let y = self.ground_over(x, z, extent) + depth + 1.0;
             self.translate_creature(ci, Vec3::new(x, y, z) - pos);
         }
         let terrain = &self.terrain;
@@ -662,6 +693,7 @@ impl Sim {
             in_water: 0.0,
             drowning: false,
             last_attacker: None,
+            attacked_ago: long_ago(),
             attack_flash: 0.0,
             mate_flash: 0.0,
             life: LifeStats::default(),
@@ -1011,6 +1043,9 @@ impl Sim {
         let terrain = &self.terrain;
         let rain = self.weather.rain;
         let wl = p.water_level;
+        // Rapier splits each step into this many substeps but reports only the last one's motor
+        // impulses, so the work it shows is this much short of the step's.
+        let substeps = self.world.integration_parameters.num_solver_iterations.max(1) as f32;
         let mut drowned = Vec::new();
         let mut impacts = Vec::new();
         for c in &mut self.creatures {
@@ -1034,6 +1069,7 @@ impl Sim {
                     };
                 }
             }
+            let work = work * substeps;
             c.energy -= work * p.motor_energy_cost;
 
             let mut bad = false;
@@ -1161,12 +1197,16 @@ impl Sim {
             c.attack_cooldown -= bdt;
             c.attack_flash -= bdt;
             c.mate_flash -= bdt;
-            c.pain *= 0.85;
+            // Pain fades by the same amount each second whatever the brain rate.
+            c.pain *= 0.85f32.powf(bdt * 30.0);
+            c.attacked_ago += bdt;
             if c.dead.is_none() {
                 if c.energy <= 0.0 {
                     c.dead = Some(DeathCause::Starved);
                 } else if c.health <= 0.0 {
-                    c.dead = Some(if c.drowning {
+                    c.dead = Some(if c.attacked_ago < RECENT_ATTACK {
+                        DeathCause::Killed
+                    } else if c.drowning || c.oxygen < 0.5 {
                         DeathCause::Drowned
                     } else if c.hydration <= 0.0 {
                         DeathCause::Dehydrated
@@ -1192,6 +1232,21 @@ impl Sim {
     fn process_deaths(&mut self) {
         if !self.creatures.iter().any(|c| c.dead.is_some()) {
             return;
+        }
+        // Credit kills first, while every killer (even one that died this step too) is still in
+        // the index.
+        let mut kills = Vec::new();
+        for c in self.creatures.iter().filter(|c| c.dead == Some(DeathCause::Killed)) {
+            if let Some(k) = c.last_attacker.filter(|_| c.attacked_ago < RECENT_ATTACK) {
+                let at = self.world.bodies.get(c.parts[0].body).map(|b| b.translation()).unwrap_or(c.last_pos);
+                kills.push((k, c.id, at));
+            }
+        }
+        for (killer, victim, at) in kills {
+            if let Some(k) = self.creature_mut(killer) {
+                k.life.kills += 1;
+                self.highlight(HighlightKind::Kill, killer, Some(victim), at);
+            }
         }
         let mut dead = Vec::new();
         let mut i = 0;
@@ -1232,14 +1287,6 @@ impl Sim {
                 DeathCause::Dehydrated => self.stats.deaths_thirst += 1,
                 DeathCause::Removed | DeathCause::Glitch => self.stats.deaths_other += 1,
             }
-            if cause == DeathCause::Killed
-                && let Some(k) = c.last_attacker.and_then(|a| self.creature_mut(a))
-            {
-                k.life.kills += 1;
-                let killer = k.id;
-                let at = self.world.bodies.get(c.parts[0].body).map(|b| b.translation()).unwrap_or(c.last_pos);
-                self.highlight(HighlightKind::Kill, killer, Some(c.id), at);
-            }
             if !matches!(cause, DeathCause::Removed | DeathCause::Glitch) {
                 let score = self.life_score(&c);
                 match learned.get(&c.id) {
@@ -1253,17 +1300,39 @@ impl Sim {
                 self.stats.record_life(c.life.food(), c.life.distance, c.life.children as f32, c.age);
                 // Meat where each body part lay.
                 let leftover = c.energy.max(0.0) * 0.5;
+                // Shares by volume of the body as it was built (the density param may have
+                // changed since).
+                let volume: f32 = c.plan.iter().map(|s| s.shape.volume()).sum::<f32>().max(1e-6);
                 for (k, part) in c.parts.iter().enumerate() {
                     let Some(b) = self.world.bodies.get(part.body) else {
                         continue;
                     };
-                    let part_mass = c.plan[k].shape.volume() * self.params.body_density;
-                    let share = part_mass / c.mass.max(1e-3);
+                    let share = c.plan[k].shape.volume() / volume;
+                    let part_mass = c.mass * share;
                     let e = part_mass * self.params.meat_per_mass + leftover * share;
                     if e > 0.5 {
                         let pos = b.translation();
                         self.add_meat(pos, e);
                     }
+                }
+            }
+            // Earth it was carrying drops where it died.
+            if c.soil > 0.0 {
+                let at = self
+                    .world
+                    .bodies
+                    .get(c.parts[0].body)
+                    .map(|b| b.translation())
+                    .filter(|p| p.is_finite())
+                    .unwrap_or(c.last_pos);
+                let (depth, height) = (self.params.dig_depth, self.params.pile_height);
+                // Where the ground there is already piled as high as it goes, spill around it.
+                let mut left = c.soil;
+                for (dx, dz) in [(0.0, 0.0), (1.5, 0.0), (-1.5, 0.0), (0.0, 1.5), (0.0, -1.5), (1.5, 1.5), (-1.5, -1.5), (1.5, -1.5), (-1.5, 1.5)] {
+                    if left <= 1e-6 || !at.is_finite() {
+                        break;
+                    }
+                    left -= self.terrain.reshape(at.x + dx, at.z + dz, left, depth, height);
                 }
             }
             if self.grab.as_ref().is_some_and(|g| g.creature == Some(c.id)) {
@@ -1277,6 +1346,7 @@ impl Sim {
                 g.unregister(c.id);
             }
         }
+        self.settle_terrain();
     }
 
     pub fn sample_history(&mut self) {
