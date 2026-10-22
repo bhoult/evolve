@@ -34,6 +34,13 @@ pub struct CreatureView {
     pub in_water: f32,
     /// What its life has achieved so far (see `Sim::score_parts`).
     pub score: f32,
+    pub mass: f32,
+    pub children: u32,
+    pub kills: u32,
+    /// Food and meat eaten.
+    pub food: f32,
+    /// Net distance travelled.
+    pub distance: f32,
     /// Its voice genes (see `Traits::voice`), how loudly it's calling (0 silent) and at what pitch.
     pub voice: [f32; 4],
     pub call: f32,
@@ -104,6 +111,8 @@ pub struct CreatureDetail {
     pub oxygen: f32,
     pub hydration: f32,
     pub mate_drive: f32,
+    /// Muscle power per kg, W/kg.
+    pub exertion: f32,
     pub mass: f32,
     /// Torso plus spine segments.
     pub trunk: usize,
@@ -212,6 +221,11 @@ impl Sim {
                 drowning: c.drowning,
                 in_water: c.in_water,
                 score: self.life_score(c),
+                mass: c.mass,
+                children: c.life.children,
+                kills: c.life.kills,
+                food: c.life.food(),
+                distance: c.life.distance,
                 voice: c.genome.traits.voice,
                 call: crate::life::call_loudness(c),
                 call_pitch: c.output(crate::brain::output::CALL_PITCH),
@@ -259,6 +273,7 @@ impl Sim {
                 oxygen: c.oxygen,
                 hydration: c.hydration,
                 mate_drive: c.mate_drive,
+                exertion: c.exertion,
                 mass: c.mass,
                 trunk: c.plan.iter().filter(|p| p.trunk).count(),
                 limbs: c.plan.iter().filter(|p| !p.trunk).count(),

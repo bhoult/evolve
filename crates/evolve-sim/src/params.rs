@@ -220,7 +220,7 @@ params! {
         /// Resting energy burn per second, times mass^0.75.
         basal_metabolism: f32 = 0.012, [0, 0.5], Live;
         /// Energy per joule of mechanical work done by joint motors.
-        motor_energy_cost: f32 = 0.005, [0, 0.05], Live;
+        motor_energy_cost: f32 = 0.0005, [0, 0.05], Live;
         /// Energy that creatures dropped from the sky start with, capped at what their body can
         /// store. A fixed amount rather than a fraction, so a big body is no free fuel tank.
         start_energy: f32 = 80.0, [1, 2000], Live;
@@ -330,6 +330,12 @@ params! {
         attack_cooldown: f32 = 0.6, [0.05, 10], Live;
         /// Seconds a creature can hold its breath (scaled by its breath gene).
         breath_time: f32 = 20.0, [1, 600], Live;
+        /// Fraction of a full breath taken in per second while the head is out of the water
+        /// (scaled by the lung gene). Hard work can use oxygen faster than this, and a creature
+        /// short of breath is weak until it recovers.
+        breath_rate: f32 = 0.25, [0.01, 5], Live;
+        /// Oxygen used per second for each watt of muscle power per kg of body.
+        exertion_oxygen: f32 = 0.08, [0, 2], Live;
         /// Health lost per second while out of breath underwater.
         drowning_damage: f32 = 5.0, [0, 100], Live;
     }

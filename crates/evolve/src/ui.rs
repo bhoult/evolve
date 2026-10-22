@@ -551,6 +551,7 @@ fn stats_panel(
 
                 ui.add_space(6.0);
                 species_list(ui, snap, link, cam);
+                leaders_list(ui, snap, link, cam);
                 if snap.worlds.len() > 1 {
                     ui.add_space(6.0);
                     worlds_list(ui, snap);
@@ -717,7 +718,7 @@ fn inspector(ctx: &mut egui::Context, c: &CreatureDetail, link: &SimLink, cam: &
             ui.label(format!("Generation {}, {}, age {}", c.generation, origin, fmt_time(c.age as f64)));
             bar(ui, "energy", c.energy, c.max_energy);
             bar(ui, "health", c.health, c.max_health);
-            bar(ui, "oxygen %", c.oxygen * 100.0, 100.0);
+            bar(ui, "breath %", c.oxygen * 100.0, 100.0);
             bar(ui, "water %", c.hydration * 100.0, 100.0);
             bar(ui, "mating drive %", c.mate_drive * 100.0, 100.0);
             let calling = ((c.outputs.get(evolve_sim::brain::output::CALL).copied().unwrap_or(-1.0) - 0.2) / 0.8).max(0.0);
@@ -826,6 +827,7 @@ fn inspector(ctx: &mut egui::Context, c: &CreatureDetail, link: &SimLink, cam: &
                     "Record",
                     format!("{} children, {} kills, {} bites", c.life.children, c.life.kills, c.life.attacks),
                 );
+                row("Exertion", format!("{:.2} W per kg of body", c.exertion));
                 let [eat, hunt, breed, travel] = c.score;
                 row(
                     "Score",
@@ -946,7 +948,7 @@ fn species_list(ui: &mut egui::Ui, snap: &Snapshot, link: &SimLink, cam: &mut Or
         .default_open(true)
         .show(ui, |ui| {
             ui.label(
-                egui::RichText::new("Creatures that can interbreed. Click one to follow its most advanced member.")
+                egui::RichText::new("Creatures that can interbreed. Click one to follow its best-scoring member.")
                     .small()
                     .weak(),
             );
@@ -980,6 +982,61 @@ fn species_list(ui: &mut egui::Ui, snap: &Snapshot, link: &SimLink, cam: &mut Or
                 ui.label(egui::RichText::new(format!("and {} smaller ones", snap.species.len() - 12)).small());
             }
         });
+}
+
+/// Who's ahead right now, in each way a creature can stand out; click to go and follow it.
+fn leaders_list(ui: &mut egui::Ui, snap: &Snapshot, link: &SimLink, cam: &mut OrbitCam) {
+    use evolve_sim::snapshot::CreatureView;
+    type Measure = fn(&CreatureView) -> Option<f32>;
+    // (title, how it's measured, the number shown)
+    let records: [(&str, Measure, fn(f32) -> String); 11] = [
+        ("Top score", |c| Some(c.score), |v| format!("{v:.1}")),
+        ("Oldest", |c| Some(c.age), |v| fmt_time(v as f64)),
+        ("Most evolved", |c| Some(c.generation as f32), |v| format!("generation {v:.0}")),
+        ("Biggest brain", |c| Some(c.neurons as f32), |v| format!("{v:.0} neurons")),
+        // Net progress over its life so far, once it has lived long enough to judge.
+        ("Fastest", |c| (c.age > 30.0).then(|| c.distance / c.age), |v| format!("{v:.2} m/s")),
+        ("Farthest travelled", |c| Some(c.distance), |v| format!("{v:.0} m")),
+        ("Biggest eater", |c| Some(c.food), |v| format!("{v:.0} energy")),
+        ("Most children", |c| Some(c.children as f32), |v| format!("{v:.0}")),
+        ("Best hunter", |c| Some(c.kills as f32), |v| format!("{v:.0} kills")),
+        ("Heaviest", |c| Some(c.mass), |v| format!("{v:.0} kg")),
+        ("Best swimmer", |c| (c.in_water > 0.5 && !c.drowning).then_some(c.speed), |v| format!("{v:.2} m/s now")),
+    ];
+    egui::CollapsingHeader::new("Leaders").default_open(true).show(ui, |ui| {
+        ui.label(egui::RichText::new("Who's ahead right now. Click one to go and follow it.").small().weak());
+        egui::Grid::new("leaders_grid").num_columns(3).striped(true).show(ui, |ui| {
+            for (title, measure, show) in records {
+                let best = snap
+                    .creatures
+                    .iter()
+                    .filter_map(|c| measure(c).map(|v| (c, v)))
+                    .filter(|(_, v)| *v > 0.0)
+                    .max_by(|a, b| a.1.total_cmp(&b.1));
+                ui.label(title);
+                match best {
+                    Some((c, v)) => {
+                        let [r, g, b] = c.color.map(|x| (x.clamp(0.0, 1.0) * 255.0) as u8);
+                        let text = egui::RichText::new(format!("#{}", c.id)).color(egui::Color32::from_rgb(r, g, b));
+                        if ui
+                            .selectable_label(snap.selected.as_ref().is_some_and(|s| s.id == c.id), text)
+                            .on_hover_text("Go and follow it")
+                            .clicked()
+                        {
+                            link.cmd(Command::Select(Some(c.id)));
+                            cam.follow = true;
+                        }
+                        ui.label(show(v));
+                    }
+                    None => {
+                        ui.label("–");
+                        ui.label("");
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    });
 }
 
 fn worlds_list(ui: &mut egui::Ui, snap: &Snapshot) {

@@ -209,7 +209,9 @@ impl Sim {
         for c in &self.creatures {
             for j in &c.joints {
                 let (mid, half) = j.span();
-                let force = p.motor_torque_per_kg * j.strength * c.mass;
+                // Out of breath, muscles weaken (to a quarter at worst).
+                let breath = (c.oxygen / 0.3).clamp(0.25, 1.0);
+                let force = p.motor_torque_per_kg * j.strength * c.mass * breath;
                 if let Some(joint) = self.world.impulse_joints.get_mut(j.handle, false) {
                     for &(axis, d) in j.axes() {
                         let target = mid + c.output(output::JOINTS + j.slot + d) * half;

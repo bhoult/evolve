@@ -92,6 +92,9 @@ pub struct Creature {
     /// Seconds until a call in progress is announced again.
     #[serde(skip)]
     pub call_timer: f32,
+    /// Muscle power per kg of body, smoothed over about a second, W/kg.
+    #[serde(skip)]
+    pub exertion: f32,
     pub rained: bool,
     pub dead: Option<DeathCause>,
 }
@@ -662,6 +665,7 @@ impl Sim {
             last_pos: Vec3::new(x, y, z),
             fall: Vec::new(),
             call_timer: 0.0,
+            exertion: 0.0,
             rained: parents.is_none(),
             dead: None,
         };
@@ -1015,12 +1019,13 @@ impl Sim {
                     body::joint_state(&self.world, &c.parts, j),
                     self.world.impulse_joints.get(j.handle),
                 ) {
-                    // Impulses are indexed lin x, y, z then ang x, y, z.
+                    // The motors' own impulses, indexed by axis (lin x, y, z, then ang x, y, z).
+                    // Not `joint.impulses`: that holds the locked axes', which do no work.
+                    let m = &joint.data.motors;
                     work += match j.kind {
-                        body::JointKind::Hinge => (joint.impulses[3] * omega[0]).abs(),
+                        body::JointKind::Hinge => (m[3].impulse * omega[0]).abs(),
                         body::JointKind::Swivel => {
-                            ((joint.impulses[4] * omega[0]).abs() + (joint.impulses[5] * omega[1]).abs())
-                                * p.swivel_energy_cost
+                            ((m[4].impulse * omega[0]).abs() + (m[5].impulse * omega[1]).abs()) * p.swivel_energy_cost
                         }
                     };
                 }
@@ -1073,24 +1078,36 @@ impl Sim {
                 continue;
             }
 
-            if c.in_water >= 0.7 {
-                let hold = p.breath_time * (0.3 + 1.7 * c.genome.traits.breath);
-                c.oxygen -= DT / hold.max(0.1);
+            // Breathing: muscles burn oxygen in proportion to their power per kg of body; the
+            // creature breathes it back in (at a rate set by its lungs) while its head is out of
+            // the water. Underwater it holds its breath, and drowns when that runs out.
+            let half = c.torso_half();
+            let mouth = torso.position().transform_point(Vec3::new(half.x, 0.0, 0.0));
+            let lungs = c.genome.traits.breath;
+            let power = work / DT / c.mass.max(0.1);
+            c.exertion += (power - c.exertion) * (DT / 1.0);
+            let exertion = p.exertion_oxygen * power;
+            let head_under = mouth.y < p.water_level - 0.05 || c.in_water >= 0.95;
+            if head_under {
+                let hold = p.breath_time * (0.3 + 1.7 * lungs);
+                c.oxygen -= DT / hold.max(0.1) + exertion * DT;
             } else {
-                c.oxygen = (c.oxygen + DT * 0.5).min(1.0);
+                c.oxygen += (p.breath_rate * (0.6 + 0.8 * lungs) - exertion) * DT;
             }
-            if !c.drowning && c.oxygen <= 0.0 {
+            c.oxygen = c.oxygen.min(1.0);
+            let suffocating = head_under && c.oxygen <= 0.0;
+            if !c.drowning && suffocating {
                 drowned.push((c.id, pos));
             }
-            c.drowning = c.oxygen <= 0.0;
-            if c.drowning {
+            c.drowning = suffocating;
+            if c.oxygen <= 0.0 {
                 c.oxygen = 0.0;
-                c.health -= p.drowning_damage * DT;
+                if c.drowning {
+                    c.health -= p.drowning_damage * DT;
+                }
             }
 
             // Drinking: any water will do, as long as the mouth is in it.
-            let half = c.torso_half();
-            let mouth = torso.position().transform_point(Vec3::new(half.x, 0.0, 0.0));
             if mouth.y < p.water_level + 0.1 {
                 c.hydration += p.drink_rate * DT;
             }

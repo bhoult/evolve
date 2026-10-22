@@ -529,3 +529,53 @@ fn learning_twins() {
         b2 / k
     );
 }
+
+/// How short of breath creatures get on land: the spread of oxygen levels over a few minutes.
+/// EVOLVE_DIAG_SAVE=world.evo
+#[test]
+#[ignore]
+fn breathlessness() {
+    let Some(path) = std::env::var_os("EVOLVE_DIAG_SAVE") else {
+        return;
+    };
+    let mut sim = evolve_sim::save::load(std::path::Path::new(&path)).unwrap();
+    let mut p = sim.params.clone();
+    for kv in std::env::var("EVOLVE_DIAG_SET").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        let (k, v) = kv.split_once('=').unwrap();
+        p.visit(&mut |info, r| {
+            if info.name == k
+                && let evolve_sim::params::ParamRef::F32(x) = r
+            {
+                *x = v.parse().unwrap();
+            }
+        });
+    }
+    sim.set_params(p);
+    let (mut samples, mut low, mut winded, mut sum) = (0u32, 0u32, 0u32, 0.0f32);
+    let mut powers = Vec::new();
+    for _ in 0..180 {
+        for _ in 0..60 {
+            sim.step();
+        }
+        for c in &sim.creatures {
+            if c.in_water > 0.5 {
+                continue;
+            }
+            samples += 1;
+            sum += c.oxygen;
+            powers.push(c.exertion);
+            low += (c.oxygen < 0.3) as u32;
+            winded += (c.oxygen < 0.7) as u32;
+        }
+    }
+    let f = |k: u32| 100.0 * k as f32 / samples.max(1) as f32;
+    powers.sort_by(|a, b| a.total_cmp(b));
+    let q = |x: f32| powers.get(((powers.len() as f32 - 1.0) * x) as usize).copied().unwrap_or(0.0);
+    println!("muscle power W/kg: median {:.3}, 90% {:.3}, 99% {:.3}, max {:.3}", q(0.5), q(0.9), q(0.99), q(1.0));
+    println!(
+        "on land: mean oxygen {:.2}; below 70% {:.1}% of the time, below 30% (weakened) {:.1}%",
+        sum / samples.max(1) as f32,
+        f(winded),
+        f(low)
+    );
+}

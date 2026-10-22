@@ -98,6 +98,10 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 - *Controls:* M or the toolbar mutes; the slider next to it sets the volume. `--mute` starts
   silent, and screenshot runs are always silent.
 
+**Leaders** (in the right panel) names who's ahead right now: top score, oldest, most evolved,
+biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest
+and best swimmer. Click one to go and follow it.
+
 **The brain view** opens when you follow a creature (F, or Follow in its inspector), or with the
 inspector's Brain view button.
 - *Layout:* the senses its body uses are on the left and the actions it can take on the right. The
@@ -213,9 +217,18 @@ of them and costs about as much as resting metabolism, so a big brain has to pay
   far back it remembers, and what it finds rewarding.
 
 **Energy and water.**
-- *Energy* comes only from eating: plants, or meat in proportion to the diet gene. It drains with
-  body mass (mass^0.75), brain size, armor, lung capacity, and the mechanical work the joint
-  motors actually do (double for swivels). A creature with no energy starves.
+- *Energy* comes only from eating: plants, or meat in proportion to the diet gene.
+  - *What it costs:* it drains with body mass (mass^0.75), brain size, armor, lung capacity,
+    calling, and the mechanical work the joint motors actually do (double for swivels).
+  - *Motor work:* until 2026-10-22 a bug meant motor work cost nothing, so flailing was free and
+    tentacles were no dearer than hinges. Now ordinary movement costs little and a creature
+    thrashing at 20 W per kg pays about twice its resting metabolism.
+  - *Starving:* a creature with no energy starves.
+- *Breath:* muscles burn oxygen in proportion to their power per kg (`exertion_oxygen`), and a
+  creature breathes it back in while its head is above water (`breath_rate`, scaled by the lung
+  gene). Hard work can outpace breathing. Below 30% breath its muscles weaken, so a sprinter must
+  pace itself. Underwater it holds its breath (`breath_time`), and drowns when that runs out.
+  Measured on an evolved world, creatures on land are short of breath about 6% of the time.
 - *Thirst:* a full creature runs dry in `thirst_time` (6 simulated minutes) and then loses health.
   Putting its mouth in water refills it in about two seconds, and rain helps a little. Any water
   will do.
