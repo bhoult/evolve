@@ -42,9 +42,11 @@ pub struct ZooMeta {
     pub score_version: u32,
 }
 
-/// 1: eating, hunting, breeding (by energy given) and travelling. 0 (before 2026-10-22) counted
-/// 4 points per child however little it was given, which tiny do-nothing breeders exploited.
-pub const SCORE_VERSION: u32 = 1;
+/// 2: as 1, earned with children's bodies paid for. 1 (2026-10-22) was earned while a child's
+/// body was free and its carcass still left meat, which heaps of meat-eaters living on their own
+/// dead exploited. 0 (before 2026-10-22) counted 4 points per child however little it was given,
+/// which tiny do-nothing breeders exploited.
+pub const SCORE_VERSION: u32 = 2;
 
 pub type SharedZoo = Arc<Mutex<Zoo>>;
 
