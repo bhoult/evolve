@@ -182,6 +182,9 @@ pub struct Snapshot {
     pub whirlwinds: Vec<([f32; 2], f32, u32)>,
     /// Whether the ground is shaking (an earthquake).
     pub quaking: bool,
+    /// A tsunami rolling in: which way (x, z), where its crest is along that way, and its
+    /// height, m.
+    pub tsunami: Option<([f32; 2], f32, f32)>,
     /// Totems: where each stands (on the ground) and what it stirs.
     pub totems: Vec<([f32; 3], crate::acts::TotemKind)>,
     /// Which day it is, counting from 1.
@@ -355,6 +358,7 @@ impl Sim {
             storm_left: self.acts.storm_left(self.time),
             whirlwinds: self.acts.whirlwinds.iter().map(|w| ([w.x, w.z], w.strength(self.time), w.seed)).collect(),
             quaking: self.acts.quake.is_some(),
+            tsunami: self.acts.tsunami.as_ref().map(|t| (t.dir, t.front(self.time), t.height(self.time))),
             totems: self
                 .acts
                 .totems

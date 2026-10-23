@@ -150,6 +150,9 @@ struct Miracles {
     chunk: [(Handle<Mesh>, Handle<StandardMaterial>); 2],
     /// Bubbles owed to the springs, carried between frames.
     spring_owed: f32,
+    /// The tsunami's wall of water (shaped once; moved, turned and scaled to the wave each frame).
+    wave: Option<Entity>,
+    wave_look: (Handle<Mesh>, Handle<StandardMaterial>),
     /// The totems standing: where, what kind, and their pole, head and light.
     totems: Vec<(Vec3, TotemKind, [Entity; 3])>,
     /// Pole, then a head for each kind (love, war, fear).
@@ -210,6 +213,46 @@ struct MiracleMesh;
 
 #[derive(Component)]
 struct SmokeMesh;
+
+/// How long the wall of water is across its front, m (more than the world's diagonal).
+const WAVE_SPAN: f32 = 420.0;
+
+/// The tsunami's water as a sheet, in its own frame: x along its crest, z the way it travels
+/// (0 at the crest), y its height at full strength. Foam white along the crest, deep green-blue
+/// on its face and behind.
+fn wave_mesh() -> Mesh {
+    use evolve_sim::acts::{TSUNAMI_HEIGHT, tsunami_profile};
+    let cols = 140;
+    let rows: Vec<f32> = (0..=24).map(|k| -40.0 + 46.0 * (k as f32 / 24.0).powf(0.8)).collect();
+    let (mut positions, mut normals, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for &q in &rows {
+        let h = TSUNAMI_HEIGHT * tsunami_profile(q);
+        let slope = TSUNAMI_HEIGHT * (tsunami_profile(q + 0.5) - tsunami_profile(q - 0.5));
+        let n = Vec3::new(0.0, 1.0, -slope).normalize();
+        let foam = (1.0 - (q / 3.0).abs()).clamp(0.0, 1.0);
+        let body = if q > 0.0 { Vec3::new(0.08, 0.3, 0.36) } else { Vec3::new(0.1, 0.36, 0.42) };
+        let c = body.lerp(Vec3::new(0.92, 0.96, 1.0), foam);
+        let alpha = if h < 0.05 { 0.0 } else { 0.92 };
+        for i in 0..=cols {
+            let x = (i as f32 / cols as f32 - 0.5) * WAVE_SPAN;
+            positions.push([x, h, q]);
+            normals.push(n.to_array());
+            colors.push([c.x, c.y, c.z, alpha]);
+        }
+    }
+    let w = cols as u32 + 1;
+    for r in 0..rows.len() as u32 - 1 {
+        for i in 0..cols as u32 {
+            let (a, b) = (r * w + i, (r + 1) * w + i);
+            indices.extend_from_slice(&[a, b, a + 1, a + 1, b, b + 1]);
+        }
+    }
+    Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::default())
+        .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_indices(Indices::U32(indices))
+}
 
 /// A soft round dot.
 fn dot_image() -> Image {
@@ -307,7 +350,21 @@ fn setup(
         wood,
         heads,
     );
+    let wave_look = (
+        meshes.add(wave_mesh()),
+        materials.add(StandardMaterial {
+            base_color: Color::WHITE,
+            alpha_mode: AlphaMode::Blend,
+            perceptual_roughness: 0.12,
+            reflectance: 0.5,
+            double_sided: true,
+            cull_mode: None,
+            ..default()
+        }),
+    );
     commands.insert_resource(Miracles {
+        wave: None,
+        wave_look,
         totems: Vec::new(),
         totem_look,
         chunk,
@@ -398,6 +455,13 @@ fn watch(
                 });
             }
         }
+    }
+    // A tsunami: the wave rolls in from the sea beyond the spot, the ground roars.
+    if let Some((Tool::Tsunami, at)) = tools.summon {
+        tools.summon = None;
+        let toward = eye.forward().as_vec3();
+        link.cmd(evolve_sim::Command::Tsunami { at: at.to_array(), toward: toward.to_array() });
+        sounds.write(PlaySound { sfx: Sfx::Rumble, at, gain: 1.0, floor: 0.5 });
     }
     // A chunk of land: it falls from high above, tumbling, straight down onto the spot.
     if let Some((Tool::Landfall, to)) = tools.summon {
@@ -501,6 +565,7 @@ fn scripted(
                 link.cmd(evolve_sim::Command::Spring { at: at.to_array() });
             }
         }
+        "tsunami" => tools.summon = near(0.0).map(|at| (Tool::Tsunami, at)),
         "manna" => {
             if let Some(at) = near(5.0) {
                 link.cmd(evolve_sim::Command::Manna { at: at.to_array() });
@@ -518,7 +583,7 @@ fn scripted(
         }
         _ => {}
     }
-    if matches!(kind.as_str(), "quake" | "land" | "spring" | "manna" | "love" | "war" | "fear") {
+    if matches!(kind.as_str(), "quake" | "land" | "spring" | "manna" | "love" | "war" | "fear" | "tsunami") {
         return;
     }
     if kind == "whirl" {
@@ -1086,6 +1151,54 @@ fn animate(
                         color: [(c * 4.0).extend(1.0), (c * 2.0).extend(0.0)],
                     });
                 }
+            }
+        }
+    }
+    // The tsunami's wall of water, and foam and spray off its crest wherever it's above ground.
+    match snap.tsunami {
+        Some((dir, front, height)) => {
+            let way = Vec3::new(dir[0], 0.0, dir[1]);
+            let origin = way * front + Vec3::Y * snap.params.water_level;
+            let rotation = Quat::from_rotation_arc(Vec3::Z, way);
+            let scale = Vec3::new(1.0, (height / evolve_sim::acts::TSUNAMI_HEIGHT).max(0.01), 1.0);
+            let e = *st.wave.get_or_insert_with(|| {
+                let (mesh, material) = st.wave_look.clone();
+                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::default(), NotShadowCaster)).id()
+            });
+            if let Ok(mut tf) = chunks.get_mut(e) {
+                *tf = Transform { translation: origin, rotation, scale };
+            }
+            let along = Vec3::new(-way.z, 0.0, way.x);
+            let half = snap.terrain.half();
+            for _ in 0..(400.0 * dt).ceil() as usize {
+                let x = st.range(-half * 1.4, half * 1.4);
+                let p = origin + along * x;
+                if p.x.abs() > half || p.z.abs() > half {
+                    continue;
+                }
+                let crest = p.y + height;
+                if crest < snap.terrain.height_at(p.x, p.z) + 0.3 {
+                    continue;
+                }
+                let spray = st.rand() < 0.4;
+                let life = st.range(0.8, 1.8);
+                let size = if spray { st.range(0.15, 0.3) } else { st.range(1.2, 2.8) };
+                let vel = way * st.range(6.0, 11.0) + Vec3::Y * st.range(1.0, if spray { 7.0 } else { 3.0 });
+                st.puff(Spark {
+                    pos: Vec3::new(p.x, crest, p.z),
+                    vel,
+                    lift: if spray { -9.8 } else { 0.0 },
+                    drag: 0.5,
+                    age: 0.0,
+                    life,
+                    size: [size, size * if spray { 0.6 } else { 1.8 }],
+                    color: [Vec4::new(0.95, 0.97, 1.0, 0.85), Vec4::new(0.9, 0.95, 1.0, 0.0)],
+                });
+            }
+        }
+        None => {
+            if let Some(e) = st.wave.take() {
+                commands.entity(e).despawn();
             }
         }
     }

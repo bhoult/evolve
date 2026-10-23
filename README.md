@@ -144,6 +144,13 @@ first) and the time of day.
   it, so it adds to the island. It crushes what it lands on and throws what's near.
 - *Manna*: click a spot and food falls from heaven: sixteen full-grown plants in a ring 6 m
   across, under a soft shaft of golden light and drifting golden flakes, to a choir.
+- *Tsunami*: click a shore and a great wave rolls in from the open sea beyond it, toward the
+  island's middle, at 12 m/s: about 7 m high at sea, it builds over the first seconds and is spent
+  by the end of its 24. Its water stands up to the crest's height over the ground it reaches
+  (higher ground stays dry), and in it creatures float and hold their breath, and are carried
+  off: water drag is against the wave's own flow, so it sweeps along what it covers. Plants and
+  meat under more than 0.8 m of it are washed away. Drawn as a wall of water with a foaming
+  crest, spray and foam thrown off it wherever it's above ground, to a deep roar.
 - *Totem*: pick love, war or fear beside the tools, then click to raise one (click a totem to take
   it down). It sways every creature within 16 m (fully over the inner half), overriding its own
   leanings:
@@ -166,7 +173,7 @@ first) and the time of day.
   still strikes but doesn't flash the whole sky.
 - `--miracle KIND:N` (with `--select-first` and `--screenshot`) works one on or near the selected
   creature N frames before the screenshot: bless, smite, take, meteor, whirl, quake, land,
-  spring, manna, love, war or fear.
+  spring, manna, love, war, fear or tsunami.
 
 **Leaders** (in the right panel) names who's ahead right now: top score, oldest, most evolved,
 biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest

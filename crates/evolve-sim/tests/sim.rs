@@ -746,3 +746,47 @@ fn the_land_can_be_raised_lowered_split_and_added_to_and_springs_run() {
     sim.apply(Command::Landfall { at: sea.to_array() });
     assert!(h(&sim, sea.x, sea.z) > wl + 1.0, "new land out of the sea: {}", h(&sim, sea.x, sea.z));
 }
+
+#[test]
+fn a_tsunami_carries_creatures_inland_washes_plants_away_and_passes() {
+    use evolve_sim::Command;
+    use evolve_sim::acts::TSUNAMI_LIFE;
+    let mut p = quiet_params();
+    p.weather = false;
+    p.wind_force = 0.0;
+    p.plant_spawn_rate = 0.0;
+    let mut sim = Sim::new(p);
+    let wl = sim.params.water_level;
+    // Low ground near the shore, well inside the world.
+    let shore = (0..2000)
+        .map(|k| {
+            let a = k as f32 * 0.0731;
+            let r = 15.0 + (k as f32 * 0.37) % (sim.terrain.half() - 25.0);
+            Vec3::new(a.cos() * r, 0.0, a.sin() * r)
+        })
+        .find(|q| {
+            let h = sim.terrain.height_at(q.x, q.z);
+            h > wl + 0.3 && h < wl + 2.0 && sim.terrain.contains(q.x, q.z, 20.0)
+        })
+        .expect("a low shore");
+    let id = sim.spawn_creature(Genome::random(&mut Rng::new(3), &SimParams::default()), shore, 0.2, f32::MAX, 0, None);
+    sim.add_plant(shore + Vec3::new(1.5, 0.0, 0.0), 10.0);
+    for _ in 0..60 {
+        sim.step();
+    }
+    let start = sim.torso_of(sim.creature(id).unwrap()).unwrap().translation();
+    sim.apply(Command::Tsunami { at: shore.to_array(), toward: [1.0, 0.0, 0.0] });
+    let dir = sim.acts.tsunami.as_ref().map(|t| Vec3::new(t.dir[0], 0.0, t.dir[1])).unwrap();
+    let mut farthest: f32 = 0.0;
+    for _ in 0..((TSUNAMI_LIFE as u64 + 1) * evolve_sim::sim::TICKS_PER_SECOND) {
+        sim.step();
+        if let Some(c) = sim.creature(id) {
+            let now = sim.torso_of(c).unwrap().translation();
+            farthest = farthest.max((now - start).dot(dir));
+        }
+    }
+    eprintln!("carried {farthest:.1} m inland");
+    assert!(farthest > 5.0, "the wave should carry it inland: {farthest:.1} m");
+    assert!(sim.plants.iter().all(|f| f.pos.distance(shore) > 3.0), "the plant by the shore is washed away");
+    assert!(sim.acts.tsunami.is_none(), "and the wave is spent");
+}

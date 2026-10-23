@@ -1253,6 +1253,9 @@ impl Sim {
             self.regroup();
         }
         self.move_whirlwinds(DT);
+        if self.tick % 30 == 0 {
+            self.wash_away();
+        }
         self.environment_forces();
         let t_forces = Instant::now();
         // The physics worlds step in parallel: rapier solves a world's articulations on one
@@ -1371,8 +1374,9 @@ impl Sim {
                 let shape = c.plan[k].shape;
                 let pos = b.translation();
                 let vr = shape.vertical_radius().max(0.02);
-                // The sea, or a lake, pond or stream standing higher than it here.
-                let wl = self.terrain.water_surface(pos.x, pos.z, sea);
+                // The sea, or a lake, pond or stream standing higher than it here, or a tsunami.
+                let wave = self.acts.tsunami_surface(pos.x, pos.z, self.time, sea);
+                let wl = self.terrain.water_surface(pos.x, pos.z, sea).max(wave.unwrap_or(f32::MIN));
                 let frac = ((wl - (pos.y - vr)) / (2.0 * vr)).clamp(0.0, 1.0);
                 if k == 0 {
                     if c.in_water < 0.3 && frac >= 0.3 && b.linvel().y < -1.5 {
@@ -1393,6 +1397,12 @@ impl Sim {
                 let mass = b.mass().max(1e-3);
                 let buoy = p.water_density * shape.volume() * frac * g * DT;
                 b.add_force(Vec3::Y * buoy / DT, false);
+                // A tsunami's water rushes on with it: drag is against the moving water, so it
+                // carries what it covers.
+                let flow = match (&self.acts.tsunami, wave) {
+                    (Some(t), Some(_)) => Vec3::new(t.dir[0], 0.0, t.dir[1]) * (0.8 * crate::acts::TSUNAMI_SPEED),
+                    _ => Vec3::ZERO,
+                };
                 // Drag at two points along the part's long axis, so a limb sweeping about its
                 // joint feels more push at its fast-moving end.
                 let pose = *b.position();
@@ -1409,7 +1419,7 @@ impl Sim {
                 };
                 for side in [-1.0, 1.0] {
                     let at = pose.transform_point(reach * side);
-                    let v_local = rot.inverse() * b.velocity_at_point(at);
+                    let v_local = rot.inverse() * (b.velocity_at_point(at) - flow);
                     let mut imp = Vec3::ZERO;
                     for axis in 0..3 {
                         let v = v_local[axis];
@@ -1554,7 +1564,8 @@ impl Sim {
             let power = work / DT / c.mass.max(0.1);
             c.exertion += (power - c.exertion) * (DT / 1.0);
             let exertion = p.exertion_oxygen * power;
-            let surface = terrain.water_surface(mouth.x, mouth.z, p.water_level);
+            let wave = self.acts.tsunami_surface(mouth.x, mouth.z, self.time, p.water_level);
+            let surface = terrain.water_surface(mouth.x, mouth.z, p.water_level).max(wave.unwrap_or(f32::MIN));
             let head_under = mouth.y < surface - 0.05 || c.in_water >= 0.95;
             if head_under {
                 let hold = p.breath_time * (0.3 + 1.7 * lungs);

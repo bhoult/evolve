@@ -35,10 +35,11 @@ pub enum Tool {
     Landfall,
     Manna,
     Totem,
+    Tsunami,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 16] = [
+    pub const ALL: [Tool; 17] = [
         Tool::Select,
         Tool::Plant,
         Tool::Meat,
@@ -55,6 +56,7 @@ impl Tool {
         Tool::Landfall,
         Tool::Manna,
         Tool::Totem,
+        Tool::Tsunami,
     ];
 
     /// The acts of god, shown apart from the everyday tools.
@@ -80,6 +82,7 @@ impl Tool {
             Tool::Landfall => "Land from the sky",
             Tool::Manna => "Manna",
             Tool::Totem => "Totem",
+            Tool::Tsunami => "Tsunami",
         }
     }
 
@@ -100,6 +103,7 @@ impl Tool {
             Tool::Quake => "Click to split the land with an earthquake there: a crack opens across your view, one side heaves up, and everything nearby shakes.",
             Tool::Landfall => "Click to drop a chunk of land from the sky there: a hill rises where it lands (out of the sea, new land), crushing what's under it.",
             Tool::Manna => "Click to let food fall from heaven there: a ring of full-grown plants.",
+            Tool::Tsunami => "Click a shore and a great wave rolls in from the open sea beyond it, across the island: it floods the low ground, carries creatures off, holds them under, and sweeps away the plants it covers.",
             Tool::Totem => "Click to raise a totem (love, war or fear: pick beside the tools); within 16 m it drives creatures to breed, to fight, or to run. Click a totem to take it down.",
         }
     }
@@ -382,6 +386,7 @@ fn use_tool(
         (Tool::Whirlwind, _) => link.cmd(Command::Whirlwind { at: point.to_array() }),
         (Tool::Spring, _) => link.cmd(Command::Spring { at: point.to_array() }),
         (Tool::Manna, _) => link.cmd(Command::Manna { at: point.to_array() }),
+        (Tool::Tsunami, _) => tools.summon = Some((tools.tool, point)),
         (Tool::Totem, _) => link.cmd(Command::Totem { at: point.to_array(), kind: tools.totem }),
         (Tool::Quake | Tool::Landfall, _) => tools.summon = Some((tools.tool, point)),
         _ => {}

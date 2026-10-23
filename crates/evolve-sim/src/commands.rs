@@ -36,6 +36,8 @@ pub enum Command {
     Landfall { at: [f32; 3] },
     /// Food falls from heaven here.
     Manna { at: [f32; 3] },
+    /// A tsunami rolls in from the sea beyond here (`toward`: its way if here is mid-island).
+    Tsunami { at: [f32; 3], toward: [f32; 3] },
     /// Raise a totem here, or take down the one there.
     Totem { at: [f32; 3], kind: crate::acts::TotemKind },
     RemoveCreature(u64),
@@ -113,6 +115,7 @@ impl Sim {
             Command::Earthquake { path } => self.earthquake(&path),
             Command::Landfall { at } => self.landfall(Vec3::from(at)),
             Command::Manna { at } => self.manna(Vec3::from(at)),
+            Command::Tsunami { at, toward } => self.tsunami(Vec3::from(at), Vec3::from(toward)),
             Command::Totem { at, kind } => self.toggle_totem(Vec3::from(at), kind),
             Command::CalmStorm => {
                 self.acts.calm_storm(self.time);

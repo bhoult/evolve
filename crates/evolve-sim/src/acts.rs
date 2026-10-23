@@ -24,6 +24,8 @@ pub struct Acts {
     pub quake: Option<([f32; 2], f64, f64)>,
     #[serde(default)]
     pub totems: Vec<Totem>,
+    #[serde(default)]
+    pub tsunami: Option<Tsunami>,
     /// Throws waiting for the next step: a change of velocity for every part of a creature
     /// (a multibody keeps no velocity set on a part directly, so it goes in as a force).
     #[serde(skip)]
@@ -97,6 +99,46 @@ pub struct Totem {
 /// How far a totem's sway reaches, m (full over the inner half, fading to nothing at the edge).
 pub const TOTEM_REACH: f32 = 16.0;
 
+/// A tsunami: a great wave rolling in from the open sea across the island.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Tsunami {
+    /// Which way it travels (a unit vector in x, z).
+    pub dir: [f32; 2],
+    /// Where its crest started, along `dir` (m), and when.
+    pub from: f32,
+    pub start: f64,
+}
+
+/// The tsunami's height at sea (m), speed (m/s) and how long it runs (s).
+pub const TSUNAMI_HEIGHT: f32 = 7.0;
+pub const TSUNAMI_SPEED: f32 = 12.0;
+pub const TSUNAMI_LIFE: f64 = 24.0;
+
+impl Tsunami {
+    /// Where its crest is, along `dir`.
+    pub fn front(&self, time: f64) -> f32 {
+        self.from + TSUNAMI_SPEED * (time - self.start) as f32
+    }
+
+    /// Its height now: rising as it builds, spent by the end.
+    pub fn height(&self, time: f64) -> f32 {
+        let u = ((time - self.start) / TSUNAMI_LIFE) as f32;
+        TSUNAMI_HEIGHT * (u / 0.1).clamp(0.0, 1.0) * (1.0 - u * u).max(0.0)
+    }
+}
+
+/// The wave's shape, 0..1, `q` m ahead of (positive) or behind (negative) its crest: a steep face
+/// 6 m long, then the water behind it, falling slowly back over 40 m.
+pub fn tsunami_profile(q: f32) -> f32 {
+    if !(-40.0..=6.0).contains(&q) {
+        0.0
+    } else if q >= 0.0 {
+        (1.0 - q / 6.0).powf(0.6)
+    } else {
+        (0.35 + 0.65 * (q / 8.0).exp()) * ((q + 40.0) / 10.0).min(1.0)
+    }
+}
+
 /// How far an earthquake shakes the ground, m, and how long, s.
 pub const QUAKE_REACH: f32 = 70.0;
 const QUAKE_TIME: f64 = 6.0;
@@ -109,6 +151,29 @@ pub const CRATER: f32 = 4.0;
 pub const BLAST: f32 = 16.0;
 
 impl Sim {
+    /// A tsunami rolls in from the open sea beyond `at`, toward the island's middle (or along
+    /// `toward` if `at` is near the middle).
+    pub fn tsunami(&mut self, at: Vec3, toward: Vec3) {
+        let inward = Vec3::new(-at.x, 0.0, -at.z);
+        let dir = if inward.length() > 10.0 { inward.normalize() } else { Vec3::new(toward.x, 0.0, toward.z).normalize_or(Vec3::X) };
+        // It starts just beyond the farthest corner of the world behind it.
+        let from = -self.terrain.half() * std::f32::consts::SQRT_2 - 8.0;
+        self.acts.tsunami = Some(Tsunami { dir: [dir.x, dir.z], from, start: self.time });
+        self.log("A tsunami is coming");
+    }
+
+    /// The tsunami sweeps away the plants and meat it covers deeply.
+    pub(crate) fn wash_away(&mut self) {
+        if self.acts.tsunami.is_none() {
+            return;
+        }
+        let (time, sea) = (self.time, self.params.water_level);
+        let (acts, terrain) = (&self.acts, &self.terrain);
+        let deep = |p: Vec3| acts.tsunami_surface(p.x, p.z, time, sea).is_some_and(|s| s - terrain.height_at(p.x, p.z) > 0.8);
+        self.plants.retain(|f| !deep(f.pos));
+        self.meat.retain(|f| !deep(f.pos));
+    }
+
     /// Food falls from heaven around `at`: a ring of full-grown plants.
     pub fn manna(&mut self, at: Vec3) {
         let full = self.params.plant_max_energy;
@@ -482,6 +547,18 @@ impl Acts {
         if self.quake.is_some_and(|(_, _, end)| time >= end) {
             self.quake = None;
         }
+        if self.tsunami.as_ref().is_some_and(|t| time >= t.start + TSUNAMI_LIFE) {
+            self.tsunami = None;
+        }
+    }
+
+    /// The tsunami's water surface at (x, z), if it's there now: higher than the sea in and
+    /// behind its crest, and nothing ahead of it.
+    pub fn tsunami_surface(&self, x: f32, z: f32, time: f64, sea: f32) -> Option<f32> {
+        let t = self.tsunami.as_ref()?;
+        let q = x * t.dir[0] + z * t.dir[1] - t.front(time);
+        let h = t.height(time) * tsunami_profile(q);
+        (h > 0.01).then_some(sea + h)
     }
 
     /// How hard the ground shakes at (x, z), as an acceleration (m/s²) for something at `phase`.
