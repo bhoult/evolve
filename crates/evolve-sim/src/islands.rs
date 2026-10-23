@@ -14,19 +14,39 @@ use crate::zoo::{SharedZoo, store_best};
 
 /// How many genomes travel each way per migration.
 const MIGRANTS: usize = 8;
-/// Threads for the world you watch: its physics stops getting faster past about 8.
-pub const MAIN_THREADS: usize = 8;
+/// Threads for the world you watch, which steps its physics worlds (`physics_shards`) on them.
+pub const MAIN_THREADS: usize = 12;
 /// Threads for each background world.
 pub const BACKGROUND_THREADS: usize = 4;
 
 /// A thread pool of its own for one world, so worlds don't contend in one shared pool.
 pub fn world_pool(name: &str, threads: usize) -> rayon::ThreadPool {
+    pool(name, threads, false)
+}
+
+/// A thread pool; `background` ones run at a lower priority, so they use spare cores without
+/// slowing the world you watch.
+pub fn pool(name: &str, threads: usize, background: bool) -> rayon::ThreadPool {
     let name = name.to_string();
     rayon::ThreadPoolBuilder::new()
         .num_threads(threads.max(1))
         .thread_name(move |i| format!("{name}-{i}"))
+        .start_handler(move |_| {
+            if background {
+                lower_priority();
+            }
+        })
         .build()
         .expect("thread pool")
+}
+
+/// Lowers the calling thread's scheduling priority (nice 10).
+pub fn lower_priority() {
+    #[cfg(target_os = "linux")]
+    // Safe: only changes this thread's own priority.
+    unsafe {
+        libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, 10);
+    }
 }
 
 /// Shared pool of the best genomes from every world.
@@ -146,6 +166,11 @@ impl Drop for Worker {
 fn island_params(index: usize, p: &SimParams) -> SimParams {
     let mut p = p.clone();
     p.seed = p.seed.wrapping_add(7919 * index as u64);
+    // As many physics worlds as it has threads.
+    p.physics_shards = p.physics_shards.min(BACKGROUND_THREADS as u32);
+    let share = p.background_population.clamp(0.05, 1.0);
+    p.min_population = ((p.min_population as f32 * share).round() as u32).max(p.min_population.min(4));
+    p.max_population = ((p.max_population as f32 * share).round() as u32).max(p.min_population);
     p
 }
 
@@ -229,8 +254,9 @@ fn worker_loop(
     board: Board,
     zoo: SharedZoo,
 ) {
-    let pool = world_pool(&format!("evolve-world-{index}"), BACKGROUND_THREADS);
-    let mut sim = pool.install(|| Sim::new(island_params(index, &params)));
+    lower_priority();
+    let pool = self::pool(&format!("evolve-world-{index}"), BACKGROUND_THREADS, true);
+    let mut sim = pool.install(|| Sim::new_background(island_params(index, &params)));
     pool.install(|| crate::zoo::seed_world(&zoo, &mut sim));
     // Start from the best genomes known so far rather than from nothing.
     migrate(&mut sim.pool, &board, 0.0);

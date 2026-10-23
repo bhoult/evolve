@@ -20,12 +20,13 @@ use crate::sim::{Food, LifeStats, Obstacle, Sim};
 use crate::stats::{GenePool, Sample, Stats};
 use crate::terrain::Terrain;
 
-/// EVOLVE05: creatures' joints are multibody articulations.
-const MAGIC: &[u8; 8] = b"EVOLVE05";
+/// EVOLVE06: the physics is split into several worlds stepped in parallel.
+const MAGIC: &[u8; 8] = b"EVOLVE06";
 /// Older saves still load, their creatures rebuilt from their genomes where they stood (see
-/// `import_legacy`): EVOLVE04 had separate joint constraints (which pumped energy into bodies
-/// with many joints), EVOLVE03 single-block bodies with one-hinge limbs.
-const LEGACY_MAGICS: [&[u8; 8]; 2] = [b"EVOLVE04", b"EVOLVE03"];
+/// `import_legacy`): EVOLVE05 had one physics world, EVOLVE04 separate joint constraints (which
+/// pumped energy into bodies with many joints), EVOLVE03 single-block bodies with one-hinge
+/// limbs.
+const LEGACY_MAGICS: [&[u8; 8]; 3] = [b"EVOLVE05", b"EVOLVE04", b"EVOLVE03"];
 pub const EXTENSION: &str = "evo";
 
 /// Saves the whole world. Takes `&mut` because brain state is first pulled back from the GPU.

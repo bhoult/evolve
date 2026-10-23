@@ -17,6 +17,7 @@ rmp-serde.workspace = true
 wgpu.workspace = true
 half.workspace = true
 bytemuck.workspace = true
+libc = "0.2"
 
 [[bin]]
 name = "evolve-headless"

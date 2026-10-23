@@ -251,7 +251,7 @@ fn creatures_float_in_a_lake_and_can_drown_in_it() {
             sim.step();
         }
         let c = sim.creature(id).expect("alive");
-        let y = sim.world.bodies.get(c.parts[0].body).unwrap().translation().y;
+        let y = sim.world_of(c).bodies.get(c.parts[0].body).unwrap().translation().y;
         if sink {
             assert!(y < surface - 1.0, "without buoyancy it sinks: {y} vs surface {surface}");
             assert!(c.drowning && c.oxygen == 0.0, "and drowns in the lake");

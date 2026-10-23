@@ -84,7 +84,7 @@ fn random_creatures_stay_physically_stable() {
         sim.step();
         for c in &sim.creatures {
             for p in &c.parts {
-                let b = &sim.world.bodies[p.body];
+                let b = &sim.world_of(c).bodies[p.body];
                 assert!(b.translation().is_finite());
                 max_speed = max_speed.max(b.linvel().length());
             }
@@ -154,8 +154,8 @@ fn save_and_load_resume_exactly() {
     for (a, b) in sim.creatures.iter().zip(&loaded.creatures) {
         assert_eq!(a.id, b.id);
         for (pa, pb) in a.parts.iter().zip(&b.parts) {
-            let ta = sim.world.bodies[pa.body].translation();
-            let tb = loaded.world.bodies[pb.body].translation();
+            let ta = sim.world_of(a).bodies[pa.body].translation();
+            let tb = loaded.world_of(b).bodies[pb.body].translation();
             assert_eq!(ta, tb, "part poses survive the round trip exactly");
         }
     }
@@ -165,7 +165,7 @@ fn save_and_load_resume_exactly() {
         loaded.step();
     }
     let moved = loaded.creatures.iter().any(|c| {
-        let t = loaded.world.bodies[c.parts[0].body].translation();
+        let t = loaded.world_of(c).bodies[c.parts[0].body].translation();
         (t - c.last_pos).length() > 1e-4 || t != Vec3::ZERO
     });
     assert!(moved);
@@ -184,14 +184,14 @@ fn user_commands_work() {
         sim.step();
     }
     // Grab the torso and lift it three meters.
-    let torso = sim.creature(id).unwrap().parts[0].body;
-    let start = sim.world.bodies[torso].translation();
+    let torso = |sim: &Sim| sim.torso_of(sim.creature(id).unwrap()).unwrap().translation();
+    let start = torso(&sim);
     let target = start + Vec3::new(2.0, 3.0, 0.0);
     sim.apply(Command::GrabCreature { creature: id, part: 0, local: [0.0; 3], target: target.to_array() });
     for _ in 0..180 {
         sim.step();
     }
-    let held = sim.world.bodies[torso].translation();
+    let held = torso(&sim);
     assert!((held - target).length() < 0.6, "grabbed creature should hang near the target: {held:?} vs {target:?}");
     sim.apply(Command::Release);
     assert!(sim.grab.is_none());
@@ -254,7 +254,7 @@ fn regenerate_terrain_keeps_life_above_ground() {
     }
     assert_eq!(sim.stats.deaths_other, 0, "nobody should be stuck under the new ground");
     for c in &sim.creatures {
-        let t = sim.world.bodies[c.parts[0].body].translation();
+        let t = sim.world_of(c).bodies[c.parts[0].body].translation();
         assert!(t.y > sim.terrain.height_at(t.x, t.z) - 1.0);
     }
 }
@@ -493,4 +493,58 @@ fn new_worlds_start_with_zoo_creatures_and_some_random_ones() {
     }
     assert!(sim.creatures.len() >= 18);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The world's physics is split into several worlds stepped in parallel: creatures that might
+/// touch are always in the same one (fights come from contacts), and the load spreads over them.
+#[test]
+fn creatures_that_might_touch_share_a_physics_world() {
+    let mut p = quiet_params();
+    p.physics_shards = 6;
+    let mut sim = Sim::new(p.clone());
+    let mut rng = Rng::new(21);
+    for _ in 0..60 {
+        let g = Genome::random(&mut rng, &p);
+        let at = sim.random_land_point(10.0);
+        sim.spawn_creature(g, at, 0.3, f32::MAX, 0, None);
+    }
+    // A huddle of four.
+    let at = sim.random_land_point(20.0);
+    for k in 0..4 {
+        let g = Genome::random(&mut rng, &p);
+        sim.spawn_creature(g, at + Vec3::new(k as f32 * 0.8, 0.0, 0.0), 0.3, f32::MAX, 0, None);
+    }
+    // Each creature's parts as spheres around them.
+    let spheres = |sim: &Sim, c: &evolve_sim::sim::Creature| -> Vec<(Vec3, f32)> {
+        c.parts
+            .iter()
+            .zip(&c.plan)
+            .map(|(q, spec)| (sim.world_of(c).bodies[q.body].translation(), spec.shape.bounding_radius()))
+            .collect()
+    };
+    let mut touching = 0;
+    for _ in 0..240 {
+        sim.step();
+        let alive: Vec<_> = sim.creatures.iter().collect();
+        for (i, a) in alive.iter().enumerate() {
+            let sa = spheres(&sim, a);
+            for b in &alive[i + 1..] {
+                let sb = spheres(&sim, b);
+                let touch = sa.iter().any(|(pa, ra)| sb.iter().any(|(pb, rb)| pa.distance(*pb) < ra + rb));
+                if touch {
+                    touching += 1;
+                    assert_eq!(a.shard, b.shard, "creatures whose parts touch share a physics world");
+                }
+            }
+        }
+    }
+    assert!(touching > 0, "the huddle should have touched");
+    let mut used = vec![0; 6];
+    for c in &sim.creatures {
+        used[c.shard] += 1;
+    }
+    eprintln!("creatures per physics world: {used:?}");
+    assert!(used.iter().all(|&n| n > 0), "every world gets some: {used:?}");
+    let (lo, hi) = (*used.iter().min().unwrap(), *used.iter().max().unwrap());
+    assert!(hi <= lo * 3 + 4, "and the load is fairly even: {used:?}");
 }

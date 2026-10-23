@@ -15,7 +15,7 @@ use evolve_sim::zoo::{ZooMeta, load_genome};
 use evolve_sim::{Sim, SimParams};
 
 fn params() -> SimParams {
-    let mut p = SimParams { min_population: 0, weather: false, ..SimParams::default() };
+    let mut p = SimParams { min_population: 0, weather: false, physics_shards: 1, ..SimParams::default() };
     if let Ok(sets) = std::env::var("EVOLVE_DIAG_SET") {
         for kv in sets.split(',').filter(|s| !s.is_empty()) {
             let (k, v) = kv.split_once('=').expect("name=value");
@@ -74,7 +74,7 @@ fn bounce() {
             let c = sim.creature(id)?;
             let (mut p, mut v, mut m) = (Vec3::ZERO, Vec3::ZERO, 0.0);
             for part in &c.parts {
-                let b = sim.world.bodies.get(part.body)?;
+                let b = sim.shards[0].world.bodies.get(part.body)?;
                 p += b.center_of_mass() * b.mass();
                 v += b.linvel() * b.mass();
                 m += b.mass();
@@ -93,9 +93,10 @@ fn bounce() {
             };
             // Off the ground: no part touching the terrain.
             let touching = sim
+                .shards[0]
                 .world
                 .narrow_phase
-                .contact_pairs_with(sim.terrain_collider)
+                .contact_pairs_with(sim.shards[0].terrain_collider)
                 .any(|pair| pair.has_any_active_contact());
             if !touching {
                 air += 1;
@@ -106,7 +107,7 @@ fn bounce() {
             path += Vec3::new(p.x - last.x, 0.0, p.z - last.z).length();
             last = p;
             for j in &c.joints {
-                let (Some(a), Some(b)) = (sim.world.bodies.get(c.parts[j.parent].body), sim.world.bodies.get(c.parts[j.child].body)) else {
+                let (Some(a), Some(b)) = (sim.world_of(c).bodies.get(c.parts[j.parent].body), sim.world_of(c).bodies.get(c.parts[j.child].body)) else {
                     continue;
                 };
                 let w = (b.angvel() - a.angvel()).length();
@@ -160,7 +161,7 @@ fn anatomy() {
     let id = sim.spawn_creature(genome, at, 0.3, f32::MAX, 0, None);
     let c = sim.creature(id).unwrap();
     for (k, part) in c.parts.iter().enumerate() {
-        let b = sim.world.bodies.get(part.body).unwrap();
+        let b = sim.shards[0].world.bodies.get(part.body).unwrap();
         println!("part {k:>2}: {:?} mass {:.2} kg", c.plan[k].shape, b.mass());
     }
     let joints = c.joints.clone();
@@ -172,11 +173,11 @@ fn anatomy() {
     for _ in 0..steps {
         sim.step();
         for (n, j) in joints.iter().enumerate() {
-            let Some((angle, rate)) = evolve_sim::body::joint_state(&sim.world, &parts, j) else {
+            let Some((angle, rate)) = evolve_sim::body::joint_state(&sim.shards[0].world, &parts, j) else {
                 continue;
             };
-            let a = sim.world.bodies.get(parts[j.parent].body).unwrap();
-            let b = sim.world.bodies.get(parts[j.child].body).unwrap();
+            let a = sim.shards[0].world.bodies.get(parts[j.parent].body).unwrap();
+            let b = sim.shards[0].world.bodies.get(parts[j.child].body).unwrap();
             let total = (b.angvel() - a.angvel()).length();
             swing[n] += rate[0].abs();
             off[n] += (total - rate[0].abs()).max(0.0);
@@ -576,13 +577,13 @@ fn sim_snake_energy() {
         let id = sim.spawn_creature(g.clone(), at, 40.0, f32::MAX, 0, None);
         let parts = sim.creature(id).unwrap().parts.clone();
         {
-            let mb = body::multibody_mut(&mut sim.world, &parts).unwrap();
+            let mb = body::multibody_mut(&mut sim.shards[0].world, &parts).unwrap();
             let mut v = mb.generalized_velocity_mut();
             v[3] = 0.5;
             v[4] = 1.0;
             v[5] = 0.3;
         }
-        let energy = |sim: &Sim| -> f32 { parts.iter().map(|q| sim.world.bodies.get(q.body).unwrap().kinetic_energy()).sum() };
+        let energy = |sim: &Sim| -> f32 { parts.iter().map(|q| sim.shards[0].world.bodies.get(q.body).unwrap().kinetic_energy()).sum() };
         let mut line = format!("{case:<18}:");
         for t in 0..=1200 {
             if t % 240 == 1 {
@@ -600,7 +601,7 @@ fn sim_snake_energy() {
 #[ignore]
 fn physics_stages() {
     let n: usize = std::env::var("EVOLVE_DIAG_N").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
-    let mut sim = Sim::new(SimParams { min_population: 0, weather: false, ..SimParams::default() });
+    let mut sim = Sim::new(SimParams { min_population: 0, weather: false, physics_shards: 1, ..SimParams::default() });
     let mut rng = evolve_sim::rng::Rng::new(4);
     for _ in 0..n {
         let g = evolve_sim::genome::Genome::random(&mut rng, &sim.params);
@@ -610,12 +611,12 @@ fn physics_stages() {
     for _ in 0..120 {
         sim.step();
     }
-    sim.world.physics_pipeline.counters.enable();
+    sim.shards[0].world.physics_pipeline.counters.enable();
     let mut acc = [0.0f64; 8];
     let steps = 120;
     for _ in 0..steps {
         sim.step();
-        let c = &sim.world.physics_pipeline.counters;
+        let c = &sim.shards[0].world.physics_pipeline.counters;
         let s = &c.stages;
         for (a, v) in acc.iter_mut().zip([
             c.step_time_ms(),
@@ -647,7 +648,7 @@ fn shard_scaling() {
     let k: usize = std::env::var("EVOLVE_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
     let pool = rayon::ThreadPoolBuilder::new().num_threads(k).build().unwrap();
     let make = |count: usize, seed: u64| {
-        let mut sim = Sim::new(SimParams { min_population: 0, weather: false, seed, ..SimParams::default() });
+        let mut sim = Sim::new(SimParams { min_population: 0, weather: false, seed, physics_shards: 1, ..SimParams::default() });
         let mut rng = evolve_sim::rng::Rng::new(seed);
         for _ in 0..count {
             let g = evolve_sim::genome::Genome::random(&mut rng, &sim.params);
@@ -673,7 +674,7 @@ fn shard_scaling() {
         // Each world's physics on a pool of its own, one thread: rapier's solver workers then
         // never spin waiting on each other across worlds.
         for s in &mut many {
-            s.world.physics_pipeline.configure_thread_pool(1).unwrap();
+            s.shards[0].world.physics_pipeline.configure_thread_pool(1).unwrap();
         }
     }
     let t_many = pool.install(|| {
@@ -714,13 +715,13 @@ fn breathlessness_now() {
         let at = sim.random_land_point(10.0);
         sim.spawn_creature(g, at, 0.3, f32::MAX, 0, None);
     }
-    let start: Vec<(u64, Vec3)> = sim.creatures.iter().map(|c| (c.id, sim.world.bodies.get(c.parts[0].body).unwrap().translation())).collect();
+    let start: Vec<(u64, Vec3)> = sim.creatures.iter().map(|c| (c.id, sim.world_of(c).bodies.get(c.parts[0].body).unwrap().translation())).collect();
     let (mut lifted, mut samples) = (0usize, 0usize);
     for step in 0..30 * 60 {
         sim.step();
         if step % 30 == 0 {
             for c in &sim.creatures {
-                let t = sim.world.bodies.get(c.parts[0].body).unwrap().translation();
+                let t = sim.world_of(c).bodies.get(c.parts[0].body).unwrap().translation();
                 samples += 1;
                 lifted += (t.y - sim.terrain.height_at(t.x, t.z) > c.torso_half().y + 0.15) as usize;
             }
@@ -731,7 +732,7 @@ fn breathlessness_now() {
     let winded = sim.creatures.iter().filter(|c| c.oxygen < 0.3).count();
     let moved: Vec<f32> = start
         .iter()
-        .filter_map(|(id, p)| sim.creature(*id).map(|c| (sim.world.bodies.get(c.parts[0].body).unwrap().translation() - *p).length()))
+        .filter_map(|(id, p)| sim.creature(*id).map(|c| (sim.world_of(c).bodies.get(c.parts[0].body).unwrap().translation() - *p).length()))
         .collect();
     let mut m = moved.clone();
     m.sort_by(|a, b| a.total_cmp(b));
@@ -812,4 +813,48 @@ fn swivel_sensitivity() {
         }
     }
     println!("nudged by 1e-6 rad: apart by {worst:.2e} m a second later");
+}
+
+/// How creatures in a saved world (EVOLVE_DIAG_SAVE, read only) bunch up: groups of creatures
+/// close enough to touch soon (bodies' reach plus a margin), which must share a physics world.
+#[test]
+#[ignore]
+fn touching_groups() {
+    let Ok(path) = std::env::var("EVOLVE_DIAG_SAVE") else {
+        return;
+    };
+    unsafe { std::env::set_var("EVOLVE_CPU_BRAINS", "1") };
+    let sim = evolve_sim::save::load(std::path::Path::new(&path)).expect("load");
+    let margin: f32 = std::env::var("EVOLVE_DIAG_MARGIN").ok().and_then(|v| v.parse().ok()).unwrap_or(1.5);
+    let spots: Vec<(Vec3, f32)> = sim
+        .creatures
+        .iter()
+        .map(|c| (sim.world_of(c).bodies.get(c.parts[0].body).unwrap().translation(), evolve_sim::body::plan_extent(&c.plan)))
+        .collect();
+    let n = spots.len();
+    let mut group: Vec<usize> = (0..n).collect();
+    fn find(g: &mut [usize], i: usize) -> usize {
+        let mut r = i;
+        while g[r] != r {
+            r = g[r];
+        }
+        g[i] = r;
+        r
+    }
+    for i in 0..n {
+        for j in i + 1..n {
+            let reach = spots[i].1 + spots[j].1 + margin;
+            if (spots[i].0 - spots[j].0).length() < reach {
+                let (a, b) = (find(&mut group, i), find(&mut group, j));
+                group[a] = b;
+            }
+        }
+    }
+    let mut sizes = std::collections::HashMap::new();
+    for i in 0..n {
+        *sizes.entry(find(&mut group, i)).or_insert(0usize) += 1;
+    }
+    let mut s: Vec<usize> = sizes.into_values().collect();
+    s.sort_unstable_by(|a, b| b.cmp(a));
+    println!("{n} creatures at t={:.0}s: {} groups, largest {:?}", sim.time, s.len(), &s[..s.len().min(8)]);
 }

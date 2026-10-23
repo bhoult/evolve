@@ -119,7 +119,7 @@ fn snakes_tentacles_and_legs_stay_stable_and_within_their_range() {
         sim.step();
         for c in &sim.creatures {
             for (k, j) in c.joints.iter().enumerate() {
-                let (angles, _) = body::joint_state(&sim.world, &c.parts, j).unwrap();
+                let (angles, _) = body::joint_state(sim.world_of(c), &c.parts, j).unwrap();
                 for d in 0..j.kind.axes() {
                     let r = swing.entry((c.id, k, d)).or_insert((f32::MAX, f32::MIN));
                     r.0 = r.0.min(angles[d]);
@@ -401,8 +401,8 @@ fn creatures_hear_a_calling_neighbour_and_know_its_voice() {
     assert!(heard[input::HEAR + 2] > 0.3, "the listener should hear the call: {}", heard[input::HEAR + 2]);
     assert!(heard[input::HEAR_LIKE] > 0.99, "same genome, same voice");
     // The direction points from the listener toward the caller.
-    let (cp, lp) = (sim.world.bodies[c.parts[0].body].translation(), sim.world.bodies[l.parts[0].body].translation());
-    let rot = *sim.world.bodies[l.parts[0].body].rotation();
+    let (cp, lp) = (sim.world_of(c).bodies[c.parts[0].body].translation(), sim.world_of(l).bodies[l.parts[0].body].translation());
+    let rot = *sim.world_of(l).bodies[l.parts[0].body].rotation();
     let (fwd, side) = evolve_sim::math::heading_frame(rot);
     let to = evolve_sim::math::Vec3::new(cp.x - lp.x, 0.0, cp.z - lp.z).normalize();
     assert!((heard[input::HEAR] - to.dot(fwd)).abs() < 0.3 && (heard[input::HEAR + 1] - to.dot(side)).abs() < 0.3);
@@ -472,7 +472,7 @@ fn a_digging_creature_carries_earth_and_leaves_a_hole() {
         * sim.terrain.cell();
     assert!((removed - c.soil).abs() < 0.01 + c.soil * 0.05, "earth removed {removed} vs carried {}", c.soil);
     // The physics ground follows: the torso sits above the terrain surface.
-    let t = sim.world.bodies[c.parts[0].body].translation();
+    let t = sim.world_of(c).bodies[c.parts[0].body].translation();
     assert!(t.y > sim.terrain.height_at(t.x, t.z) - 0.2);
 }
 
@@ -497,13 +497,14 @@ fn many_jointed_bodies_never_gain_energy_on_their_own() {
         let id = sim.spawn_creature(g, at, 40.0, f32::MAX, 0, None);
         let parts = sim.creature(id).unwrap().parts.clone();
         let joints = sim.creature(id).unwrap().joints.len();
-        let mb = body::multibody_mut(&mut sim.world, &parts).expect("a jointed body is a multibody");
+        let shard = sim.creature(id).unwrap().shard;
+        let mb = body::multibody_mut(&mut sim.shards[shard].world, &parts).expect("a jointed body is a multibody");
         // The root's spin (generalized velocities: the root's linear, then angular, velocity).
         let mut v = mb.generalized_velocity_mut();
         v[3] = 0.5;
         v[4] = 1.0;
         v[5] = 0.3;
-        let energy = |sim: &Sim| -> f32 { parts.iter().map(|q| sim.world.bodies.get(q.body).unwrap().kinetic_energy()).sum() };
+        let energy = |sim: &Sim| -> f32 { parts.iter().map(|q| sim.shards[shard].world.bodies.get(q.body).unwrap().kinetic_energy()).sum() };
         sim.step();
         let start = energy(&sim);
         let mut peak = start;

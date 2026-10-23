@@ -140,6 +140,10 @@ fn main() {
     }
     let s = &sim.stats;
     println!(
+        "# physics: forces {:.2} ms, slowest world {:.2} ms, all worlds {:.2} ms",
+        sim.perf.forces_ms, sim.perf.shard_slowest_ms, sim.perf.shard_total_ms
+    );
+    println!(
         "done: {:.0} sim-seconds in {:.1}s. deaths: starved {} killed {} old {} drowned {} thirst {} other {}",
         sim.time,
         start.elapsed().as_secs_f64(),

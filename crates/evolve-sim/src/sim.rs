@@ -110,6 +110,9 @@ pub struct Creature {
     pub soil: f32,
     pub rained: bool,
     pub dead: Option<DeathCause>,
+    /// Which physics world its body is in (see `Sim::shards`).
+    #[serde(default)]
+    pub shard: usize,
 }
 
 impl Creature {
@@ -184,14 +187,30 @@ pub struct Obstacle {
     pub body: RigidBodyHandle,
     pub shape: ObstacleShape,
     pub dynamic: bool,
+    /// Which physics world it's in (see `Sim::shards`).
+    #[serde(default)]
+    pub shard: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Grab {
-    pub body: RigidBodyHandle,
+    /// A creature and the part held, or an obstacle (by id: bodies change handles when they
+    /// move between physics worlds).
+    pub creature: Option<u64>,
+    pub part: usize,
+    pub obstacle: Option<u64>,
     pub local: Vec3,
     pub target: Vec3,
-    pub creature: Option<u64>,
+}
+
+/// One of the physics worlds the world is split into. Each holds the ground and walls and some
+/// of the creatures and obstacles: those that might touch are kept in the same one, and the
+/// worlds are stepped in parallel (rapier solves each world's articulations on one thread).
+#[derive(Serialize, Deserialize)]
+pub struct Shard {
+    pub world: PhysicsWorld,
+    pub terrain_collider: ColliderHandle,
+    pub walls: Vec<ColliderHandle>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -205,15 +224,20 @@ pub struct Perf {
     pub gpu_wait_ms: f32,
     /// Fraction of wall time the GPU spends on brains.
     pub gpu_busy: f32,
+    /// Regrouping and environment forces, before the physics step.
+    pub forces_ms: f32,
+    /// The slowest physics world's step, and all of them added up (their ratio to the physics
+    /// time shows how well the worlds run in parallel).
+    pub shard_slowest_ms: f32,
+    pub shard_total_ms: f32,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct Sim {
     pub params: SimParams,
-    pub world: PhysicsWorld,
+    /// The physics worlds (see `Shard`); creatures and obstacles record which they're in.
+    pub shards: Vec<Shard>,
     pub terrain: Terrain,
-    pub terrain_collider: ColliderHandle,
-    pub walls: Vec<ColliderHandle>,
     pub creatures: Vec<Creature>,
     pub plants: Vec<Food>,
     pub meat: Vec<Food>,
@@ -239,6 +263,9 @@ pub struct Sim {
     /// Sim time the physics ground last took on the reshaped terrain.
     #[serde(skip)]
     pub settled_at: f64,
+    /// A background world, whose physics threads run at a lower priority.
+    #[serde(skip)]
+    pub background: bool,
     /// Recent rain, 0 to 1, averaged over about half an hour: how soaked the land is.
     #[serde(default)]
     pub soak: f32,
@@ -292,22 +319,24 @@ pub struct SpeciesInfo {
 }
 
 impl Sim {
+    /// A background world: its physics threads run at a lower priority.
+    pub fn new_background(params: SimParams) -> Self {
+        let mut sim = Self::new_with(params, true);
+        sim.background = true;
+        sim
+    }
+
     pub fn new(params: SimParams) -> Self {
+        Self::new_with(params, false)
+    }
+
+    fn new_with(params: SimParams, background: bool) -> Self {
         let terrain = Terrain::generate(&params, 1);
-        let mut world = PhysicsWorld::new();
-        let terrain_collider = world.colliders.insert(
-            terrain
-                .collider()
-                .friction(params.ground_friction)
-                .user_data(Tag::Terrain.encode()),
-        );
         let rng = Rng::new(params.seed.wrapping_mul(0x9E37_79B9).wrapping_add(7));
         let mut sim = Sim {
             params,
-            world,
+            shards: Vec::new(),
             terrain,
-            terrain_collider,
-            walls: Vec::new(),
             creatures: Vec::new(),
             plants: Vec::new(),
             meat: Vec::new(),
@@ -326,6 +355,7 @@ impl Sim {
             brain_price: 1.0,
             gpu_headroom: 0.0,
             settled_at: 0.0,
+            background,
             soak: 0.0,
             erosion_due: 0.0,
             index: HashMap::new(),
@@ -341,7 +371,7 @@ impl Sim {
         };
         sim.weather = crate::weather::at(&sim.params, 0.0);
         sim.init_brains();
-        sim.build_walls();
+        sim.resize_shards();
         sim.sync_physics_params(None);
         // Start with the land half full of plants.
         let target = sim.params.plant_max_count / 2;
@@ -372,6 +402,8 @@ impl Sim {
         self.events.clear();
         self.weather = crate::weather::at(&self.params, self.time);
         self.init_brains();
+        // (Also gives worlds loaded from a save their threads.)
+        self.resize_shards();
     }
 
     /// Opens the GPU for brains (unless `EVOLVE_CPU_BRAINS` is set or there is none) and uploads
@@ -485,11 +517,58 @@ impl Sim {
         }
     }
 
-    fn build_walls(&mut self) {
-        for h in self.walls.drain(..) {
-            self.world.remove_collider(h);
+    /// A new physics world with the ground and walls in it.
+    fn new_shard(&self) -> Shard {
+        let mut world = PhysicsWorld::new();
+        let terrain_collider = world.colliders.insert(
+            self.terrain
+                .collider()
+                .friction(self.params.ground_friction)
+                .user_data(Tag::Terrain.encode()),
+        );
+        let mut shard = Shard { world, terrain_collider, walls: Vec::new() };
+        Self::build_walls(&self.terrain, &mut shard);
+        shard
+    }
+
+    /// Matches the number of physics worlds to the `physics_shards` param, moving the creatures
+    /// and obstacles of any world dropped into the remaining ones.
+    pub(crate) fn resize_shards(&mut self) {
+        let want = (self.params.physics_shards.max(1) as usize).min(64);
+        while self.shards.len() < want {
+            let shard = self.new_shard();
+            self.shards.push(shard);
         }
-        let half = self.terrain.half();
+        if self.shards.len() > want {
+            for ci in 0..self.creatures.len() {
+                if self.creatures[ci].shard >= want {
+                    let to = ci % want;
+                    self.move_creature(ci, to);
+                }
+            }
+            for oi in 0..self.obstacles.len() {
+                if self.obstacles[oi].shard >= want {
+                    self.move_obstacle(oi, oi % want);
+                }
+            }
+            self.shards.truncate(want);
+        }
+        // Each world's physics runs on a thread of its own: left to share the world pool, rapier
+        // spreads every world's solver over all of it, and the worlds' workers wait on each other.
+        for shard in &mut self.shards {
+            if shard.world.physics_pipeline.thread_pool().is_none() {
+                let pool = crate::islands::pool("evolve-physics", 1, self.background);
+                shard.world.physics_pipeline.set_thread_pool(Some(std::sync::Arc::new(pool)));
+            }
+        }
+        self.sync_physics_params(None);
+    }
+
+    fn build_walls(terrain: &Terrain, shard: &mut Shard) {
+        for h in shard.walls.drain(..) {
+            shard.world.remove_collider(h);
+        }
+        let half = terrain.half();
         let t = 1.0;
         let height = 60.0;
         let specs = [
@@ -503,29 +582,33 @@ impl Sim {
                 .translation(pos)
                 .user_data(Tag::Wall.encode())
                 .build();
-            self.walls.push(self.world.colliders.insert(c));
+            shard.walls.push(shard.world.colliders.insert(c));
         }
     }
 
     /// Push the physics-related params into rapier. `old` is the previous param set, if any.
     fn sync_physics_params(&mut self, old: Option<&SimParams>) {
         let p = &self.params;
-        self.world.gravity = Vec3::new(0.0, -p.gravity, 0.0);
-        self.world.integration_parameters.dt = DT;
-        self.world.integration_parameters.num_solver_iterations = p.solver_iterations.max(1) as usize;
-        self.world.integration_parameters.num_internal_pgs_iterations = p.solver_passes.max(1) as usize;
-        if let Some(c) = self.world.colliders.get_mut(self.terrain_collider) {
-            c.set_friction(p.ground_friction);
+        for shard in &mut self.shards {
+            let world = &mut shard.world;
+            world.gravity = Vec3::new(0.0, -p.gravity, 0.0);
+            world.integration_parameters.dt = DT;
+            world.integration_parameters.num_solver_iterations = p.solver_iterations.max(1) as usize;
+            world.integration_parameters.num_internal_pgs_iterations = p.solver_passes.max(1) as usize;
+            if let Some(c) = world.colliders.get_mut(shard.terrain_collider) {
+                c.set_friction(p.ground_friction);
+            }
         }
         let friction_changed = old.is_none_or(|o| o.body_friction != p.body_friction);
         let damping_changed = old.is_none_or(|o| o.air_drag != p.air_drag);
         if friction_changed || damping_changed {
             for c in &self.creatures {
+                let world = &mut self.shards[c.shard].world;
                 for part in &c.parts {
-                    if friction_changed && let Some(col) = self.world.colliders.get_mut(part.collider) {
+                    if friction_changed && let Some(col) = world.colliders.get_mut(part.collider) {
                         col.set_friction(p.body_friction);
                     }
-                    if damping_changed && let Some(b) = self.world.bodies.get_mut(part.body) {
+                    if damping_changed && let Some(b) = world.bodies.get_mut(part.body) {
                         b.set_linear_damping(p.air_drag);
                     }
                 }
@@ -536,7 +619,20 @@ impl Sim {
     pub fn set_params(&mut self, new: SimParams) {
         let old = std::mem::replace(&mut self.params, new);
         self.sync_physics_params(Some(&old));
+        if old.physics_shards != self.params.physics_shards {
+            self.resize_shards();
+        }
         self.apply_gpu_budget();
+    }
+
+    /// The physics world a creature is in.
+    pub fn world_of(&self, c: &Creature) -> &PhysicsWorld {
+        &self.shards[c.shard].world
+    }
+
+    /// A creature's torso body.
+    pub fn torso_of(&self, c: &Creature) -> Option<&RigidBody> {
+        self.world_of(c).bodies.get(c.parts.first()?.body)
     }
 
     /// Rebuild the terrain from the world params, keeping everything that lives on it.
@@ -547,8 +643,7 @@ impl Sim {
         let half = self.terrain.half() - margin;
         // Re-seat creatures above the new ground.
         for ci in 0..self.creatures.len() {
-            let torso = self.creatures[ci].parts[0].body;
-            let Some(pos) = self.world.bodies.get(torso).map(|b| b.translation()) else {
+            let Some(pos) = self.torso_of(&self.creatures[ci]).map(|b| b.translation()) else {
                 continue;
             };
             // As at birth: clear of the walls and above the highest ground the body reaches.
@@ -573,7 +668,7 @@ impl Sim {
         }
         let terrain = &self.terrain;
         for o in &self.obstacles {
-            if let Some(b) = self.world.bodies.get_mut(o.body) {
+            if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body) {
                 let mut t = b.translation();
                 t.x = t.x.clamp(-half, half);
                 t.z = t.z.clamp(-half, half);
@@ -596,20 +691,24 @@ impl Sim {
     /// Swaps in a new ground surface and the walls around it.
     pub fn install_terrain(&mut self, terrain: Terrain) {
         self.terrain = terrain;
-        self.world.remove_collider(self.terrain_collider);
-        self.terrain_collider = self.world.colliders.insert(
-            self.terrain
-                .collider()
-                .friction(self.params.ground_friction)
-                .user_data(Tag::Terrain.encode()),
-        );
-        self.build_walls();
+        // The same ground in every physics world (the heightfield shape is shared).
+        let shape = self.terrain.shape();
+        for shard in &mut self.shards {
+            shard.world.remove_collider(shard.terrain_collider);
+            shard.terrain_collider = shard.world.colliders.insert(
+                ColliderBuilder::new(shape.clone())
+                    .friction(self.params.ground_friction)
+                    .user_data(Tag::Terrain.encode()),
+            );
+            Self::build_walls(&self.terrain, shard);
+        }
     }
 
     fn translate_creature(&mut self, ci: usize, delta: Vec3) {
-        let parts = &self.creatures[ci].parts;
-        for part in parts {
-            if let Some(b) = self.world.bodies.get_mut(part.body) {
+        let c = &self.creatures[ci];
+        let world = &mut self.shards[c.shard].world;
+        for part in &c.parts {
+            if let Some(b) = world.bodies.get_mut(part.body) {
                 let t = b.translation();
                 b.set_translation(t + delta, true);
                 b.set_linvel(Vec3::ZERO, true);
@@ -617,14 +716,207 @@ impl Sim {
             }
         }
         // A multibody follows its root: re-pose the links from the moved torso, and stop them.
-        if let Some(link) = parts.first().and_then(|p| self.world.multibody_joints.rigid_body_link(p.body)).copied()
-            && let Some(mb) = self.world.multibody_joints.get_multibody_mut(link.multibody)
+        if let Some(link) = c.parts.first().and_then(|p| world.multibody_joints.rigid_body_link(p.body)).copied()
+            && let Some(mb) = world.multibody_joints.get_multibody_mut(link.multibody)
         {
-            mb.forward_kinematics(&self.world.bodies, true);
-            mb.update_rigid_bodies(&mut self.world.bodies, true);
+            mb.forward_kinematics(&world.bodies, true);
+            mb.update_rigid_bodies(&mut world.bodies, true);
             mb.generalized_velocity_mut().fill(0.0);
         }
         self.creatures[ci].last_pos += delta;
+    }
+
+    /// Two different physics worlds, mutably.
+    fn two_worlds(&mut self, a: usize, b: usize) -> (&mut PhysicsWorld, &mut PhysicsWorld) {
+        assert_ne!(a, b);
+        if a < b {
+            let (x, y) = self.shards.split_at_mut(b);
+            (&mut x[a].world, &mut y[0].world)
+        } else {
+            let (x, y) = self.shards.split_at_mut(a);
+            (&mut y[0].world, &mut x[b].world)
+        }
+    }
+
+    /// Moves creature `ci` into physics world `to`, just as it is.
+    pub(crate) fn move_creature(&mut self, ci: usize, to: usize) {
+        let from = self.creatures[ci].shard;
+        if from == to || to >= self.shards.len() {
+            return;
+        }
+        let p = self.params.clone();
+        let c = &self.creatures[ci];
+        let (plan, parts, joints, id, mass) = (c.plan.clone(), c.parts.clone(), c.joints.clone(), c.id, c.mass);
+        let (a, b) = self.two_worlds(from, to);
+        if let Some((parts, joints)) = body::transplant(a, b, &plan, &parts, &joints, id, mass, &p) {
+            let c = &mut self.creatures[ci];
+            c.parts = parts;
+            c.joints = joints;
+            c.shard = to;
+        }
+    }
+
+    /// Moves obstacle `oi` into physics world `to`, just as it is.
+    pub(crate) fn move_obstacle(&mut self, oi: usize, to: usize) {
+        let o = self.obstacles[oi].clone();
+        if o.shard == to || to >= self.shards.len() {
+            return;
+        }
+        let (a, b) = self.two_worlds(o.shard, to);
+        let Some(old) = a.bodies.get(o.body) else {
+            return;
+        };
+        let (pose, lin, ang) = (*old.position(), old.linvel(), old.angvel());
+        a.remove_body(o.body);
+        let (body, _) = b.insert(obstacle_body(o.id, o.dynamic, pose), obstacle_collider(o.id, o.shape));
+        if let Some(rb) = b.bodies.get_mut(body) {
+            rb.set_linvel(lin, true);
+            rb.set_angvel(ang, true);
+        }
+        let o = &mut self.obstacles[oi];
+        o.body = body;
+        o.shard = to;
+    }
+
+    /// The physics world for something new at `at`: the one holding whatever is nearest within
+    /// touching distance, or else the least busy.
+    fn shard_for(&self, at: Vec3) -> usize {
+        let near = self
+            .creatures
+            .iter()
+            .filter_map(|c| Some((c.shard, self.torso_of(c)?.translation().distance(at))))
+            .chain(self.obstacles.iter().filter_map(|o| {
+                Some((o.shard, self.shards[o.shard].world.bodies.get(o.body)?.translation().distance(at)))
+            }))
+            .filter(|(_, d)| *d < REGROUP_REACH)
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        match near {
+            Some((s, _)) => s,
+            None => {
+                let mut load = vec![0usize; self.shards.len()];
+                for c in &self.creatures {
+                    load[c.shard] += c.parts.len();
+                }
+                (0..load.len()).min_by_key(|&s| load[s]).unwrap_or(0)
+            }
+        }
+    }
+
+    /// Regroups creatures and obstacles among the physics worlds: anything that might touch
+    /// before the next regroup shares a world, and the worlds' loads are kept even by moving
+    /// whole groups out of busy worlds (a few at a time, so nothing churns).
+    pub(crate) fn regroup(&mut self) {
+        let k = self.shards.len();
+        if k <= 1 {
+            return;
+        }
+        // Things to place: creatures, then obstacles, with the box around their parts as they
+        // are now, how much they cost to simulate, and which world they're in.
+        let mut spots: Vec<(Vec3, Vec3, usize, usize)> = Vec::with_capacity(self.creatures.len() + self.obstacles.len());
+        for c in &self.creatures {
+            let world = &self.shards[c.shard].world;
+            let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+            for (q, spec) in c.parts.iter().zip(&c.plan) {
+                if let Some(b) = world.bodies.get(q.body) {
+                    let r = spec.shape.bounding_radius();
+                    lo = lo.min(b.translation() - Vec3::splat(r));
+                    hi = hi.max(b.translation() + Vec3::splat(r));
+                }
+            }
+            if lo.x > hi.x {
+                (lo, hi) = (c.last_pos, c.last_pos);
+            }
+            spots.push(((lo + hi) * 0.5, (hi - lo) * 0.5, c.parts.len(), c.shard));
+        }
+        for o in &self.obstacles {
+            let at = self.shards[o.shard].world.bodies.get(o.body).map_or(Vec3::ZERO, |b| b.translation());
+            spots.push((at, Vec3::splat(obstacle_radius(o.shape)), 1, o.shard));
+        }
+        let n = spots.len();
+        // Groups: union-find over boxes that come within a margin of each other, found on a grid.
+        let size = spots.iter().map(|s| s.1.x.max(s.1.z)).fold(0.0f32, f32::max);
+        let cell = (2.0 * size + REGROUP_MARGIN).max(1.0);
+        let mut grid: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (i, s) in spots.iter().enumerate() {
+            grid.entry(((s.0.x / cell).floor() as i32, (s.0.z / cell).floor() as i32)).or_default().push(i);
+        }
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn root(p: &mut [usize], mut i: usize) -> usize {
+            while p[i] != i {
+                p[i] = p[p[i]];
+                i = p[i];
+            }
+            i
+        }
+        let near = |a: &(Vec3, Vec3, usize, usize), b: &(Vec3, Vec3, usize, usize)| {
+            let d = (a.0 - b.0).abs() - a.1 - b.1;
+            d.x < REGROUP_MARGIN && d.y < REGROUP_MARGIN && d.z < REGROUP_MARGIN
+        };
+        for (i, s) in spots.iter().enumerate() {
+            let (gx, gz) = ((s.0.x / cell).floor() as i32, (s.0.z / cell).floor() as i32);
+            for dx in -1..=1 {
+                for dz in -1..=1 {
+                    for &j in grid.get(&(gx + dx, gz + dz)).map_or(&[][..], |v| v) {
+                        if j > i && near(s, &spots[j]) {
+                            let (a, b) = (root(&mut parent, i), root(&mut parent, j));
+                            parent[a] = b;
+                        }
+                    }
+                }
+            }
+        }
+        // Each group's home is the world most of it is already in.
+        let mut members: HashMap<usize, Vec<usize>> = HashMap::new();
+        for i in 0..n {
+            let r = root(&mut parent, i);
+            members.entry(r).or_default().push(i);
+        }
+        let mut groups: Vec<(usize, usize, Vec<usize>)> = members
+            .into_values()
+            .map(|m| {
+                let mut votes = vec![0usize; k];
+                for &i in &m {
+                    votes[spots[i].3.min(k - 1)] += spots[i].2;
+                }
+                let home = (0..k).max_by_key(|&s| (votes[s], usize::MAX - s)).unwrap_or(0);
+                let weight = m.iter().map(|&i| spots[i].2).sum();
+                (home, weight, m)
+            })
+            .collect();
+        groups.sort_by_key(|g| (g.1, g.2[0]));
+        // Even out the load: move the smallest groups out of worlds well above the average.
+        let mut load = vec![0usize; k];
+        for g in &groups {
+            load[g.0] += g.1;
+        }
+        let fair = load.iter().sum::<usize>() / k;
+        let mut budget = REGROUP_MOVES;
+        for g in groups.iter_mut() {
+            if budget < g.1 {
+                break;
+            }
+            if load[g.0] * 4 > fair * 5 + 20 {
+                let to = (0..k).min_by_key(|&s| load[s]).unwrap_or(0);
+                if load[to] + g.1 < load[g.0] {
+                    load[g.0] -= g.1;
+                    load[to] += g.1;
+                    g.0 = to;
+                    budget -= g.1;
+                }
+            }
+        }
+        let creatures = self.creatures.len();
+        for (home, _, m) in groups {
+            for i in m {
+                if spots[i].3 != home {
+                    if i < creatures {
+                        self.move_creature(i, home);
+                    } else {
+                        self.move_obstacle(i - creatures, home);
+                    }
+                }
+            }
+        }
     }
 
     // ── Spawning ───────────────────────────────────────────────────────
@@ -668,7 +960,8 @@ impl Sim {
         let y = (ground + body::plan_depth(&plan) + lift).max(at.y);
         let yaw = self.rng.range(0.0, std::f32::consts::TAU);
         let root = Pose::from_parts(Vec3::new(x, y, z), Quat::from_rotation_y(yaw));
-        let (parts, joints) = body::spawn_body(&mut self.world, &plan, root, id, mass, &self.params);
+        let shard = self.shard_for(Vec3::new(x, y, z));
+        let (parts, joints) = body::spawn_body(&mut self.shards[shard].world, &plan, root, id, mass, &self.params);
         let max_energy = self.params.energy_per_mass * mass;
         let max_health = 100.0 * (mass / 60.0).sqrt();
         let mut genome = genome;
@@ -724,6 +1017,7 @@ impl Sim {
             soil: 0.0,
             rained: parents.is_none(),
             dead: None,
+            shard,
         };
         if generation > self.stats.max_generation && parents.is_some() {
             self.highlight(HighlightKind::Record, id, None, Vec3::new(x, y, z));
@@ -808,7 +1102,7 @@ impl Sim {
             return None;
         }
         let i = kin[self.rng.below(kin.len())];
-        let base = self.world.bodies.get(self.creatures[i].parts[0].body)?.translation();
+        let base = self.torso_of(&self.creatures[i])?.translation();
         let a = self.rng.range(0.0, std::f32::consts::TAU);
         let d = self.rng.range(3.0, 8.0);
         Some(base + Vec3::new(a.cos() * d, 0.0, a.sin() * d))
@@ -869,26 +1163,16 @@ impl Sim {
     pub fn add_obstacle(&mut self, pos: Vec3, shape: ObstacleShape, dynamic: bool, yaw: f32) -> u64 {
         let id = self.next_id();
         let y = self.terrain.height_at(pos.x, pos.z) + obstacle_lift(shape);
-        let rb = if dynamic {
-            RigidBodyBuilder::dynamic()
-        } else {
-            RigidBodyBuilder::fixed()
-        }
-        .pose(Pose::from_parts(Vec3::new(pos.x, y, pos.z), Quat::from_rotation_y(yaw)))
-        .user_data(Tag::Obstacle { id }.encode());
-        let col = match shape {
-            ObstacleShape::Box { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
-            ObstacleShape::Ball { radius } => ColliderBuilder::ball(radius),
-        }
-        .density(1500.0)
-        .friction(0.9)
-        .user_data(Tag::Obstacle { id }.encode());
-        let (body, _) = self.world.insert(rb, col);
+        let at = Vec3::new(pos.x, y, pos.z);
+        let shard = self.shard_for(at);
+        let rb = obstacle_body(id, dynamic, Pose::from_parts(at, Quat::from_rotation_y(yaw)));
+        let (body, _) = self.shards[shard].world.insert(rb, obstacle_collider(id, shape));
         self.obstacles.push(Obstacle {
             id,
             body,
             shape,
             dynamic,
+            shard,
         });
         id
     }
@@ -896,10 +1180,10 @@ impl Sim {
     pub fn remove_obstacle(&mut self, id: u64) {
         if let Some(i) = self.obstacles.iter().position(|o| o.id == id) {
             let o = self.obstacles.swap_remove(i);
-            if self.grab.as_ref().is_some_and(|g| g.body == o.body) {
+            if self.grab.as_ref().is_some_and(|g| g.obstacle == Some(o.id)) {
                 self.grab = None;
             }
-            self.world.remove_body(o.body);
+            self.shards[o.shard].world.remove_body(o.body);
         }
     }
 
@@ -928,9 +1212,31 @@ impl Sim {
             self.think(bdt);
         }
         let t1 = Instant::now();
+        if self.tick % REGROUP_EVERY == 0 {
+            self.regroup();
+        }
         self.environment_forces();
-        self.world.step_with_events(&ContactFilter, &());
+        let t_forces = Instant::now();
+        // The physics worlds step in parallel: rapier solves a world's articulations on one
+        // thread.
+        let times: Vec<f32> = {
+            use rayon::prelude::*;
+            self.shards
+                .par_iter_mut()
+                .map(|s| {
+                    let t = Instant::now();
+                    s.world.step_with_events(&ContactFilter, &());
+                    t.elapsed().as_secs_f32() * 1000.0
+                })
+                .collect()
+        };
         let t2 = Instant::now();
+        let k = 0.05;
+        let slowest = times.iter().copied().fold(0.0, f32::max);
+        let total: f32 = times.iter().sum();
+        self.perf.shard_slowest_ms += (slowest - self.perf.shard_slowest_ms) * k;
+        self.perf.shard_total_ms += (total - self.perf.shard_total_ms) * k;
+        self.perf.forces_ms += ((t_forces - t1).as_secs_f32() * 1000.0 - self.perf.forces_ms) * k;
         self.after_physics();
         if brain_tick {
             self.interact(bdt);
@@ -971,14 +1277,15 @@ impl Sim {
         // Everything here is a force for this step only. (Forces, not impulses: a creature's
         // parts form a multibody, which keeps no velocity set on a part directly.)
         for o in &self.obstacles {
-            if let Some(b) = self.world.bodies.get_mut(o.body) {
+            if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body) {
                 b.reset_forces(false);
                 b.reset_torques(false);
             }
         }
         for c in &mut self.creatures {
+            let world = &mut self.shards[c.shard].world;
             for (k, part) in c.parts.iter().enumerate() {
-                let Some(b) = self.world.bodies.get_mut(part.body) else {
+                let Some(b) = world.bodies.get_mut(part.body) else {
                     continue;
                 };
                 b.reset_forces(false);
@@ -1043,11 +1350,14 @@ impl Sim {
             self.highlight(HighlightKind::Splash, id, None, at);
         }
         if let Some(grab) = &self.grab {
-            let creature_mass = grab
-                .creature
-                .and_then(|id| self.index.get(&id))
-                .map(|&i| self.creatures[i].mass);
-            if let Some(b) = self.world.bodies.get_mut(grab.body) {
+            let held = grab.creature.and_then(|id| self.index.get(&id)).map(|&i| &self.creatures[i]);
+            let creature_mass = held.map(|c| c.mass);
+            let body = match (held, grab.obstacle) {
+                (Some(c), _) => c.parts.get(grab.part).or(c.parts.first()).map(|q| (c.shard, q.body)),
+                (None, Some(id)) => self.obstacles.iter().find(|o| o.id == id).map(|o| (o.shard, o.body)),
+                _ => None,
+            };
+            if let Some(b) = body.and_then(|(s, h)| self.shards[s].world.bodies.get_mut(h)) {
                 let m = creature_mass.unwrap_or_else(|| b.mass());
                 let anchor = b.position().transform_point(grab.local);
                 let v = b.velocity_at_point(anchor);
@@ -1062,8 +1372,9 @@ impl Sim {
             }
             // Calm the rest of a dangling creature so it doesn't spin like a flail.
             if let Some(&i) = grab.creature.and_then(|id| self.index.get(&id)) {
-                for part in &self.creatures[i].parts {
-                    if let Some(b) = self.world.bodies.get_mut(part.body) {
+                let c = &self.creatures[i];
+                for part in &c.parts {
+                    if let Some(b) = self.shards[c.shard].world.bodies.get_mut(part.body) {
                         let w = b.angvel();
                         b.add_torque(-w * (spin_inertia(b) * 0.03 / DT), false);
                     }
@@ -1086,9 +1397,10 @@ impl Sim {
             if c.dead.is_some() {
                 continue;
             }
+            let world = &mut self.shards[c.shard].world;
             let mut work = 0.0;
             for j in &c.joints {
-                let w = body::muscle_work(&self.world, &c.parts, j, DT);
+                let w = body::muscle_work(world, &c.parts, j, DT);
                 work += match j.kind {
                     body::JointKind::Hinge => w,
                     body::JointKind::Swivel => w * p.swivel_energy_cost,
@@ -1100,7 +1412,7 @@ impl Sim {
             let mut slow = 1.0f32;
             c.fall.resize(c.parts.len(), 0.0);
             for (k, part) in c.parts.iter().enumerate() {
-                let Some(b) = self.world.bodies.get_mut(part.body) else {
+                let Some(b) = world.bodies.get_mut(part.body) else {
                     bad = true;
                     continue;
                 };
@@ -1133,13 +1445,13 @@ impl Sim {
             // Over the speed or spin cap: the whole creature slows together (its joints stay
             // together; slowing one part alone would wrench them).
             if slow < 1.0 {
-                match body::multibody_mut(&mut self.world, &c.parts) {
+                match body::multibody_mut(world, &c.parts) {
                     Some(mb) => {
                         let mut v = mb.generalized_velocity_mut();
                         v *= slow;
                     }
                     None => {
-                        if let Some(b) = self.world.bodies.get_mut(c.parts[0].body) {
+                        if let Some(b) = world.bodies.get_mut(c.parts[0].body) {
                             let (v, w) = (b.linvel(), b.angvel());
                             b.set_linvel(v * slow, false);
                             b.set_angvel(w * slow, false);
@@ -1147,7 +1459,7 @@ impl Sim {
                     }
                 }
             }
-            let torso = &self.world.bodies[c.parts[0].body];
+            let torso = &world.bodies[c.parts[0].body];
             let pos = torso.translation();
             if pos.y < terrain.height_at(pos.x, pos.z) - 3.0 || !terrain.contains(pos.x, pos.z, -3.0) {
                 // Tunneled through the ground or out of the world.
@@ -1276,7 +1588,7 @@ impl Sim {
         let mut kills = Vec::new();
         for c in self.creatures.iter().filter(|c| c.dead == Some(DeathCause::Killed)) {
             if let Some(k) = c.last_attacker.filter(|_| c.attacked_ago < RECENT_ATTACK) {
-                let at = self.world.bodies.get(c.parts[0].body).map(|b| b.translation()).unwrap_or(c.last_pos);
+                let at = self.torso_of(c).map(|b| b.translation()).unwrap_or(c.last_pos);
                 kills.push((k, c.id, at));
             }
         }
@@ -1342,7 +1654,7 @@ impl Sim {
                 // changed since).
                 let volume: f32 = c.plan.iter().map(|s| s.shape.volume()).sum::<f32>().max(1e-6);
                 for (k, part) in c.parts.iter().enumerate() {
-                    let Some(b) = self.world.bodies.get(part.body) else {
+                    let Some(b) = self.shards[c.shard].world.bodies.get(part.body) else {
                         continue;
                     };
                     let share = c.plan[k].shape.volume() / volume;
@@ -1357,9 +1669,7 @@ impl Sim {
             // Earth it was carrying drops where it died.
             if c.soil > 0.0 {
                 let at = self
-                    .world
-                    .bodies
-                    .get(c.parts[0].body)
+                    .torso_of(&c)
                     .map(|b| b.translation())
                     .filter(|p| p.is_finite())
                     .unwrap_or(c.last_pos);
@@ -1379,7 +1689,7 @@ impl Sim {
             if self.selected == Some(c.id) {
                 self.selected = None;
             }
-            body::remove_body(&mut self.world, &c.parts, &c.joints);
+            body::remove_body(&mut self.shards[c.shard].world, &c.parts, &c.joints);
             if let Some(g) = self.brains.as_mut() {
                 g.unregister(c.id);
             }
@@ -1499,4 +1809,38 @@ pub fn obstacle_lift(shape: ObstacleShape) -> f32 {
 fn spin_inertia(b: &rapier3d::prelude::RigidBody) -> f32 {
     let i = b.mass_properties().local_mprops.principal_inertia();
     (i.x + i.y + i.z) / 3.0
+}
+
+/// How near the boxes around two things' parts must come for them to share a physics world, m:
+/// more than they can close in on each other before the next regroup.
+const REGROUP_MARGIN: f32 = 0.6;
+/// Something new joins the world of anything within this, m.
+const REGROUP_REACH: f32 = 6.0;
+/// Physics ticks between regroups.
+pub(crate) const REGROUP_EVERY: u64 = 6;
+/// Most body parts moved between worlds per regroup to even out their loads.
+const REGROUP_MOVES: usize = 60;
+
+fn obstacle_body(id: u64, dynamic: bool, pose: Pose) -> RigidBodyBuilder {
+    if dynamic { RigidBodyBuilder::dynamic() } else { RigidBodyBuilder::fixed() }
+        .pose(pose)
+        .user_data(Tag::Obstacle { id }.encode())
+}
+
+fn obstacle_collider(id: u64, shape: ObstacleShape) -> ColliderBuilder {
+    match shape {
+        ObstacleShape::Box { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
+        ObstacleShape::Ball { radius } => ColliderBuilder::ball(radius),
+    }
+    .density(1500.0)
+    .friction(0.9)
+    .user_data(Tag::Obstacle { id }.encode())
+}
+
+/// How far an obstacle reaches from its center, m.
+fn obstacle_radius(shape: ObstacleShape) -> f32 {
+    match shape {
+        ObstacleShape::Box { half } => (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt(),
+        ObstacleShape::Ball { radius } => radius,
+    }
 }

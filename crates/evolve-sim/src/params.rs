@@ -152,6 +152,9 @@ params! {
         max_body_speed: f32 = 30.0, [5, 200], Live;
         /// Hard cap on body part spin, rad/s.
         max_body_spin: f32 = 40.0, [5, 1000], Live;
+        /// Physics worlds the world is split into and stepped in parallel. Creatures that might
+        /// touch share one, and rapier solves each world on one thread, so more use more cores.
+        physics_shards: u32 = 12, [1, 32], Live;
     }
     "Motors" {
         /// Spring stiffness of the joint motors chasing the brain's target angles.
@@ -341,6 +344,9 @@ params! {
         /// Extra worlds evolving in the background on spare CPU cores (and the GPU). Their best
         /// genomes migrate into this world's gene pool, so evolution runs several times faster.
         parallel_worlds: u32 = default_background_worlds(), [0, 16], Live;
+        /// Background worlds' population, as a share of this world's minimum and maximum: big
+        /// background worlds take the cores this world's physics needs.
+        background_population: f32 = 0.25, [0.05, 1], Live;
         /// Simulated seconds between migrations of the best genomes between worlds.
         migration_interval: f32 = 60.0, [5, 1200], Live;
         /// How busy the brains should keep the GPU at Max speed (0..1), by the GPU's own timer.

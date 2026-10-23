@@ -52,13 +52,7 @@ impl Sim {
     pub(crate) fn torso_positions(&self) -> Vec<Vec3> {
         self.creatures
             .iter()
-            .map(|c| {
-                self.world
-                    .bodies
-                    .get(c.parts[0].body)
-                    .map(|b| b.translation())
-                    .unwrap_or(c.last_pos)
-            })
+            .map(|c| self.torso_of(c).map(|b| b.translation()).unwrap_or(c.last_pos))
             .collect()
     }
 
@@ -219,7 +213,7 @@ impl Sim {
                 let len = c.plan.get(j.child).map_or(0.5, |s| s.shape.length()).max(0.05);
                 let step = p.max_joint_speed * (0.5 / len).sqrt().clamp(0.5, 1.5) * bdt;
                 for &(axis, d) in j.axes() {
-                    if let Some(data) = body::axis_joint_mut(&mut self.world, j, d) {
+                    if let Some(data) = body::axis_joint_mut(&mut self.shards[c.shard].world, j, d) {
                         let want = mid + c.output(output::JOINTS + j.slot + d) * half;
                         let was = data.motors[axis as usize].target_pos;
                         let target = was + (want - was).clamp(-step, step);
@@ -256,7 +250,7 @@ impl Sim {
             if want == 0.0 || c.dead.is_some() {
                 continue;
             }
-            let Some(torso) = self.world.bodies.get(c.parts[0].body) else {
+            let Some(torso) = self.shards[c.shard].world.bodies.get(c.parts[0].body) else {
                 continue;
             };
             let half = c.torso_half();
@@ -296,8 +290,12 @@ impl Sim {
         let Some((i0, i1, j0, j1)) = self.terrain.take_dirty() else {
             return;
         };
-        if let Some(col) = self.world.colliders.get_mut(self.terrain_collider) {
-            col.set_shape(self.terrain.shape());
+        // The same ground in every physics world.
+        let shape = self.terrain.shape();
+        for shard in &mut self.shards {
+            if let Some(col) = shard.world.colliders.get_mut(shard.terrain_collider) {
+                col.set_shape(shape.clone());
+            }
         }
         let (n, size) = ((self.terrain.res - 1) as f32, self.terrain.size);
         let at = |k: usize| (k as f32 / n - 0.5) * size;
@@ -315,7 +313,7 @@ impl Sim {
             }
         }
         for o in self.obstacles.iter().filter(|o| o.dynamic) {
-            if let Some(b) = self.world.bodies.get_mut(o.body)
+            if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body)
                 && inside(b.translation())
             {
                 b.wake_up(true);
@@ -333,7 +331,7 @@ impl Sim {
             if c.dead.is_some() || c.output(output::EAT) <= 0.0 || c.energy >= c.max_energy {
                 continue;
             }
-            let Some(torso) = self.world.bodies.get(c.parts[0].body) else {
+            let Some(torso) = self.shards[c.shard].world.bodies.get(c.parts[0].body) else {
                 continue;
             };
             let half = c.torso_half();
@@ -385,21 +383,23 @@ impl Sim {
     /// A creature whose torso (its head) touches another and wants to attack, bites it.
     fn fight(&mut self) {
         let mut contacts = Vec::new();
-        for pair in self.world.narrow_phase.contact_pairs() {
-            if !pair.has_any_active_contact() {
-                continue;
-            }
-            let (Some(a), Some(b)) = (
-                self.world.colliders.get(pair.collider1),
-                self.world.colliders.get(pair.collider2),
-            ) else {
-                continue;
-            };
-            if let (Tag::Creature { id: ia, part: pa }, Tag::Creature { id: ib, part: pb }) =
-                (Tag::decode(a.user_data), Tag::decode(b.user_data))
-                && ia != ib
-            {
-                contacts.push((ia, pa, ib, pb));
+        // Creatures that touch share a physics world (see `regroup`), so each world's own
+        // contacts are all of them.
+        for shard in &self.shards {
+            let world = &shard.world;
+            for pair in world.narrow_phase.contact_pairs() {
+                if !pair.has_any_active_contact() {
+                    continue;
+                }
+                let (Some(a), Some(b)) = (world.colliders.get(pair.collider1), world.colliders.get(pair.collider2)) else {
+                    continue;
+                };
+                if let (Tag::Creature { id: ia, part: pa }, Tag::Creature { id: ib, part: pb }) =
+                    (Tag::decode(a.user_data), Tag::decode(b.user_data))
+                    && ia != ib
+                {
+                    contacts.push((ia, pa, ib, pb));
+                }
             }
         }
         for (ia, pa, ib, pb) in contacts {
@@ -440,12 +440,7 @@ impl Sim {
         a.attack_cooldown = cooldown;
         a.attack_flash = 0.3;
         a.life.attacks += 1;
-        let at = self
-            .world
-            .bodies
-            .get(self.creatures[vi].parts[0].body)
-            .map(|b| b.translation())
-            .unwrap_or(Vec3::ZERO);
+        let at = self.torso_of(&self.creatures[vi]).map(|b| b.translation()).unwrap_or(Vec3::ZERO);
         self.highlight(crate::snapshot::HighlightKind::Attack, attacker, Some(victim), at);
     }
 
@@ -671,7 +666,7 @@ impl Sim {
         let area = self.terrain.cell() * self.terrain.cell();
         for c in &self.creatures {
             for (k, part) in c.parts.iter().enumerate() {
-                let Some(b) = self.world.bodies.get(part.body) else {
+                let Some(b) = self.shards[c.shard].world.bodies.get(part.body) else {
                     continue;
                 };
                 let pos = b.translation();
@@ -864,7 +859,7 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
     let sim = cx.sim;
     let p = &sim.params;
     let mut x = [0.0f32; N_IN];
-    let Some(torso) = sim.world.bodies.get(c.parts[0].body) else {
+    let Some(torso) = sim.torso_of(c) else {
         return x;
     };
     let pos = torso.translation();
@@ -932,16 +927,26 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
         x[OTHER_AGGRO] = o.output(output::ATTACK).max(0.0);
     }
 
+    // Eyes see into every physics world; the ground and walls, the same in each, are looked
+    // for in the first only.
     let own = c.id;
-    let not_self = move |_h: ColliderHandle, col: &Collider| Tag::decode(col.user_data).creature_id() != Some(own);
-    let qp = sim
-        .world
-        .query_pipeline_with_filter(QueryFilter::default().predicate(&not_self));
     let origin = pos + Vec3::Y * 0.05;
-    for (n, ang) in [0.6f32, 0.0, -0.6].into_iter().enumerate() {
-        let dir = Quat::from_rotation_y(ang) * fwd;
-        let ray = Ray::new(origin, dir);
-        if let Some((_, toi)) = qp.cast_ray(&ray, p.ray_length, true) {
+    let mut nearest = [f32::MAX; 3];
+    for (s, shard) in sim.shards.iter().enumerate() {
+        let not_self = move |_h: ColliderHandle, col: &Collider| match Tag::decode(col.user_data) {
+            Tag::Terrain | Tag::Wall => s == 0,
+            t => t.creature_id() != Some(own),
+        };
+        let qp = shard.world.query_pipeline_with_filter(QueryFilter::default().predicate(&not_self));
+        for (n, ang) in [0.6f32, 0.0, -0.6].into_iter().enumerate() {
+            let dir = Quat::from_rotation_y(ang) * fwd;
+            if let Some((_, toi)) = qp.cast_ray(&Ray::new(origin, dir), p.ray_length, true) {
+                nearest[n] = nearest[n].min(toi);
+            }
+        }
+    }
+    for (n, toi) in nearest.into_iter().enumerate() {
+        if toi < f32::MAX {
             x[RAYS + n] = 1.0 - toi / p.ray_length.max(1e-3);
         }
     }
@@ -982,7 +987,7 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
     }
     x[MEMORY..MEMORY + N_MEMORY].copy_from_slice(&c.brain.memory);
     for j in &c.joints {
-        if let Some((angles, _)) = body::joint_state(&sim.world, &c.parts, j) {
+        if let Some((angles, _)) = body::joint_state(sim.world_of(c), &c.parts, j) {
             let (mid, half) = j.span();
             for &(_, d) in j.axes() {
                 x[JOINTS + j.slot + d] = ((angles[d] - mid) / half).clamp(-1.5, 1.5);

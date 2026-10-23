@@ -187,6 +187,17 @@ body's real weight. Every joint has a genetic range of motion that the physics e
   evolved to ride it, bouncing over the ground off the ground three-quarters of the time. Now
   they barely move until evolution finds them a real gait. The physics costs about twice as
   much (about 3 ms a step for 50 creatures: one substep of 8 passes).
+
+**Physics on many cores.** Rapier solves a world's articulations on one thread, so the world's
+physics is split into `physics_shards` (12) physics worlds stepped in parallel, each on a thread
+of its own. Every tenth of a second, creatures and obstacles are regrouped: anything whose parts'
+bounding boxes come within 0.6 m of each other shares a world (so creatures that touch collide,
+fight and mate as before), groups stay where most of their members are, and whole groups move out
+of busy worlds to even the load. A creature moves between worlds exactly as it is (pose, joint
+angles, motors, every velocity). Eyes see into every world. With 790 creatures this runs about
+4x faster than one world (71 steps a second on a Core Ultra 9 285K, about 1.2x real time).
+Background worlds run at `background_population` (a quarter) of this world's population and at a
+lower CPU priority, so they use spare cores without starving this one.
 - *Speed:* the angle a joint aims for moves at most `max_joint_speed` (8 rad/s for a half-meter
   segment; longer segments slower, shorter ones faster, like pendulums). The brain can change its
   mind 30 times a second, but a limb swings rather than snapping back and forth in a blur.

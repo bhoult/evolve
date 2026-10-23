@@ -182,9 +182,10 @@ pub struct Snapshot {
 
 impl Sim {
     pub fn snapshot(&self, terrain: Arc<Terrain>, history: Arc<Vec<Sample>>) -> Snapshot {
-        let bodies = &self.world.bodies;
-        let pose = |h| {
-            bodies
+        let pose = |shard: usize, h| {
+            self.shards[shard]
+                .world
+                .bodies
                 .get(h)
                 .map(|b: &rapier3d::prelude::RigidBody| {
                     (b.translation().to_array(), b.rotation().to_array())
@@ -202,7 +203,7 @@ impl Sim {
                     .iter()
                     .zip(&c.plan)
                     .map(|(p, spec)| {
-                        let (pos, rot) = pose(p.body);
+                        let (pos, rot) = pose(c.shard, p.body);
                         PartView {
                             pos,
                             rot,
@@ -229,8 +230,8 @@ impl Sim {
                 voice: c.genome.traits.voice,
                 call: crate::life::call_loudness(c),
                 call_pitch: c.output(crate::brain::output::CALL_PITCH),
-                speed: bodies
-                    .get(c.parts[0].body)
+                speed: self
+                    .torso_of(c)
                     .map(|b| {
                         let v = b.linvel();
                         (v.x * v.x + v.z * v.z).sqrt()
@@ -247,7 +248,7 @@ impl Sim {
             .obstacles
             .iter()
             .map(|o| {
-                let (pos, rot) = pose(o.body);
+                let (pos, rot) = pose(o.shard, o.body);
                 ObstacleView {
                     id: o.id,
                     pos,

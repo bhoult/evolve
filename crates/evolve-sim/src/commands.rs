@@ -93,28 +93,22 @@ impl Sim {
             Command::RemoveObstacle(id) => self.remove_obstacle(id),
             Command::Select(id) => self.selected = id,
             Command::GrabCreature { creature, part, local, target } => {
-                let body = self
-                    .creature(creature)
-                    .and_then(|c| c.parts.get(part).or(c.parts.first()))
-                    .map(|p| p.body);
-                self.grab = body.map(|body| Grab {
-                    body,
+                self.grab = self.creature(creature).map(|c| Grab {
+                    creature: Some(creature),
+                    part: part.min(c.parts.len().saturating_sub(1)),
+                    obstacle: None,
                     local: Vec3::from(local),
                     target: Vec3::from(target),
-                    creature: Some(creature),
                 });
             }
             Command::GrabObstacle { obstacle, local, target } => {
-                let body = self
-                    .obstacles
-                    .iter()
-                    .find(|o| o.id == obstacle && o.dynamic)
-                    .map(|o| o.body);
-                self.grab = body.map(|body| Grab {
-                    body,
+                let found = self.obstacles.iter().any(|o| o.id == obstacle && o.dynamic);
+                self.grab = found.then(|| Grab {
+                    creature: None,
+                    part: 0,
+                    obstacle: Some(obstacle),
                     local: Vec3::from(local),
                     target: Vec3::from(target),
-                    creature: None,
                 });
             }
             Command::DragTo(t) => {

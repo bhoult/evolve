@@ -31,7 +31,7 @@ fn locomotion_of_random_creatures() {
         sim.step();
         for (ci, c) in sim.creatures.iter().enumerate() {
             for j in &c.joints {
-                if let Some((a, _)) = body::joint_state(&sim.world, &c.parts, j) {
+                if let Some((a, _)) = body::joint_state(sim.world_of(c), &c.parts, j) {
                     let r = &mut ranges[ci * m + j.slot];
                     r.0 = r.0.min(a[0]);
                     r.1 = r.1.max(a[0]);
@@ -41,7 +41,7 @@ fn locomotion_of_random_creatures() {
     }
     let mut disp = Vec::new();
     for (ci, c) in sim.creatures.iter().enumerate() {
-        let t = sim.world.bodies[c.parts[0].body].translation();
+        let t = sim.world_of(c).bodies[c.parts[0].body].translation();
         let start = starts.iter().find(|s| s.0 == c.id).unwrap().1;
         let d = Vec3::new(t.x - start.x, 0.0, t.z - start.z).length();
         let amp: f32 = c
@@ -66,7 +66,7 @@ fn locomotion_of_random_creatures() {
             amp,
             spent,
             basal,
-            (sim.world.bodies[c.parts[0].body].rotation() * Vec3::Y).y
+            (sim.world_of(c).bodies[c.parts[0].body].rotation() * Vec3::Y).y
         );
         disp.push(d);
     }
@@ -144,12 +144,12 @@ fn funnel() {
         let dt = 3.0 / 60.0;
         let mut pg = Grid::new(sim.terrain.size, 5.0);
         pg.rebuild(sim.plants.iter().map(|f| f.pos));
-        let torso: Vec<Vec3> = sim.creatures.iter().map(|c| sim.world.bodies[c.parts[0].body].translation()).collect();
+        let torso: Vec<Vec3> = sim.creatures.iter().map(|c| sim.world_of(c).bodies[c.parts[0].body].translation()).collect();
         let ready: Vec<bool> = sim.creatures.iter().map(|c| c.ready_to_mate(&p, p.mate_energy_fraction)).collect();
         let willing: Vec<bool> = sim.creatures.iter().map(|c| c.willing_partner(&p)).collect();
         let mut next = HashMap::new();
         for (i, cr) in sim.creatures.iter().enumerate() {
-            let b = &sim.world.bodies[cr.parts[0].body];
+            let b = &sim.world_of(cr).bodies[cr.parts[0].body];
             let half = cr.torso_half();
             let mouth = b.position().transform_point(Vec3::new(half.x, 0.0, 0.0));
             let reach = p.eat_reach + 0.35 + half.y;
@@ -262,14 +262,14 @@ fn where_food_and_creatures_are() {
     let mut near5 = Vec::new();
     let mut net10 = Vec::new();
     let mut elev = Vec::new();
-    let start: Vec<(u64, Vec3)> = sim.creatures.iter().map(|c| (c.id, sim.world.bodies[c.parts[0].body].translation())).collect();
+    let start: Vec<(u64, Vec3)> = sim.creatures.iter().map(|c| (c.id, sim.world_of(c).bodies[c.parts[0].body].translation())).collect();
     for _ in 0..600 {
         sim.step();
     }
     let mut g = Grid::new(sim.terrain.size, 5.0);
     g.rebuild(sim.plants.iter().map(|f| f.pos));
     for c in &sim.creatures {
-        let t = sim.world.bodies[c.parts[0].body].translation();
+        let t = sim.world_of(c).bodies[c.parts[0].body].translation();
         let mut n = 0;
         g.for_each_near(t, 5.0, |k| {
             let q = sim.plants[k as usize].pos;
