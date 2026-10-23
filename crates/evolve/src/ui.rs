@@ -353,6 +353,9 @@ fn ui_system(
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
 
+    if snap.paused {
+        paused_badge(ctx);
+    }
     if director.active {
         director_overlay(ctx, &mut director, &mut sound, &mut rec, now);
         if !director.panels {
@@ -1591,6 +1594,23 @@ fn sound_controls(ui: &mut egui::Ui, sound: &mut SoundSettings) {
 }
 
 /// While the director runs: what it's showing, and how to take over.
+/// A reminder at the top of the screen while the world is paused (the director hides the
+/// toolbar, so nothing else would say why nothing moves).
+fn paused_badge(ctx: &mut egui::Context) {
+    egui::Area::new(egui::Id::new("paused_badge"))
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 56.0])
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(150))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(14, 6))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("⏸ Paused: Space to run").size(18.0).color(egui::Color32::WHITE));
+                });
+        });
+}
+
 fn director_overlay(
     ctx: &mut egui::Context,
     director: &mut Director,

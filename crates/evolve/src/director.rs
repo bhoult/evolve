@@ -52,14 +52,14 @@ enum Kind {
 }
 
 impl Kind {
-    /// Longest it holds the shot, seconds.
-    fn max_time(self) -> f64 {
+    /// How long a shot of this kind typically lasts, seconds (each shot varies around it).
+    fn typical_time(self) -> f64 {
         match self {
-            Kind::Splash => 6.0,
-            Kind::Drowning | Kind::Brain => 8.0,
-            Kind::Kill | Kind::Fight | Kind::Birth | Kind::Record | Kind::Star | Kind::Oddball | Kind::Call => 9.0,
-            Kind::Vista => 10.0,
-            Kind::Swimmer | Kind::Sprinter => 11.0,
+            Kind::Splash => 9.0,
+            Kind::Drowning | Kind::Brain => 13.0,
+            Kind::Kill | Kind::Fight | Kind::Birth | Kind::Record | Kind::Star | Kind::Oddball | Kind::Call => 15.0,
+            Kind::Vista => 18.0,
+            Kind::Swimmer | Kind::Sprinter => 20.0,
         }
     }
 
@@ -67,6 +67,18 @@ impl Kind {
     fn urgent(self) -> bool {
         matches!(self, Kind::Kill | Kind::Birth | Kind::Record)
     }
+}
+
+/// How long the next shot lasts: around its kind's typical time, mostly a little shorter or
+/// longer, now and then lingering two or three times as long, so the pace doesn't tick like a
+/// metronome.
+fn shot_length(d: &mut Director, kind: Kind) -> f64 {
+    let r = d.random() as f64;
+    let mut f = 0.65 + 0.9 * r * r;
+    if d.random() < 0.15 {
+        f *= 2.0 + d.random() as f64;
+    }
+    kind.typical_time() * f
 }
 
 struct Candidate {
@@ -93,6 +105,8 @@ struct Shot {
     /// Camera (focus, distance, yaw, pitch) when the shot began, to glide from.
     from: (Vec3, f32, f32, f32),
     glide: f64,
+    /// How long it holds the shot, seconds.
+    length: f64,
     /// Extra pull-back halfway through a long glide, so it flies over rather than through.
     arc: f32,
     focus: Vec3,
@@ -351,11 +365,13 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
         d.recent.pop_front();
     }
     d.since_vista = if c.kind == Kind::Vista { 0 } else { d.since_vista + 1 };
+    let length = shot_length(d, c.kind);
+    // A long shot keeps its caption only for a while, then has a clean screen.
     d.caption = Some(Caption {
         title: c.title,
         detail: c.detail,
         started: now,
-        until: now + c.kind.max_time(),
+        until: now + length.min(10.0),
     });
     d.shot = Some(Shot {
         kind: c.kind,
@@ -369,6 +385,7 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
         distance,
         from,
         glide: (1.6 + jump as f64 / 80.0).min(4.0),
+        length,
         arc: (jump * 0.35).min(120.0),
         focus,
         focus_vel: Vec3::ZERO,
@@ -479,18 +496,20 @@ fn direct(
                 shot.lost.get_or_insert(now);
             }
             let subject = shot.subject;
-            let patience = if shot.kind.urgent() { 6.0 } else { 4.0 };
+            // A shot gets at least half its length (and 8 s) before news elsewhere can cut in.
+            let patience = (0.5 * shot.length).max(if shot.kind.urgent() { 10.0 } else { 8.0 });
             let started = shot.started;
             // Only news since this shot began: what it already passed over stays passed over.
+            // Births are too common in a big population to cut in for; they wait their turn.
             let big_news = held >= patience
                 && d.pending.iter().any(|&(t, h)| {
                     t > started
                         && now - t < FRESH
-                        && matches!(h.kind, HighlightKind::Kill | HighlightKind::Birth | HighlightKind::Record)
+                        && matches!(h.kind, HighlightKind::Kill | HighlightKind::Record)
                         && Some(h.subject) != subject
                         && find(snap, Some(h.subject)).is_some()
                 });
-            held >= shot.kind.max_time() || shot.lost.is_some_and(|t| now - t > 1.5) || big_news
+            held >= shot.length || shot.lost.is_some_and(|t| now - t > 1.5) || big_news
         }
     };
     if switch {

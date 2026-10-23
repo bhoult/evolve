@@ -71,8 +71,11 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 - *How it moves:* it circles the subject slowly, then glides to the next thing, flying up and over
   for long moves. It follows the subject's center of mass on a damped spring (as does F), so a
   creature thrashing about doesn't shake the view.
-- *Variety:* it avoids repeating itself, and cuts early for a kill, a birth or a record somewhere
-  else.
+- *Pace:* each shot gets its own length, mostly 10 to 25 seconds, and now and then it lingers two
+  or three times as long. Captions fade after about 10 seconds, so a long shot has a clean screen.
+- *Variety:* it avoids repeating itself, and once a shot is half over it cuts away for a kill or
+  a record somewhere else (births are too common to cut in for).
+- *Paused:* a notice at the top of the screen says so (Space runs it again).
 - *Screen:* a caption says what you're looking at, and the panels hide for a clean screen (tick
   "panels" to keep them).
 - *Taking over:* moving the camera yourself, or pressing C, hands control back.
