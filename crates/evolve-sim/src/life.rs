@@ -341,9 +341,15 @@ impl Sim {
             return;
         }
         self.settled_at = self.time;
+        // Steep loose earth slides first; what's still sliding goes on next time.
+        let p = &self.params;
+        let settled = self.terrain.slump(p.slump_angle, p.dig_depth, p.pile_height, 24);
         let Some((i0, i1, j0, j1)) = self.terrain.take_dirty() else {
             return;
         };
+        if !settled {
+            self.terrain.mark_dirty(i0, i1, j0, j1);
+        }
         // The same ground in every physics world.
         let shape = self.terrain.shape();
         for shard in &mut self.shards {
@@ -721,6 +727,11 @@ impl Sim {
         // Running water is worn into the land in batches, so the physics ground (a full
         // heightfield rebuild) changes every half minute rather than every update.
         const EROSION_EVERY: f32 = 30.0;
+        // Dug and piled ground weathers back in batches too.
+        let batch = |t: f64| (t / EROSION_EVERY as f64).floor();
+        if batch(self.time) != batch(self.time - dt as f64) {
+            self.terrain.heal(EROSION_EVERY, self.params.earth_recovery * 60.0);
+        }
         if !self.params.hydrology {
             if self.terrain.water.iter().chain(&self.terrain.pooled).any(|&w| w > 0.0) {
                 self.terrain.water.fill(0.0);

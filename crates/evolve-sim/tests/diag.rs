@@ -579,3 +579,175 @@ fn breathlessness() {
         f(low)
     );
 }
+
+/// Where a world's food comes from and who moves its earth: carcasses of creatures that fell
+/// from the sky (the population floor) versus those born in the world, what each kind of body
+/// eats, how far it goes, and how torn up the land is. Loads `EVOLVE_DIAG_SAVE`, or starts a
+/// world seeded from the zoo in `EVOLVE_ZOO_DIR` with `EVOLVE_DIAG_MIN`/`EVOLVE_DIAG_MAX` as the
+/// population floor and cap.
+/// `EVOLVE_ZOO_DIR=copy cargo test --release --test diag economy -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn economy() {
+    use std::collections::HashMap;
+    let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let mut sim = match std::env::var("EVOLVE_DIAG_SAVE") {
+        Ok(path) => evolve_sim::save::load(path.as_ref()).unwrap(),
+        Err(_) => {
+            let p = SimParams {
+                min_population: env("EVOLVE_DIAG_MIN", 790.0) as u32,
+                max_population: env("EVOLVE_DIAG_MAX", 1000.0) as u32,
+                seed: env("EVOLVE_DIAG_SEED", 1.0) as u64,
+                ..SimParams::default()
+            };
+            let mut sim = Sim::new(p);
+            let dir = std::env::var("EVOLVE_ZOO_DIR").expect("set EVOLVE_ZOO_DIR to a copy of a zoo");
+            evolve_sim::zoo::seed_world(&evolve_sim::zoo::Zoo::shared(dir.into()), &mut sim);
+            sim
+        }
+    };
+    let warm = env("EVOLVE_DIAG_WARM", 120.0);
+    let secs = env("EVOLVE_DIAG_SECS", 300.0);
+    let tps = evolve_sim::sim::TICKS_PER_SECOND as f32;
+    for _ in 0..(warm * tps) as usize {
+        sim.step();
+    }
+    let p = sim.params.clone();
+    let terrain = |sim: &Sim| {
+        let t = &sim.terrain;
+        let (n, cell) = (t.res, t.cell());
+        let (mut land, mut moved, mut deep, mut steep, mut edges, mut steep0) = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+        for i in 0..n - 1 {
+            for j in 0..n - 1 {
+                let k = i * n + j;
+                if t.heights[k] <= p.water_level {
+                    continue;
+                }
+                land += 1.0;
+                let d = (t.heights[k] - t.natural(k)).abs();
+                moved += d;
+                deep += (d > 0.5) as u8 as f64;
+                for k2 in [k + 1, k + n] {
+                    edges += 1.0;
+                    steep += ((t.heights[k2] - t.heights[k]).abs() > cell) as u8 as f64;
+                    steep0 += ((t.ground[k2] - t.ground[k]).abs() > cell) as u8 as f64;
+                }
+            }
+        }
+        format!(
+            "land points {land:.0}: mean |dug/piled| {:.2} m, {:.1}% moved > 0.5 m; slopes over 45 deg: {:.1}% of edges now, {:.1}% as made",
+            moved / land as f32,
+            100.0 * deep / land,
+            100.0 * steep / edges,
+            100.0 * steep0 / edges
+        )
+    };
+    println!("after {warm:.0} s warm-up: {}", terrain(&sim));
+    // [rained, born] x [one box, more parts]
+    #[derive(Default, Clone, Copy)]
+    struct K {
+        samples: f64,
+        meat: f64,
+        plant: f64,
+        dist: f64,
+        earth: f64,
+        kills: f64,
+        mass: f64,
+    }
+    let mut k = [[K::default(); 2]; 2];
+    let class = |c: &evolve_sim::sim::Creature| (usize::from(!c.rained), usize::from(c.plan.len() > 1));
+    let (mut carcass_meat, mut injected) = ([0.0f64; 2], 0.0f64);
+    let (mut deaths, births0, rained0) = ([0u32; 2], sim.stats.births, sim.stats.rained);
+    let mut prev: HashMap<u64, (usize, usize, f32, f32, evolve_sim::sim::LifeStats, f32)> = HashMap::new();
+    let start: HashMap<u64, Vec3> = sim.creatures.iter().map(|c| (c.id, sim.world_of(c).bodies[c.parts[0].body].translation())).collect();
+    let dt = 1.0 / tps;
+    for _ in 0..(secs * tps) as usize {
+        sim.step();
+        let mut next = HashMap::new();
+        for c in &sim.creatures {
+            let (r, b) = class(c);
+            let x = &mut k[r][b];
+            x.samples += 1.0;
+            x.mass += c.mass as f64;
+            match prev.get(&c.id) {
+                Some((_, _, _, _, l, soil)) => {
+                    x.meat += (c.life.meat_eaten - l.meat_eaten) as f64;
+                    x.plant += (c.life.plant_eaten - l.plant_eaten) as f64;
+                    x.dist += (c.life.distance - l.distance) as f64;
+                    x.kills += (c.life.kills - l.kills) as f64;
+                    x.earth += (c.soil - soil).abs() as f64;
+                }
+                None if c.rained => injected += c.energy as f64,
+                None => {}
+            }
+            next.insert(c.id, (r, b, c.mass, c.energy, c.life.clone(), c.soil));
+        }
+        for (id, (r, _, mass, energy, _, _)) in &prev {
+            if !next.contains_key(id) {
+                deaths[*r] += 1;
+                // Only a born body leaves meat of its own (see `Sim::process_deaths`).
+                let body = if *r == 1 { mass * p.meat_per_mass } else { 0.0 };
+                carcass_meat[*r] += (body + energy.max(0.0) * 0.5) as f64;
+            }
+        }
+        prev = next;
+    }
+    let s = secs as f64;
+    println!(
+        "over {secs:.0} s: rained {} (energy given {:.0}/s), born {}; deaths: rained {} born {}",
+        sim.stats.rained - rained0,
+        injected / s,
+        sim.stats.births - births0,
+        deaths[0],
+        deaths[1]
+    );
+    println!(
+        "meat from carcasses per second: of rained {:.0}, of born {:.0}  (plant energy eaten per second {:.0}, meat {:.0})",
+        carcass_meat[0] / s,
+        carcass_meat[1] / s,
+        k.iter().flatten().map(|x| x.plant).sum::<f64>() / s,
+        k.iter().flatten().map(|x| x.meat).sum::<f64>() / s
+    );
+    for (r, rn) in ["rained", "born"].iter().enumerate() {
+        for (b, bn) in ["one box", "with parts"].iter().enumerate() {
+            let x = k[r][b];
+            if x.samples == 0.0 {
+                continue;
+            }
+            let n = x.samples * dt as f64; // creature-seconds
+            println!(
+                "{rn:>6} {bn:>10}: {:5.0} alive on average, mass {:4.0} kg; per creature-minute: meat {:5.1} plant {:5.1} distance {:5.1} m, earth moved {:.3} m3, kills {:.3}",
+                x.samples / (secs * tps) as f64,
+                x.mass / x.samples,
+                60.0 * x.meat / n,
+                60.0 * x.plant / n,
+                60.0 * x.dist / n,
+                60.0 * x.earth / n,
+                60.0 * x.kills / n
+            );
+        }
+    }
+    let mut net: Vec<(bool, f32)> = sim
+        .creatures
+        .iter()
+        .filter_map(|c| {
+            let a = start.get(&c.id)?;
+            let t = sim.world_of(c).bodies[c.parts[0].body].translation();
+            Some((c.plan.len() > 1, Vec3::new(t.x - a.x, 0.0, t.z - a.z).length()))
+        })
+        .collect();
+    net.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+    for parts in [false, true] {
+        let v: Vec<f32> = net.iter().filter(|x| x.0 == parts).map(|x| x.1).collect();
+        if !v.is_empty() {
+            println!(
+                "survivors {}: {} of them, net displacement over the run p50 {:.1} m, p90 {:.1} m",
+                if parts { "with parts" } else { "one box" },
+                v.len(),
+                v[v.len() / 2],
+                v[v.len() * 9 / 10]
+            );
+        }
+    }
+    println!("at the end: {}", terrain(&sim));
+}

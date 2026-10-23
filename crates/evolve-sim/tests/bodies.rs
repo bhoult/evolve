@@ -737,8 +737,12 @@ fn totems_make_creatures_breed_fight_and_flee() {
     let c = sim.spawn_creature(meek.clone(), war, 0.3, f32::MAX, 0, None);
     let d = sim.spawn_creature(meek, war + Vec3::new(2.0, 0.0, 0.0), 0.3, f32::MAX, 0, None);
     sim.apply(Command::Totem { at: war.to_array(), kind: TotemKind::War });
-    run(&mut sim, 30);
-    let bites: u32 = [c, d].iter().filter_map(|&id| sim.creature(id)).map(|c| c.life.attacks).sum();
+    // Counted as it happens: they may bite each other to death.
+    let mut bites = 0;
+    for _ in 0..30 {
+        run(&mut sim, 1);
+        bites = bites.max([c, d].iter().filter_map(|&id| sim.creature(id)).map(|c| c.life.attacks).sum::<u32>());
+    }
     assert!(bites > 0, "by a totem of war they bite");
     sim.apply(Command::Totem { at: war.to_array(), kind: TotemKind::War });
 

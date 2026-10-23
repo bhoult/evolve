@@ -424,6 +424,7 @@ fn run_springs(
 fn erode_channels(t: &mut Terrain, p: &SimParams, d: &Drainage, flow: &[f32], dt: f32) -> bool {
     let (n, wl) = (t.res, p.water_level);
     let cell = t.cell();
+    let steepest = p.slump_angle.min(89.0).to_radians().tan() * cell;
     let rate = p.erosion_rate / 3600.0;
     let floor = wl - 0.3;
     let (mut i0, mut i1, mut j0, mut j1) = (usize::MAX, 0, usize::MAX, 0);
@@ -444,13 +445,20 @@ fn erode_channels(t: &mut Terrain, p: &SimParams, d: &Drainage, flow: &[f32], dt
         let dist = if r / n != k / n && r % n != k % n { cell * std::f32::consts::SQRT_2 } else { cell };
         let f = rate * (1.0 + 3.0 * t.worn(k)) * (flow[k] / 100.0).sqrt() * 10.0 * dt / dist;
         let room = (p.erosion_max_depth - t.eroded[k]).max(0.0);
-        let cut = (h - (h + f * hr) / (1.0 + f)).min(room).min(h - floor).max(0.0);
+        // A bed can't be cut deeper below its banks than they'd stand (`slump_angle`): water
+        // wears valleys, not slots a creature can't climb out of.
+        let (i, j) = (k / n, k % n);
+        let bank = [(i > 0).then(|| k - n), (i + 1 < n).then(|| k + n), (j > 0).then(|| k - 1), (j + 1 < n).then(|| k + 1)]
+            .into_iter()
+            .flatten()
+            .map(|q| t.heights[q])
+            .fold(h, f32::max);
+        let cut = (h - (h + f * hr) / (1.0 + f)).min(room).min(h - floor).min(h - (bank - steepest)).max(0.0);
         if cut < 1e-6 {
             continue;
         }
         t.heights[k] -= cut;
         t.eroded[k] += cut;
-        let (i, j) = (k / n, k % n);
         (i0, i1, j0, j1) = (i0.min(i), i1.max(i), j0.min(j), j1.max(j));
     }
     if i0 == usize::MAX {

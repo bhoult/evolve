@@ -409,7 +409,10 @@ interbreed. Breeding alone is an optional parameter.
 **Combat.** A creature that touches another with its torso (its head; the eyes show which end)
 and wants to attack bites it. Damage depends on the size ratio and the target's armor. Biting
 costs energy and has a cooldown, and the target can bite back. The dead leave meat where their
-body parts were, and the meat rots over time.
+body parts were, and the meat rots over time. A creature that fell from the sky leaves only half
+the energy it still held: its body cost nothing, so it leaves no meat of its own. (When those
+bodies left meat, the population floor rained free carcasses, and huge limbless carrion-eaters
+that never moved took over.)
 
 **Rain and the gene pool.** When the population drops below `min_population`, creatures fall
 from the sky. Most are bred from a hall of fame of the most successful genomes seen recently,
@@ -447,7 +450,11 @@ evolution moving until the population can sustain itself.
   up, carries it (up to `soil_per_kg` of its body mass), and piles it back wherever its pile
   output says.
 - *Limits:* earth is conserved and moving it costs energy (`dig_cost` per m³). Ground can be dug
-  `dig_depth` (3 m) below and piled `pile_height` (3 m) above where the world made it.
+  `dig_depth` (1.5 m) below and piled `pile_height` (1.5 m) above where the world made it.
+- *Slumping and weathering:* loose earth can't stand steeper than `slump_angle` (35°): it slides
+  down until it holds, so holes become bowls and heaps become mounds, and the land stays
+  walkable. Dug and piled ground weathers back toward the land as it was made, halfway in
+  `earth_recovery` (2 hours).
 - *What it can build:* pits, ponds where a hole goes below sea level, mounds, walls, ramps and
   dams. There are no tunnels or overhangs: the ground stays a smooth surface, reshaped in place.
 - *What follows:* the physics ground, plants, water and rendering follow the new shape. Freshly
@@ -492,7 +499,8 @@ makings of walls, piles, caches and gardens, if evolution finds a use for them.
   their breath and can drown in them, and drink from them; the water sense finds them.
 - *Erosion:* streams slowly cut their beds deeper, faster with more water behind them, on steeper
   ground, and on trampled ground (`erosion_rate`). The cut can go `erosion_max_depth` (2.5 m) below
-  the original land. A long wet spell carves gullies down the hillsides; dry spells don't.
+  the original land, but never steeper below its banks than `slump_angle`, so water wears valleys
+  rather than slots. A long wet spell carves gullies down the hillsides; dry spells don't.
 - *Trampling:* feet wear the ground they move over, more for heavier and faster creatures
   (`trampling`). Busy ground turns to bare earth, then to slick mud with puddles when wet. Plants
   grow poorly on it, and nothing grows in a stream. Left alone, worn ground grows back, halfway in

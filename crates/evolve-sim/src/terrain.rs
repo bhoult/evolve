@@ -218,6 +218,103 @@ impl Terrain {
         moved
     }
 
+    /// Loose earth slides: wherever two neighboring grid points differ by more than a slope of
+    /// `angle` degrees and at least one of them was dug, piled or torn up, earth moves from the
+    /// higher to the lower until the slope holds (within the dig and pile limits). Holes become
+    /// bowls and heaps become mounds, while the steep places the world was made with stay as
+    /// they are. Works outward from the region changed since the last `take_dirty`, at most
+    /// `passes` sweeps, and marks what it moved as changed. Returns whether it settled.
+    pub fn slump(&mut self, angle: f32, max_dig: f32, max_pile: f32, passes: usize) -> bool {
+        let Some((i0, i1, j0, j1)) = self.dirty else {
+            return true;
+        };
+        if angle >= 90.0 || self.res < 2 {
+            return true;
+        }
+        self.ensure_layers();
+        let (n, cell) = (self.res, self.cell());
+        let lim = angle.to_radians().tan() * cell;
+        let grow = |(a, b, c, d): (usize, usize, usize, usize)| (a.saturating_sub(1), (b + 1).min(n - 1), c.saturating_sub(1), (d + 1).min(n - 1));
+        let mut region = grow((i0, i1, j0, j1));
+        let mut moved_any: Option<(usize, usize, usize, usize)> = None;
+        for _ in 0..passes {
+            let mut moved: Option<(usize, usize, usize, usize)> = None;
+            let (a, b, c, d) = region;
+            for i in a..=b {
+                for j in c..=d {
+                    let k = i * n + j;
+                    for (k2, i2, j2) in [(k + 1, i, j + 1), (k + n, i + 1, j)] {
+                        if i2 >= n || j2 >= n {
+                            continue;
+                        }
+                        let diff = self.heights[k] - self.heights[k2];
+                        if diff.abs() <= lim {
+                            continue;
+                        }
+                        let (hi, lo) = if diff > 0.0 { (k, k2) } else { (k2, k) };
+                        // Only loose earth moves: piled earth sliding off, or the sides of a hole
+                        // falling in (as far as it needs filling). Untouched steep ground stays,
+                        // and a slide can't set off more than was dug or piled.
+                        let loose = (self.heights[hi] - self.natural(hi)).max(0.0) + (self.natural(lo) - self.heights[lo]).max(0.0);
+                        let fall = ((diff.abs() - lim) * 0.5)
+                            .min(loose)
+                            .min(self.heights[hi] - (self.natural(hi) - max_dig))
+                            .min(self.natural(lo) + max_pile - self.heights[lo]);
+                        if fall <= 1e-5 {
+                            continue;
+                        }
+                        self.heights[hi] -= fall;
+                        self.heights[lo] += fall;
+                        let (r0, r1, c0, c1) = moved.unwrap_or((i, i, j, j));
+                        moved = Some((r0.min(i), r1.max(i2), c0.min(j), c1.max(j2)));
+                    }
+                }
+            }
+            let Some(m) = moved else {
+                if let Some((a, b, c, d)) = moved_any {
+                    self.mark_dirty(a, b, c, d);
+                }
+                return true;
+            };
+            moved_any = Some(match moved_any {
+                Some((a, b, c, d)) => (a.min(m.0), b.max(m.1), c.min(m.2), d.max(m.3)),
+                None => m,
+            });
+            region = grow(m);
+        }
+        if let Some((a, b, c, d)) = moved_any {
+            self.mark_dirty(a, b, c, d);
+        }
+        false
+    }
+
+    /// Dug and piled ground weathers back toward the land as the world made it (less what water
+    /// has worn away), halfway in `half_life` seconds. Returns whether anything changed.
+    pub fn heal(&mut self, dt: f32, half_life: f32) -> bool {
+        if self.ground.len() != self.heights.len() {
+            return false;
+        }
+        let keep = (-dt * std::f32::consts::LN_2 / half_life.max(1.0)).exp();
+        let n = self.res;
+        let (mut i0, mut i1, mut j0, mut j1) = (usize::MAX, 0, usize::MAX, 0);
+        for k in 0..self.heights.len() {
+            let natural = self.natural(k);
+            let off = self.heights[k] - natural;
+            if off == 0.0 {
+                continue;
+            }
+            // The last millimeters go at once, so healed ground stops counting as dug.
+            self.heights[k] = if off.abs() * keep < 0.002 { natural } else { natural + off * keep };
+            let (i, j) = (k / n, k % n);
+            (i0, i1, j0, j1) = (i0.min(i), i1.max(i), j0.min(j), j1.max(j));
+        }
+        if i0 == usize::MAX {
+            return false;
+        }
+        self.mark_dirty(i0, i1, j0, j1);
+        true
+    }
+
     /// Raises the ground around (x, z) by `profile(dx, dz)` m at each grid point within `reach`
     /// (negative lowers it). With `remake`, the world itself is reshaped: the ground "as the
     /// world made it" moves with it, so it looks undisturbed and creatures dig relative to the

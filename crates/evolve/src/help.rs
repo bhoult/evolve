@@ -461,7 +461,7 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "A dead creature leaves a piece of meat at each body part: {} energy per kg of body (meat_per_mass) plus half the energy it still held.",
+            "A dead creature leaves a piece of meat at each body part: {} energy per kg of body (meat_per_mass) plus half the energy it still held. One that fell from the sky cost nothing to make, so it leaves only the half.",
             num(p.meat_per_mass)
         ),
     );
@@ -475,7 +475,7 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
             dur(meat_lasts(100.0, p.meat_decay))
         ),
     );
-    bullet(ui, "A body costs its parents the meat it will leave, so meat-eaters can't live on their own dead: in the end all food comes from plants, or from creatures falling from the sky.");
+    bullet(ui, "A body costs its parents the meat it will leave, so meat-eaters can't live on their own dead, and a body from the sky leaves none of its own, so the population floor can't rain free meat: in the end all food comes from plants, and from the energy creatures falling from the sky bring with them.");
 }
 
 fn water(ui: &mut egui::Ui, p: &SimParams) {
@@ -704,8 +704,9 @@ fn land(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Streams slowly cut their beds deeper, faster with more water, on steeper and on trampled ground (erosion_rate), down to {} m below the original land (erosion_max_depth).",
-            num(p.erosion_max_depth)
+            "Streams slowly cut their beds deeper, faster with more water, on steeper and on trampled ground (erosion_rate), down to {} m below the original land (erosion_max_depth), but never steeper below their banks than {}° (slump_angle): valleys, not slots.",
+            num(p.erosion_max_depth),
+            num(p.slump_angle)
         ),
     );
     bullet(
@@ -730,6 +731,14 @@ fn land(ui: &mut egui::Ui, p: &SimParams) {
             "Earth is conserved. Ground can be dug {} m below and piled {} m above where the world made it (dig_depth, pile_height): pits, ponds below sea level, mounds, walls, ramps and dams, but no tunnels.",
             num(p.dig_depth),
             num(p.pile_height)
+        ),
+    );
+    bullet(
+        ui,
+        format!(
+            "Loose earth can't stand steeper than {}° (slump_angle): it slides down until it holds, so holes become bowls and heaps mounds. Dug and piled ground weathers back toward the land as it was made, halfway in {} (earth_recovery).",
+            num(p.slump_angle),
+            dur(p.earth_recovery * 60.0)
         ),
     );
     bullet(ui, "Creatures start with digging off, so evolution has to find it worth the effort.");

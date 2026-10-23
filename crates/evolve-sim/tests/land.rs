@@ -381,3 +381,75 @@ fn a_spring_creeps_downhill_fills_the_hollow_in_its_way_then_runs_on() {
     assert!(c < d && d < e && e < f32::MAX, "and runs on down the valley: {c}, {d}, {e}");
     assert!(t.eroded[below] > 0.0, "wearing a channel where it runs");
 }
+
+/// Loose earth slides until it holds: a deep hole and a tall heap become a bowl and a mound no
+/// steeper than `slump_angle`, with every m³ of earth accounted for, while a steep step the world
+/// was made with stands as it was.
+#[test]
+fn dug_holes_and_heaps_slump_to_slopes_that_can_be_climbed() {
+    let p = SimParams::default();
+    let mut t = Terrain::generate(&p, 1);
+    t.ensure_layers();
+    let n = t.res;
+    let step_at = n / 2 + 20;
+    for k in 0..n * n {
+        let h = if k % n >= step_at { 14.0 } else { 10.0 };
+        t.heights[k] = h;
+        t.ground[k] = h;
+    }
+    let size = t.size;
+    let at = |j: usize| (j as f32 / (n - 1) as f32 - 0.5) * size;
+    let (x, z) = (at(n / 2 - 20), at(n / 2));
+    let dug = t.reshape(x, z, -20.0, 3.0, 3.0);
+    let piled = t.reshape(at(n / 2 - 14), z, -dug, 3.0, 3.0);
+    assert!(dug < -4.0 && (piled + dug).abs() < 1e-4, "dug {dug}, piled {piled}");
+    let total = |t: &Terrain| t.heights.iter().map(|&h| h as f64).sum::<f64>();
+    let before = total(&t);
+    let settled = (0..100).any(|_| t.slump(35.0, 3.0, 3.0, 24));
+    assert!(settled, "the earth should come to rest");
+    let area = (t.cell() * t.cell()) as f64;
+    assert!(((total(&t) - before) * area).abs() < 0.01, "earth is conserved");
+    let lim = 35f32.to_radians().tan() * t.cell();
+    let mut steepest = 0.0f32;
+    for i in 0..n {
+        for j in 0..n {
+            let k = i * n + j;
+            for k2 in [(j + 1 < n).then(|| k + 1), (i + 1 < n).then(|| k + n)].into_iter().flatten() {
+                if t.disturbance(k).abs() > 0.005 || t.disturbance(k2).abs() > 0.005 {
+                    steepest = steepest.max((t.heights[k] - t.heights[k2]).abs());
+                }
+            }
+        }
+    }
+    assert!(steepest <= lim + 1e-3, "moved earth stands {steepest} m over a {} m cell (limit {lim})", t.cell());
+    let lowest = t.heights.iter().copied().fold(f32::MAX, f32::min);
+    let highest = (0..n * n).filter(|k| k % n < step_at).map(|k| t.heights[k]).fold(0.0, f32::max);
+    assert!(lowest > 10.0 - 2.5 && highest < 10.0 + 2.5, "a bowl {lowest} and a mound {highest}, not a shaft and a spire");
+    for i in 0..n {
+        assert_eq!(t.heights[i * n + step_at] - t.heights[i * n + step_at - 1], 4.0, "the world's own step stands");
+    }
+}
+
+/// Dug ground weathers back toward the land as it was made: halfway in `earth_recovery`, and in
+/// the end all the way, so it stops counting as dug.
+#[test]
+fn dug_ground_weathers_back() {
+    let p = SimParams::default();
+    let mut t = Terrain::generate(&p, 1);
+    let mut k = t.res * t.res / 2 + t.res / 2;
+    while t.heights[k] < p.water_level + 2.0 {
+        k += 1;
+    }
+    let n = t.res;
+    let (x, z) = ((k % n) as f32 / (n - 1) as f32 - 0.5, (k / n) as f32 / (n - 1) as f32 - 0.5);
+    t.reshape(x * t.size, z * t.size, -1.0, 3.0, 3.0);
+    let dug = t.disturbance(k);
+    assert!(dug < -0.3, "dug {dug}");
+    assert!(t.heal(3600.0, 3600.0));
+    assert!((t.disturbance(k) - dug * 0.5).abs() < 1e-3, "halfway back in its half-life: {} of {dug}", t.disturbance(k));
+    for _ in 0..20 {
+        t.heal(3600.0, 3600.0);
+    }
+    assert!((0..n * n).all(|k| t.disturbance(k) == 0.0), "healed ground isn't dug any more");
+    assert!(!t.heal(3600.0, 3600.0), "and there's nothing left to heal");
+}

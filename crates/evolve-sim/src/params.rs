@@ -262,8 +262,9 @@ params! {
         bite_rate: f32 = 10.0, [0, 200], Live;
         /// How far beyond its mouth a creature can reach food, m.
         eat_reach: f32 = 0.6, [0, 5], Live;
-        /// Energy in each kg of body: what parents pay to grow a child's body, and what a
-        /// carcass leaves as meat (plus half the energy it still held).
+        /// Energy in each kg of body: what parents pay to grow a child's body, and what its
+        /// carcass leaves as meat (plus half the energy it still held). Bodies that fell from
+        /// the sky cost nothing, so they leave only the half.
         meat_per_mass: f32 = 0.8, [0, 10], Live;
         /// Fraction of meat energy lost per second to rot.
         meat_decay: f32 = 0.01, [0, 0.5], Live;
@@ -288,8 +289,13 @@ params! {
         dig_cost: f32 = 10.0, [0, 500], Live;
         /// How deep below the original ground creatures can dig, and how high above it they can
         /// pile earth, m.
-        dig_depth: f32 = 3.0, [0, 20], Live;
-        pile_height: f32 = 3.0, [0, 20], Live;
+        dig_depth: f32 = 1.5, [0, 20], Live;
+        pile_height: f32 = 1.5, [0, 20], Live;
+        /// Steepest slope that dug, piled or water-cut ground holds, degrees: steeper, the earth
+        /// slides down until it holds (90: walls stand forever).
+        slump_angle: f32 = 35.0, [10, 90], Live;
+        /// Minutes for dug and piled ground to weather halfway back to the land as it was made.
+        earth_recovery: f32 = 120.0, [1, 100000], Live;
     }
     "Land and water" {
         /// Rain runs downhill into streams and collects in hollows, and running water slowly

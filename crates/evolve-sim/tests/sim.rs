@@ -118,6 +118,30 @@ fn creatures_die_and_leave_meat() {
     assert_eq!(sim.stats.deaths_killed, 1);
 }
 
+/// A body that fell from the sky cost nothing, so it leaves no meat of its own: only half the
+/// energy it still held. (A born body leaves what its parents paid for it; see
+/// `a_child_killed_at_birth_leaves_no_more_meat_than_it_cost`.) Otherwise the population floor
+/// rains free carcasses, and big carrion-eaters that never move win.
+#[test]
+fn a_body_from_the_sky_leaves_only_half_its_energy_as_meat() {
+    let mut sim = Sim::new(quiet_params());
+    let mut rng = Rng::new(3);
+    let g = Genome::random(&mut rng, &sim.params);
+    let at = sim.random_land_point(10.0);
+    let id = sim.spawn_creature(g, at, 0.5, 20.0, 0, None);
+    sim.step();
+    let c = sim.creature(id).unwrap();
+    assert!(c.rained);
+    let (held, mass) = (c.energy, c.mass);
+    sim.kill(id, DeathCause::Killed);
+    let meat = |sim: &Sim| sim.meat.iter().map(|m| m.energy).sum::<f32>();
+    let before = meat(&sim);
+    sim.step();
+    let left = meat(&sim) - before;
+    assert!(left <= held * 0.5 + 1e-3, "left {left} of meat, holding {held}");
+    assert!(left < mass * sim.params.meat_per_mass * 0.5, "no meat from its {mass} kg body");
+}
+
 #[test]
 fn population_rains_back_to_minimum() {
     let mut sim = Sim::new(SimParams {
