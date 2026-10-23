@@ -4,6 +4,7 @@ use crate::genome::Genome;
 use crate::math::Vec3;
 use crate::params::SimParams;
 use crate::sim::{DeathCause, Grab, ObstacleShape, Sim};
+use crate::snapshot::HighlightKind;
 
 #[derive(Clone, Debug)]
 pub enum Command {
@@ -80,13 +81,20 @@ impl Sim {
             Command::SpawnGenome { genome, generation, pos, count } => {
                 self.drop_genome(&genome, generation, pos.map(Vec3::from), count);
             }
-            Command::RemoveCreature(id) => self.kill(id, DeathCause::Removed),
-            Command::KillCreature(id) => self.kill(id, DeathCause::Killed),
+            Command::RemoveCreature(id) => {
+                self.miracle(id, HighlightKind::Ascension);
+                self.kill(id, DeathCause::Removed);
+            }
+            Command::KillCreature(id) => {
+                self.miracle(id, HighlightKind::Smite);
+                self.kill(id, DeathCause::Killed);
+            }
             Command::FeedCreature(id) => {
                 if let Some(c) = self.creature_mut(id) {
                     c.energy = c.max_energy;
                     c.health = c.max_health;
                 }
+                self.miracle(id, HighlightKind::Blessing);
             }
             Command::RemovePlant(id) => self.plants.retain(|f| f.id != id),
             Command::RemoveMeat(id) => self.meat.retain(|f| f.id != id),

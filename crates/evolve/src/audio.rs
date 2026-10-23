@@ -62,6 +62,10 @@ pub enum Sfx {
     Impact,
     /// A creature calling, in its voice (`SoundEvent::voice`) at a pitch its brain picked.
     Call,
+    /// A miracle: a choir's chord swelling in, with bells (feeding by the hand of god).
+    Blessing,
+    /// A shimmer rising away (a creature taken out of the world).
+    Ascend,
 }
 
 impl Sfx {
@@ -79,6 +83,8 @@ impl Sfx {
             Sfx::Thunder { near: false } => 0.759,
             Sfx::Impact => 2.985,
             Sfx::Call => 0.359,
+            Sfx::Blessing => 0.822,
+            Sfx::Ascend => 0.776,
         }
     }
 }
@@ -176,6 +182,8 @@ impl Voice {
             Sfx::Impact => 0.35,
             // Steady voices hold a note; warbling ones chirp.
             Sfx::Call => 0.55 - 0.3 * self.voice[3],
+            Sfx::Blessing => 3.6,
+            Sfx::Ascend => 2.2,
         }
     }
 
@@ -274,6 +282,42 @@ impl Voice {
                 let even = (330.0 / base).powf(0.35);
                 let grit = grit * (330.0 / base).sqrt().min(1.5);
                 (tone * (1.0 - 0.7 * rasp) + grit * 3.0 * rasp) * env * even
+            }
+            Sfx::Blessing => {
+                // A soft "ah" on a major chord, each note two voices a little out of tune with
+                // each other and gently wavering, swelling in and dying away, with high bells.
+                let len = self.length();
+                let env = (t / 0.7).min(1.0).powf(1.5) * ((len - t) / 1.8).clamp(0.0, 1.0);
+                let mut choir = 0.0;
+                for (k, f) in [220.0f32, 277.2, 329.6, 440.0, 554.4].into_iter().enumerate() {
+                    for d in [-1.0f32, 1.0] {
+                        let rate = 5.0 + 0.4 * k as f32 + 0.3 * d;
+                        let ph = TAU * f * (1.0 + d * 0.003) * t + 0.002 * f / rate * (TAU * rate * t + k as f32).sin();
+                        choir += ph.sin() + 0.45 * (2.0 * ph).sin() + 0.25 * (3.0 * ph).sin() + 0.1 * (4.0 * ph).sin();
+                    }
+                }
+                let mut bells = 0.0;
+                for (k, f) in [1760.0f32, 2217.5, 2637.0, 3520.0].into_iter().enumerate() {
+                    let at = 0.15 + k as f32 * 0.22;
+                    if t >= at {
+                        let u = t - at;
+                        bells += (TAU * f * u).sin() * (-u * 2.5).exp() * (1.0 - (-u * 300.0).exp());
+                    }
+                }
+                choir * 0.06 * env + bells * 0.12
+            }
+            Sfx::Ascend => {
+                // Bell partials gliding up an octave as they fade, over a breath of rising air.
+                let len = self.length();
+                let u = (t / len).min(1.0);
+                let env = (t / 0.04).min(1.0) * (1.0 - u).powf(1.5);
+                let glide = len / std::f32::consts::LN_2 * (2f32.powf(t / len) - 1.0);
+                let mut s = 0.0;
+                for (k, f0) in [660.0f32, 990.0, 1320.0, 1980.0].into_iter().enumerate() {
+                    s += (TAU * f0 * glide + k as f32).sin() * 0.5 / (k as f32 + 1.0);
+                }
+                let air = self.lp.run(n.next(), 2500.0 + 3000.0 * u, rate);
+                (s * 0.5 + air * 0.6 * (1.0 - u)) * env
             }
             Sfx::Impact => {
                 // A short low knock with a little grit on top; `pitch` drops for heavy parts.
@@ -775,6 +819,10 @@ fn feed_audio(
             HighlightKind::Impact => (Sfx::Impact, h.strength.min(1.2), 0.04, (1.3 - 0.5 * h.strength).clamp(0.6, 1.3)),
             // Calls are paced by the sim already (a few a second per caller).
             HighlightKind::Call => (Sfx::Call, h.strength, 0.0, 1.0),
+            HighlightKind::Blessing => (Sfx::Blessing, 1.0, 0.5, 1.0),
+            HighlightKind::Ascension => (Sfx::Ascend, 1.0, 0.5, 1.0),
+            // A smite's sound is its thunder, which the lightning sends.
+            HighlightKind::Smite => continue,
         };
         let caller = (sfx == Sfx::Call).then(|| snap.creatures.iter().find(|c| c.id == h.subject)).flatten();
         let (pitch, voice) = match caller {
@@ -787,6 +835,10 @@ fn feed_audio(
         if sfx == Sfx::Record {
             // News worth hearing from anywhere, quietly.
             gain = gain.max(0.1);
+        }
+        if matches!(sfx, Sfx::Blessing | Sfx::Ascend) {
+            // Acts of god are heard wherever the camera is.
+            gain = gain.max(0.5);
         }
         if gain < 0.015 || st.last.iter().any(|(s, t)| *s == sfx && now - t < gap) {
             continue;
@@ -832,6 +884,8 @@ mod tests {
             Sfx::Thunder { near: false },
             Sfx::Impact,
             Sfx::Call,
+            Sfx::Blessing,
+            Sfx::Ascend,
         ];
         let out = render([1.0; 4], &all, 4.0);
         assert!(out.iter().all(|x| x.is_finite() && x.abs() <= 1.0));
@@ -841,7 +895,7 @@ mod tests {
 
     #[test]
     fn each_sound_makes_a_sound_and_muting_silences() {
-        for sfx in [Sfx::Bite, Sfx::Kill, Sfx::Birth, Sfx::Record, Sfx::Splash, Sfx::Bubbles, Sfx::Thunder { near: true }, Sfx::Impact, Sfx::Call] {
+        for sfx in [Sfx::Bite, Sfx::Kill, Sfx::Birth, Sfx::Record, Sfx::Splash, Sfx::Bubbles, Sfx::Thunder { near: true }, Sfx::Impact, Sfx::Call, Sfx::Blessing, Sfx::Ascend] {
             let out = render([1.0, 0.0, 0.0, 0.0], &[sfx], 1.5);
             let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
             assert!(peak > 0.05, "{sfx:?} is too quiet: peak {peak}");
@@ -938,6 +992,8 @@ mod mix {
             (Sfx::Record, -24.0),
             (Sfx::Bubbles, -26.0),
             (Sfx::Call, -20.0),
+            (Sfx::Blessing, -18.0),
+            (Sfx::Ascend, -20.0),
         ];
         for (sfx, target) in events {
             let e = SoundEvent { sfx, gain: 1.0, pan: 0.0, pitch: 1.0, voice: [0.5; 4] };

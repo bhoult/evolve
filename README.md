@@ -105,6 +105,18 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 - *Controls:* M or the toolbar mutes; the slider next to it sets the volume. `--mute` starts
   silent, and screenshot runs are always silent.
 
+**Miracles.** When the hand of god (you) touches a creature, it shows.
+- *Feed* is a blessing: a shaft of golden light comes down from the sky onto the creature, which
+  glows in it while golden motes rise around it and fall down the shaft, to a choir's chord.
+- *Kill* is a smite: lightning out of a clear sky strikes it (the flash and the thunder of a strike
+  that close), sparks fly, and fire burns where it fell, shedding embers, for a few seconds.
+- *Remove* takes it up: a white shaft, and a rush of light rising away with it.
+- Each casts real light on the ground around it, so they glow best at night, and they keep their
+  colors through the night's cool grading. With the lightning checkbox off (in Graphics), a smite
+  still strikes but doesn't flash the whole sky.
+- `--miracle bless|smite|take:N` (with `--select-first` and `--screenshot`) works one on the
+  selected creature N frames before the screenshot.
+
 **Leaders** (in the right panel) names who's ahead right now: top score, oldest, most evolved,
 biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest
 and best swimmer. Click one to go and follow it.

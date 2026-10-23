@@ -98,6 +98,12 @@ pub struct LightningStrike {
     pub at: Vec3,
 }
 
+/// Strike lightning here now (a smite).
+#[derive(Message, Clone, Copy)]
+pub struct CallLightning {
+    pub at: Vec3,
+}
+
 /// The current strike: a few return strokes that flicker and fade.
 #[derive(Resource)]
 struct Lightning {
@@ -106,12 +112,15 @@ struct Lightning {
     start: f32,
     strokes: Vec<(f32, f32)>,
     material: Handle<StandardMaterial>,
+    /// How much the strike lights up the sky (none for a smite with lightning flashes off).
+    flash_scale: f32,
 }
 
 impl Plugin for WeatherFxPlugin {
     fn build(&self, app: &mut App) {
         app.add_plugins(MaterialPlugin::<RainMaterial>::default())
             .add_message::<LightningStrike>()
+            .add_message::<CallLightning>()
             .add_systems(Startup, setup)
             .add_systems(
                 Update,
@@ -167,6 +176,7 @@ fn setup(
         start: -100.0,
         strokes: Vec::new(),
         material,
+        flash_scale: 1.0,
     });
 }
 
@@ -225,6 +235,7 @@ fn lightning(
     mut env: ResMut<Env>,
     mut state: ResMut<Lightning>,
     mut strikes: MessageWriter<LightningStrike>,
+    mut calls: MessageReader<CallLightning>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
     bolt: Single<(&Mesh3d, &mut Visibility, &mut Transform), With<Bolt>>,
@@ -238,8 +249,9 @@ fn lightning(
         0.0
     };
     let forced = over.lightning && args.screenshot.is_some() && frames.0 + 2 == args.frames;
+    let called = calls.read().last().copied();
     let s = &mut *state;
-    if forced || (now - s.start > 1.0 && s.rng.next() < rate * dt) {
+    if forced || called.is_some() || (now - s.start > 1.0 && s.rng.next() < rate * dt) {
         s.start = now;
         s.strokes.clear();
         let n = 2 + (s.rng.next() * 3.0) as usize;
@@ -262,9 +274,18 @@ fn lightning(
         } else {
             wl
         };
-        let bottom = Vec3::new(foot.x, ground, foot.y);
-        let top = bottom + Vec3::new(s.rng.range(-60.0, 60.0), 650.0, s.rng.range(-60.0, 60.0));
-        let width = (dist * 0.004).max(0.8);
+        let mut bottom = Vec3::new(foot.x, ground, foot.y);
+        let mut top = bottom + Vec3::new(s.rng.range(-60.0, 60.0), 650.0, s.rng.range(-60.0, 60.0));
+        let mut width = (dist * 0.004).max(0.8);
+        s.flash_scale = 1.0;
+        // Called down on something: straight onto it, out of any sky. (With lightning flashes
+        // turned off, the bolt still falls but the sky doesn't light up.)
+        if let Some(c) = called {
+            bottom = c.at;
+            top = bottom + Vec3::new(s.rng.range(-25.0, 25.0), 600.0, s.rng.range(-25.0, 25.0));
+            width = (bottom.distance(cam_pos) * 0.004).clamp(0.35, 2.0);
+            s.flash_scale = if settings.lightning { 1.0 } else { 0.0 };
+        }
         // Built around the camera so it sorts after the water.
         let mesh = bolt_mesh(&mut s.rng, top - cam_pos, bottom - cam_pos, width, Vec3::ZERO);
         if let Some(m) = meshes.get_mut(&bolt_mesh_handle.0) {
@@ -291,7 +312,8 @@ fn lightning(
         m.base_color = Color::linear_rgb(0.85 * b, 0.9 * b, 1.0 * b);
     }
     // Smooth the flash a hair so a single frame never pops to full white.
-    env.flash += (flash.min(1.5) - env.flash) * (1.0 - (-dt / 0.015).exp());
+    let flash = flash.min(1.5) * s.flash_scale;
+    env.flash += (flash - env.flash) * (1.0 - (-dt / 0.015).exp());
 }
 
 /// A jagged bolt with a few branches, as camera-facing ribbons, plus a faint wide glow around

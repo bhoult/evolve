@@ -67,6 +67,13 @@ pub enum HighlightKind {
     Impact,
     /// `subject` is calling out; `strength` says how loudly.
     Call,
+    /// The hand of god (whoever is at the controls) fed and healed `subject`; `strength` is its
+    /// size (bounding radius, m).
+    Blessing,
+    /// The hand of god struck `subject` down; `strength` is its size.
+    Smite,
+    /// The hand of god took `subject` out of the world; `strength` is its size.
+    Ascension,
 }
 
 #[derive(Clone, Copy, Debug)]

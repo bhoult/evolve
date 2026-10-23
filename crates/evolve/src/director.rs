@@ -256,7 +256,8 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
                 let detail = format!("{} calls out", who(s));
                 push(d, Kind::Call, Some(s.id), None, at, 3.5, "A call", detail);
             }
-            HighlightKind::Attack | HighlightKind::Impact => {}
+            // Acts of god happen where the person at the controls is already looking.
+            HighlightKind::Attack | HighlightKind::Impact | HighlightKind::Blessing | HighlightKind::Smite | HighlightKind::Ascension => {}
         }
     }
     // Keep recent highlights around for a few seconds in case nothing better comes along.

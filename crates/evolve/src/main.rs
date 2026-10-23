@@ -7,6 +7,7 @@ mod director;
 mod env;
 mod genome_view;
 mod help;
+mod miracles;
 mod neural_view;
 mod preview;
 mod recording;
@@ -101,6 +102,9 @@ pub struct Args {
     pub help_page: Option<String>,
     /// Open the genome window (with --select-first, for screenshots).
     pub genome_view: bool,
+    /// `--miracle bless|smite|take:N`: work a miracle on the selected creature N frames before
+    /// the screenshot.
+    pub miracle: Option<(String, u32)>,
     /// Start recording the window to this video file at launch.
     pub record: Option<PathBuf>,
     pub pick_test: bool,
@@ -142,6 +146,11 @@ fn main() -> AppExit {
             "--neural-view" => args.neural_view = true,
             "--help-page" => args.help_page = Some(val()),
             "--genome-view" => args.genome_view = true,
+            "--miracle" => {
+                let v = val();
+                let (kind, lead) = v.split_once(':').unwrap_or((&v, "30"));
+                args.miracle = Some((kind.to_string(), lead.parse().unwrap_or_else(|_| usage())));
+            }
             "--record" => args.record = Some(val().into()),
             "--time-of-day" => visuals.time_of_day = Some(val().parse().unwrap_or_else(|_| usage())),
             "--weather" => visuals.weather = Some(val().parse().unwrap_or_else(|_| usage())),
@@ -251,6 +260,7 @@ fn main() -> AppExit {
             audio::AudioPlugin,
             recording::RecordingPlugin,
         ))
+        .add_plugins(miracles::MiraclesPlugin)
         .add_systems(PreUpdate, refresh_snapshot)
         .add_systems(Update, (auto_screenshot, load_after))
         .run()

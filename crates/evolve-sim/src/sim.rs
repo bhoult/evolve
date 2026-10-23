@@ -1187,6 +1187,17 @@ impl Sim {
         }
     }
 
+    /// Marks the hand of god at work on a creature, for the miracle the app draws there.
+    pub(crate) fn miracle(&mut self, id: u64, kind: HighlightKind) {
+        let Some(c) = self.creature(id) else {
+            return;
+        };
+        let size = c.radius();
+        if let Some(at) = self.torso_of(c).map(|b| b.translation()) {
+            self.highlight_with(kind, id, None, at, size);
+        }
+    }
+
     pub fn kill(&mut self, id: u64, cause: DeathCause) {
         if let Some(c) = self.creature_mut(id) {
             c.dead.get_or_insert(cause);
