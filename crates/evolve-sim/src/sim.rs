@@ -272,6 +272,9 @@ pub struct Sim {
     /// Simulated seconds of running water not yet worn into the land.
     #[serde(default)]
     pub erosion_due: f32,
+    /// Storms, whirlwinds and the like called down by hand.
+    #[serde(default)]
+    pub acts: crate::acts::Acts,
     #[serde(skip)]
     pub index: HashMap<u64, usize>,
     #[serde(skip)]
@@ -358,6 +361,7 @@ impl Sim {
             background,
             soak: 0.0,
             erosion_due: 0.0,
+            acts: Default::default(),
             index: HashMap::new(),
             perf: Perf::default(),
             events: Vec::new(),
@@ -369,7 +373,7 @@ impl Sim {
             highlights: Vec::new(),
             highlight_seq: 0,
         };
-        sim.weather = crate::weather::at(&sim.params, 0.0);
+        sim.refresh_weather();
         sim.init_brains();
         sim.resize_shards();
         sim.sync_physics_params(None);
@@ -400,7 +404,7 @@ impl Sim {
         self.species = self.species_summary();
         self.perf = Perf::default();
         self.events.clear();
-        self.weather = crate::weather::at(&self.params, self.time);
+        self.refresh_weather();
         self.init_brains();
         // (Also gives worlds loaded from a save their threads.)
         self.resize_shards();
@@ -1187,6 +1191,15 @@ impl Sim {
         }
     }
 
+    /// The sky now: the clock's weather, and any storm called down on top of it.
+    pub fn refresh_weather(&mut self) {
+        self.weather = crate::weather::at(&self.params, self.time);
+        let s = self.acts.storm_strength(self.time);
+        if s > 0.0 {
+            crate::weather::summoned(&mut self.weather, s);
+        }
+    }
+
     /// Marks the hand of god at work on a creature, for the miracle the app draws there.
     pub(crate) fn miracle(&mut self, id: u64, kind: HighlightKind) {
         let Some(c) = self.creature(id) else {
@@ -1217,7 +1230,8 @@ impl Sim {
 
         let t0 = Instant::now();
         if self.tick % 6 == 0 {
-            self.weather = crate::weather::at(&self.params, self.time);
+            self.acts.expire(self.time);
+            self.refresh_weather();
         }
         if brain_tick {
             self.think(bdt);

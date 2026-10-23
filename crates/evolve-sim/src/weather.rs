@@ -88,6 +88,21 @@ pub fn at(p: &SimParams, time: f64) -> Weather {
     }
 }
 
+/// A storm called down from the sky, at strength `s` (0..1), over whatever weather there is.
+pub fn summoned(w: &mut Weather, s: f32) {
+    w.cloud = w.cloud.max(s);
+    w.rain = w.rain.max(s);
+    w.storm = w.storm.max(s * 0.95);
+    let speed = w.wind[0].hypot(w.wind[1]);
+    let want = speed.max(19.0 * s);
+    w.wind = if speed > 1e-3 { [w.wind[0] / speed * want, w.wind[1] / speed * want] } else { [want, 0.0] };
+}
+
+/// Which day it is, counting from 1 (days turn at midnight).
+pub fn day_number(p: &SimParams, time: f64) -> u64 {
+    (time / p.day_length.max(1.0) as f64 + 0.32).floor() as u64 + 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

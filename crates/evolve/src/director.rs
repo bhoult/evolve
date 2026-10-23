@@ -317,7 +317,7 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
     let center = Vec3::new(0.0, t.height_at(0.0, 0.0).max(snap.params.water_level), 0.0);
     let detail = format!(
         "day {}, {:02}:{:02}",
-        (snap.time / snap.params.day_length.max(1.0) as f64) as u64 + 1,
+        snap.day,
         (sky.time_of_day * 24.0) as u32,
         ((sky.time_of_day * 24.0).fract() * 60.0) as u32
     );

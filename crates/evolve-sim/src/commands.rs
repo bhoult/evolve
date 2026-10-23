@@ -18,6 +18,10 @@ pub enum Command {
     SpawnCreature { pos: Option<[f32; 3]>, from: Option<u64>, count: u32 },
     /// Drop mutated copies of a genome (from the zoo) at `pos` or a random spot.
     SpawnGenome { genome: Box<Genome>, generation: u32, pos: Option<[f32; 3]>, count: u32 },
+    /// Call a storm down on the island for this many seconds (or prolong the one raging).
+    SummonStorm { seconds: f32 },
+    /// Let the summoned storm die away.
+    CalmStorm,
     RemoveCreature(u64),
     KillCreature(u64),
     FeedCreature(u64),
@@ -80,6 +84,15 @@ impl Sim {
             }
             Command::SpawnGenome { genome, generation, pos, count } => {
                 self.drop_genome(&genome, generation, pos.map(Vec3::from), count);
+            }
+            Command::SummonStorm { seconds } => {
+                self.acts.summon_storm(self.time, seconds as f64);
+                self.refresh_weather();
+                self.log("A storm is called down");
+            }
+            Command::CalmStorm => {
+                self.acts.calm_storm(self.time);
+                self.log("The storm is calmed");
             }
             Command::RemoveCreature(id) => {
                 self.miracle(id, HighlightKind::Ascension);

@@ -548,3 +548,32 @@ fn creatures_that_might_touch_share_a_physics_world() {
     let (lo, hi) = (*used.iter().min().unwrap(), *used.iter().max().unwrap());
     assert!(hi <= lo * 3 + 4, "and the load is fairly even: {used:?}");
 }
+
+#[test]
+fn a_summoned_storm_builds_rages_survives_a_save_and_dies_away() {
+    use evolve_sim::Command;
+    let mut p = quiet_params();
+    p.weather = false;
+    let mut sim = Sim::new(p);
+    let run = |sim: &mut Sim, seconds: f32| {
+        for _ in 0..(seconds * evolve_sim::sim::TICKS_PER_SECOND as f32) as u32 {
+            sim.step();
+        }
+    };
+    assert_eq!(sim.weather.rain, 0.0, "fair weather to begin with");
+    sim.apply(Command::SummonStorm { seconds: 200.0 });
+    run(&mut sim, 40.0);
+    assert!(sim.weather.storm > 0.9 && sim.weather.rain > 0.99, "a full storm: {:?}", sim.weather);
+    let wind = sim.weather.wind[0].hypot(sim.weather.wind[1]);
+    assert!(wind > 17.0, "and a gale: {wind} m/s");
+    // A saved world keeps its storm.
+    let path = std::env::temp_dir().join(format!("evolve-storm-{}.evo", std::process::id()));
+    save::save(&mut sim, &path).unwrap();
+    let mut back = save::load(&path).unwrap();
+    let _ = std::fs::remove_file(&path);
+    assert!(back.weather.storm > 0.9, "the storm is still raging after loading: {:?}", back.weather);
+    back.apply(Command::CalmStorm);
+    run(&mut back, 50.0);
+    assert_eq!(back.weather.rain, 0.0, "calmed, it dies away: {:?}", back.weather);
+    assert!(back.acts.storm.is_none(), "and is forgotten");
+}

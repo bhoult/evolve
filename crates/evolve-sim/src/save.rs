@@ -150,7 +150,7 @@ fn import_legacy(old: LegacySim) -> Sim {
             n.life = c.life;
         }
     }
-    sim.weather = crate::weather::at(&sim.params, sim.time);
+    sim.refresh_weather();
     sim.log("Loaded a save from an older version: creatures were rebuilt from their genomes");
     sim
 }

@@ -209,6 +209,9 @@ fn controls(ui: &mut egui::Ui) {
     sub(ui, "Panels");
     bullet(ui, "Left: every parameter. Those marked ⟳ shape the terrain and apply on Regenerate terrain, which keeps all the life; New world starts over.");
     bullet(ui, "Right: population, charts, species and leaders. Bottom: the event log.");
+    bullet(ui, "The clock at the top, in every view, shows the day and the time of day.");
+    sub(ui, "Powers");
+    bullet(ui, "Storm (toolbar, second row) calls a storm down on the whole island for four minutes; click it again to calm it.");
 }
 
 fn watching(ui: &mut egui::Ui) {

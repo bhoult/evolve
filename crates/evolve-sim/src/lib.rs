@@ -1,6 +1,7 @@
 //! evolve-sim: the headless core of the evolution simulator. No rendering in here, so it builds
 //! fast and can run (and be tested) without a window.
 
+pub mod acts;
 pub mod body;
 pub mod brain;
 pub mod commands;

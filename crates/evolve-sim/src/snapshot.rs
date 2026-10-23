@@ -170,6 +170,10 @@ pub struct Snapshot {
     pub brain_price: f32,
     pub brain_memory_bytes: u64,
     pub selected: Option<CreatureDetail>,
+    /// Seconds left of a storm called down by hand (0 without one).
+    pub storm_left: f32,
+    /// Which day it is, counting from 1.
+    pub day: u64,
     pub grabbing: bool,
     pub pool_size: usize,
     pub pool_best: f32,
@@ -336,6 +340,8 @@ impl Sim {
             brain_price: self.brain_price,
             brain_memory_bytes: self.brains.as_ref().map(|g| g.memory_bytes()).unwrap_or(0),
             selected,
+            storm_left: self.acts.storm_left(self.time),
+            day: crate::weather::day_number(&self.params, self.time),
             grabbing: self.grab.is_some(),
             pool_size: self.pool.entries.len(),
             pool_best: self.pool.entries.first().map(|e| e.score).unwrap_or(0.0),

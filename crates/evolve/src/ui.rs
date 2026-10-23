@@ -353,8 +353,11 @@ fn ui_system(
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
 
+    // Below the toolbar, or at the very top when the director has hidden it.
+    let top = if director.active && !director.panels { 10.0 } else { 56.0 };
+    clock(ctx, snap, top);
     if snap.paused {
-        paused_badge(ctx);
+        paused_badge(ctx, top + 34.0);
     }
     if director.active {
         director_overlay(ctx, &mut director, &mut sound, &mut rec, now);
@@ -486,6 +489,20 @@ fn toolbar(
                 {
                     tools.tool = t;
                 }
+            }
+            ui.separator();
+            let storm = if snap.storm_left > 0.0 {
+                let s = snap.storm_left as u32;
+                format!("Calm the storm {}:{:02}", s / 60, s % 60)
+            } else {
+                "Storm".to_string()
+            };
+            if ui
+                .selectable_label(snap.storm_left > 0.0, storm)
+                .on_hover_text("Call a storm down on the island for four minutes: wind, rain and lightning (click again to calm it)")
+                .clicked()
+            {
+                link.cmd(if snap.storm_left > 0.0 { Command::CalmStorm } else { Command::SummonStorm { seconds: 240.0 } });
             }
             ui.separator();
             match tools.tool {
@@ -1594,11 +1611,34 @@ fn sound_controls(ui: &mut egui::Ui, sound: &mut SoundSettings) {
 }
 
 /// While the director runs: what it's showing, and how to take over.
+/// The world's clock, in every view: the day (counting from the first) and the time of day.
+fn clock(ctx: &mut egui::Context, snap: &Snapshot, top: f32) {
+    let t = snap.weather.time_of_day.rem_euclid(1.0) * 24.0;
+    let (h, m) = (t as u32, (t.fract() * 60.0) as u32);
+    egui::Area::new(egui::Id::new("clock"))
+        .anchor(egui::Align2::CENTER_TOP, [0.0, top])
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::new()
+                .fill(egui::Color32::from_black_alpha(110))
+                .corner_radius(6.0)
+                .inner_margin(egui::Margin::symmetric(12, 4))
+                .show(ui, |ui| {
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+                    ui.label(
+                        egui::RichText::new(format!("Day {}   {h:02}:{m:02}", snap.day))
+                            .size(17.0)
+                            .color(egui::Color32::from_gray(235)),
+                    );
+                });
+        });
+}
+
 /// A reminder at the top of the screen while the world is paused (the director hides the
 /// toolbar, so nothing else would say why nothing moves).
-fn paused_badge(ctx: &mut egui::Context) {
+fn paused_badge(ctx: &mut egui::Context, top: f32) {
     egui::Area::new(egui::Id::new("paused_badge"))
-        .anchor(egui::Align2::CENTER_TOP, [0.0, 56.0])
+        .anchor(egui::Align2::CENTER_TOP, [0.0, top])
         .interactable(false)
         .show(ctx, |ui| {
             egui::Frame::new()

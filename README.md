@@ -105,6 +105,15 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 - *Controls:* M or the toolbar mutes; the slider next to it sets the volume. `--mute` starts
   silent, and screenshot runs are always silent.
 
+**The clock** at the top of the screen, in every view, shows the day (counting from the world's
+first) and the time of day.
+
+**Powers.** The toolbar's second row also calls down acts of god on the island.
+- *Storm* brings a storm over the whole island for four minutes: it builds over half a minute
+  to a downpour and a gale with lightning, and dies away over the last 45 seconds. Click it again
+  (it shows the time left) to calm it early. Plants grow faster in it, streams swell and lakes
+  fill. A saved world keeps its storm.
+
 **Miracles.** When the hand of god (you) touches a creature, it shows.
 - *Feed* is a blessing: a shaft of golden light comes down from the sky onto the creature, which
   glows in it while golden motes rise around it and fall down the shaft, to a choir's chord.
