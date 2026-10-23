@@ -330,6 +330,7 @@ fn ui_system(
     mut gfx: ResMut<GraphicsSettings>,
     diag: Res<DiagnosticsStore>,
     time: Res<Time>,
+    mut rec: ResMut<crate::recording::Recorder>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     let snap = &*snap.0;
@@ -349,10 +350,10 @@ fn ui_system(
             return Ok(());
         }
     }
-    toolbar(ctx, snap, &link, st, &mut tools, &mut view, &mut cam, &mut director, &mut sound, fps);
+    toolbar(ctx, snap, &link, st, &mut tools, &mut view, &mut cam, &mut director, &mut sound, &mut rec, fps);
     params_panel(ctx, &link, st, &mut gfx, now);
     stats_panel(ctx, snap, st, fps, &link, &mut cam);
-    events_panel(ctx, snap);
+    events_panel(ctx, snap, rec.fresh_notice());
     if let Some(sel) = &snap.selected {
         inspector(ctx, sel, &link, &mut cam, &mut st.show_brain);
         let following = cam.follow && st.brain_closed_for != Some(sel.id);
@@ -382,6 +383,7 @@ fn toolbar(
     cam: &mut OrbitCam,
     director: &mut Director,
     sound: &mut SoundSettings,
+    rec: &mut crate::recording::Recorder,
     fps: f64,
 ) {
     egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
@@ -422,6 +424,7 @@ fn toolbar(
                 if ui.button("Help").clicked() {
                     st.show_help = !st.show_help;
                 }
+                record_button(ui, rec);
                 sound_controls(ui, sound);
                 if ui
                     .selectable_label(director.active, "Director")
@@ -786,12 +789,16 @@ fn history_plot(ui: &mut egui::Ui, h: &[Sample], kind: PlotKind) {
         });
 }
 
-fn events_panel(ctx: &mut egui::Context, snap: &Snapshot) {
-    if snap.events.is_empty() {
+/// The world's latest events, and news about a recording.
+fn events_panel(ctx: &mut egui::Context, snap: &Snapshot, notice: Option<&str>) {
+    if snap.events.is_empty() && notice.is_none() {
         return;
     }
     egui::TopBottomPanel::bottom("events").show(ctx, |ui| {
-        for e in snap.events.iter().rev().take(2) {
+        if let Some(n) = notice {
+            ui.label(egui::RichText::new(n).small().strong());
+        }
+        for e in snap.events.iter().rev().take(if notice.is_some() { 1 } else { 2 }) {
             ui.label(egui::RichText::new(e).small());
         }
     });
@@ -1061,7 +1068,7 @@ fn help_window(ctx: &mut egui::Context, st: &mut UiState) {
     egui::Window::new("Help").open(&mut open).default_width(420.0).show(ctx, |ui| {
         ui.label("Camera: right-drag orbit, middle-drag pan, scroll zoom, WASD move, Q/E turn, F follow the selected creature.");
         ui.label("Tools (1-7): select and drag creatures, plant food, drop meat, place rocks and boulders, drop creatures, remove things. While dragging, scroll to lift.");
-        ui.label("Keys: Space pause, . single step, + / - speed, F5 quick save, F9 quick load, F12 screenshot, Delete removes the selected creature, Esc deselects, H this help.");
+        ui.label("Keys: Space pause, . single step, + / - speed, F5 quick save, F9 quick load, F12 screenshot, F10 start or stop recording a video, Delete removes the selected creature, Esc deselects, H this help.");
         ui.separator();
         ui.label("Every creature is built from its genome: a head-end torso, optionally followed by a spine of up to five more segments (a snake or a caterpillar), plus up to six limb genes. A limb has up to three segments (thigh, shin, foot), can grow from any body segment or from the tip of another limb, can be mirrored into a symmetric pair, and can end in a flat paddle. Joints are hinges (one axis, cheap, knees bend mostly one way) or swivels (two axes, like a tentacle, costing more energy per unit of work); every joint's range of motion is genetic. A neural network reads its senses (food, meat, water, other creatures, obstacle rays, thirst, its own joint angles, an internal rhythm) and drives the joints and the eat / attack / mate actions. Creatures must drink: putting the mouth in water refills them, rain helps a little.");
         ui.label("Brains range between the min and max neuron params; each neuron costs energy every second. Energy comes from eating; it drains with body mass, brain size and motor work. Two willing, related creatures near each other breed: their genomes cross over and mutate. When the population falls below the minimum, new creatures rain from the sky, mostly bred from the best genomes seen so far. Creatures also learn while they live: they vary their movements a little, remember what they tried for a moment, and keep what turned out better than usual (food, water, mating, closing in on food when hungry). Parents pass part of what they learned on to their children. They can call out in voices of their own and hear each other's calls (direction, loudness, pitch, and whether the caller sounds like kin); what calls come to mean is up to evolution. Lives are scored by what they achieve: eating, hunting, breeding and travelling, not by how long they last.");
@@ -1535,6 +1542,27 @@ fn hull(mut pts: Vec<Vec2>) -> Vec<Vec2> {
         out.pop();
     }
     out
+}
+
+/// Starts or stops recording the window (with whatever panels are open) to a video file.
+fn record_button(ui: &mut egui::Ui, rec: &mut crate::recording::Recorder) {
+    let button = match rec.elapsed() {
+        Some(t) => {
+            let secs = t.as_secs();
+            egui::Button::new(
+                egui::RichText::new(format!("■ Stop {}:{:02}", secs / 60, secs % 60)).color(egui::Color32::WHITE),
+            )
+            .fill(egui::Color32::from_rgb(190, 30, 30))
+        }
+        None => egui::Button::new(egui::RichText::new("● Record").color(egui::Color32::from_rgb(230, 70, 60))),
+    };
+    if ui
+        .add(button)
+        .on_hover_text("Record the window to a video in ~/Videos, panels and all, as you see it (F10)")
+        .clicked()
+    {
+        rec.toggle = true;
+    }
 }
 
 fn sound_controls(ui: &mut egui::Ui, sound: &mut SoundSettings) {

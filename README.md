@@ -59,6 +59,7 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 | + / - | speed (¼× up to Max) |
 | F5 / F9 | quick save / quick load |
 | F12 | screenshot |
+| F10 | start / stop recording a video (also the Record button) |
 | Delete, Esc | remove selected creature, deselect |
 
 **The director** (toolbar button, C, or start with `--director`) is a camera for just watching.
@@ -103,6 +104,12 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 **Leaders** (in the right panel) names who's ahead right now: top score, oldest, most evolved,
 biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest
 and best swimmer. Click one to go and follow it.
+
+**Recording.** F10 or the toolbar's Record button records the window to
+`~/Videos/evolve-<date>-<time>.mp4`, with whatever panels and overlays are showing, at 30 frames
+a second in real time. It encodes on the GPU (NVENC) through `ffmpeg`, falling back to x264, and
+drops frames rather than slowing the app if encoding falls behind. A window resize starts a new
+file. `--record FILE` records from launch. There is no sound in the video.
 
 **The brain view** opens when you follow a creature (F, or Follow in its inspector), or with the
 inspector's Brain view button.
@@ -253,6 +260,8 @@ weakly, so what the brain already does carries over.
     tentacles were no dearer than hinges. Now ordinary movement costs little and a creature
     thrashing at 80 W per kg pays about twice its resting metabolism.
   - *Starving:* a creature with no energy starves.
+- *Strength:* a joint's motor can deliver up to `motor_torque_per_kg` (6) N·m per kg of body,
+  times the limb's strength gene, so a few legs can lift their body but not fling it.
 - *Breath:* muscles burn oxygen in proportion to their power per kg (`exertion_oxygen`), and a
   creature breathes it back in while its head is above water (`breath_rate`, scaled by the lung
   gene). Hard work can outpace breathing. Below 30% breath its muscles weaken, so a sprinter must

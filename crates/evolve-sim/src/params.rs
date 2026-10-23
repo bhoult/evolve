@@ -159,7 +159,7 @@ params! {
         /// Damping of the joint motors.
         motor_damping: f32 = 20.0, [0, 500], Live;
         /// Maximum motor torque per kg of creature mass (scaled by each limb's strength gene).
-        motor_torque_per_kg: f32 = 3.0, [0, 30], Live;
+        motor_torque_per_kg: f32 = 6.0, [0, 30], Live;
         /// Fastest a joint can swing, rad/s, for a limb segment half a meter long; longer
         /// segments swing slower and shorter ones faster, like pendulums. Keeps limbs from
         /// flicking between extremes faster than a body could.
@@ -374,7 +374,7 @@ params! {
         /// short of breath is weak until it recovers.
         breath_rate: f32 = 0.25, [0.01, 5], Live;
         /// Oxygen used per second for each watt of muscle power per kg of body.
-        exertion_oxygen: f32 = 0.02, [0, 2], Live;
+        exertion_oxygen: f32 = 0.006, [0, 2], Live;
         /// Health lost per second while out of breath underwater.
         drowning_damage: f32 = 5.0, [0, 100], Live;
     }

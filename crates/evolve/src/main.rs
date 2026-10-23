@@ -7,6 +7,7 @@ mod director;
 mod env;
 mod neural_view;
 mod preview;
+mod recording;
 mod scene;
 mod sky;
 mod splash;
@@ -94,12 +95,14 @@ pub struct Args {
     pub mute: bool,
     /// Open the brain view on its neural picture (with --select-first, for screenshots).
     pub neural_view: bool,
+    /// Start recording the window to this video file at launch.
+    pub record: Option<PathBuf>,
     pub pick_test: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "evolve [--load FILE] [--seed N] [--speed X] [--zoo] [--director] [--mute] [--set name=value]...\n       [--screenshot FILE --frames N] [--camera x,z,distance,yaw,pitch] [--select-first]\n       [--time-of-day F] [--weather clear|cloudy|rain|storm] [--lightning]"
+        "evolve [--load FILE] [--seed N] [--speed X] [--zoo] [--director] [--mute] [--set name=value]...\n       [--screenshot FILE --frames N] [--camera x,z,distance,yaw,pitch] [--select-first]\n       [--time-of-day F] [--weather clear|cloudy|rain|storm] [--lightning] [--record VIDEO.mp4]"
     );
     std::process::exit(2)
 }
@@ -131,6 +134,7 @@ fn main() -> AppExit {
             "--director" => args.director = true,
             "--mute" => args.mute = true,
             "--neural-view" => args.neural_view = true,
+            "--record" => args.record = Some(val().into()),
             "--time-of-day" => visuals.time_of_day = Some(val().parse().unwrap_or_else(|_| usage())),
             "--weather" => visuals.weather = Some(val().parse().unwrap_or_else(|_| usage())),
             "--lightning" => visuals.lightning = true,
@@ -237,6 +241,7 @@ fn main() -> AppExit {
             preview::PreviewPlugin,
             director::DirectorPlugin,
             audio::AudioPlugin,
+            recording::RecordingPlugin,
         ))
         .add_systems(PreUpdate, refresh_snapshot)
         .add_systems(Update, (auto_screenshot, load_after))

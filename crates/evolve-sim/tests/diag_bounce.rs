@@ -593,3 +593,142 @@ fn sim_snake_energy() {
         println!("{line}");
     }
 }
+
+/// Where a physics step's time goes, by rapier stage, with N (EVOLVE_DIAG_N) random creatures.
+/// Needs rapier's "profiler" feature.
+#[test]
+#[ignore]
+fn physics_stages() {
+    let n: usize = std::env::var("EVOLVE_DIAG_N").ok().and_then(|v| v.parse().ok()).unwrap_or(150);
+    let mut sim = Sim::new(SimParams { min_population: 0, weather: false, ..SimParams::default() });
+    let mut rng = evolve_sim::rng::Rng::new(4);
+    for _ in 0..n {
+        let g = evolve_sim::genome::Genome::random(&mut rng, &sim.params);
+        let at = sim.random_land_point(10.0);
+        sim.spawn_creature(g, at, 0.3, f32::MAX, 0, None);
+    }
+    for _ in 0..120 {
+        sim.step();
+    }
+    sim.world.physics_pipeline.counters.enable();
+    let mut acc = [0.0f64; 8];
+    let steps = 120;
+    for _ in 0..steps {
+        sim.step();
+        let c = &sim.world.physics_pipeline.counters;
+        let s = &c.stages;
+        for (a, v) in acc.iter_mut().zip([
+            c.step_time_ms(),
+            s.collision_detection_time.time_ms(),
+            s.island_construction_time.time_ms(),
+            s.island_constraints_collection_time.time_ms(),
+            s.solver_time.time_ms(),
+            c.solver.velocity_assembly_time.time_ms(),
+            c.solver.velocity_resolution_time.time_ms(),
+            c.solver.velocity_update_time.time_ms(),
+        ]) {
+            *a += v / steps as f64;
+        }
+    }
+    let parts: usize = sim.creatures.iter().map(|c| c.parts.len()).sum();
+    println!("{} creatures, {parts} parts: step {:.2} ms = collision {:.2} + islands {:.2} + constraint collection {:.2} + solver {:.2} (assembly {:.2}, resolution {:.2}, update {:.2})",
+        sim.creatures.len(), acc[0], acc[1], acc[2], acc[3], acc[4], acc[5], acc[6], acc[7]);
+}
+
+/// Would splitting the world into several physics worlds stepped in parallel pay? One world of
+/// 8n creatures against 8 worlds of n, on an 8-thread pool (CPU brains, to time the CPU only).
+#[test]
+#[ignore]
+fn shard_scaling() {
+    use rayon::prelude::*;
+    // Safe: set before any thread reads it.
+    unsafe { std::env::set_var("EVOLVE_CPU_BRAINS", "1") };
+    let n: usize = std::env::var("EVOLVE_DIAG_N").ok().and_then(|v| v.parse().ok()).unwrap_or(50);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+    let make = |count: usize, seed: u64| {
+        let mut sim = Sim::new(SimParams { min_population: 0, weather: false, seed, ..SimParams::default() });
+        let mut rng = evolve_sim::rng::Rng::new(seed);
+        for _ in 0..count {
+            let g = evolve_sim::genome::Genome::random(&mut rng, &sim.params);
+            let at = sim.random_land_point(10.0);
+            sim.spawn_creature(g, at, 0.3, f32::MAX, 0, None);
+        }
+        sim
+    };
+    let steps = 120;
+    let mut one = make(8 * n, 1);
+    let t_one = pool.install(|| {
+        for _ in 0..60 {
+            one.step();
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..steps {
+            one.step();
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / steps as f64
+    });
+    let mut many: Vec<Sim> = (0..8).map(|k| make(n, 1 + k as u64)).collect();
+    let t_many = pool.install(|| {
+        for _ in 0..60 {
+            many.par_iter_mut().for_each(|s| s.step());
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..steps {
+            many.par_iter_mut().for_each(|s| s.step());
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / steps as f64
+    });
+    let mut single = make(n, 9);
+    let t_single = pool.install(|| {
+        for _ in 0..60 {
+            single.step();
+        }
+        let t = std::time::Instant::now();
+        for _ in 0..steps {
+            single.step();
+        }
+        t.elapsed().as_secs_f64() * 1000.0 / steps as f64
+    });
+    println!(
+        "one world of {}: {t_one:.1} ms/step; 8 worlds of {n} in parallel: {t_many:.1} ms/step ({:.1}x faster); one world of {n} alone: {t_single:.1} ms/step",
+        8 * n, t_one / t_many
+    );
+}
+
+/// How hard random creatures work and how out of breath they get (EVOLVE_DIAG_SET to vary).
+#[test]
+#[ignore]
+fn breathlessness_now() {
+    let mut sim = Sim::new(SimParams { min_population: 0, weather: false, ..params() });
+    let mut rng = evolve_sim::rng::Rng::new(5);
+    for _ in 0..60 {
+        let g = evolve_sim::genome::Genome::random(&mut rng, &sim.params);
+        let at = sim.random_land_point(10.0);
+        sim.spawn_creature(g, at, 0.3, f32::MAX, 0, None);
+    }
+    let start: Vec<(u64, Vec3)> = sim.creatures.iter().map(|c| (c.id, sim.world.bodies.get(c.parts[0].body).unwrap().translation())).collect();
+    let (mut lifted, mut samples) = (0usize, 0usize);
+    for step in 0..30 * 60 {
+        sim.step();
+        if step % 30 == 0 {
+            for c in &sim.creatures {
+                let t = sim.world.bodies.get(c.parts[0].body).unwrap().translation();
+                samples += 1;
+                lifted += (t.y - sim.terrain.height_at(t.x, t.z) > c.torso_half().y + 0.15) as usize;
+            }
+        }
+    }
+    let mut ex: Vec<f32> = sim.creatures.iter().map(|c| c.exertion).collect();
+    ex.sort_by(|a, b| a.total_cmp(b));
+    let winded = sim.creatures.iter().filter(|c| c.oxygen < 0.3).count();
+    let moved: Vec<f32> = start
+        .iter()
+        .filter_map(|(id, p)| sim.creature(*id).map(|c| (sim.world.bodies.get(c.parts[0].body).unwrap().translation() - *p).length()))
+        .collect();
+    let mut m = moved.clone();
+    m.sort_by(|a, b| a.total_cmp(b));
+    println!(
+        "{} creatures after 30 s: exertion median {:.1} W/kg (90th pct {:.1}); {winded} out of breath (<30%); torso off the ground {:.0}% of samples; moved median {:.1} m, best {:.1} m",
+        sim.creatures.len(), ex[ex.len() / 2], ex[ex.len() * 9 / 10], lifted as f32 / samples.max(1) as f32 * 100.0, m[m.len() / 2], m[m.len() - 1]
+    );
+}
