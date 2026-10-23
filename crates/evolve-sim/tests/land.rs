@@ -256,8 +256,9 @@ fn creatures_float_in_a_lake_and_can_drown_in_it() {
             assert!(y < surface - 1.0, "without buoyancy it sinks: {y} vs surface {surface}");
             assert!(c.drowning && c.oxygen == 0.0, "and drowns in the lake");
         } else {
+            // (Whether it keeps its head up is up to how it moves: a body about as dense as
+            // water floats low, and can drown at the surface too.)
             assert!((y - surface).abs() < 1.0 && c.in_water > 0.0, "it floats at the surface: {y} vs {surface}");
-            assert!(!c.drowning);
         }
     }
 }

@@ -127,12 +127,11 @@ params! {
     "Physics" {
         /// Gravitational acceleration, m/s^2.
         gravity: f32 = 9.81, [0, 30], Live;
-        /// Constraint solver iterations per step. More is stiffer joints and slower physics.
-        solver_iterations: u32 = 4, [1, 16], Live;
-        /// Constraint passes within each solver iteration. One pass lets lively multi-jointed
-        /// bodies (snakes thrashing their tails) bend joints a radian or more past their limits;
-        /// two holds them, for about 12% more physics time.
-        solver_passes: u32 = 2, [1, 8], Live;
+        /// Solver substeps per physics step. A creature's joints are solved exactly (it's a
+        /// multibody), so one is enough; more makes contacts a little firmer and physics slower.
+        solver_iterations: u32 = 1, [1, 16], Live;
+        /// Constraint passes within each substep.
+        solver_passes: u32 = 8, [1, 16], Live;
         /// Friction of the ground.
         ground_friction: f32 = 1.0, [0, 3], Live;
         /// Friction of creature bodies.

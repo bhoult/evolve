@@ -418,22 +418,32 @@ pub struct PartRef {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JointRef {
-    pub handle: ImpulseJointHandle,
+    /// A link of the creature's multibody: an articulation solved in joint coordinates, so the
+    /// joints can't drift apart and pump energy into the body as separate constraints did.
+    pub handle: MultibodyJointHandle,
     pub parent: usize,
     pub child: usize,
     pub kind: JointKind,
     pub slot: usize,
     pub range: [f32; 2],
     pub strength: f32,
+    /// Moment of inertia of everything beyond the joint about it, kg·m² (for muscle work).
+    #[serde(default)]
+    pub inertia: f32,
+    /// A swivel is two hinges in series (a universal joint, which can't twist) through a small
+    /// knuckle body with no collider: `handle` turns about the joint's y axis, `second` about
+    /// its z axis. (A multibody's own ball joint tracks its angles by summing its spin, which
+    /// drifts, so its limits would drift too.)
+    #[serde(default)]
+    pub second: Option<MultibodyJointHandle>,
+    #[serde(default)]
+    pub knuckle: Option<RigidBodyHandle>,
 }
 
 impl JointRef {
     /// The rapier axes it drives, with their motor channel offsets.
     pub fn axes(&self) -> &'static [(JointAxis, usize)] {
-        match self.kind {
-            JointKind::Hinge => &[(JointAxis::AngX, 0)],
-            JointKind::Swivel => &[(JointAxis::AngY, 0), (JointAxis::AngZ, 1)],
-        }
+        axes_of(self.kind)
     }
 
     /// Middle and half-width of the range of motion.
@@ -479,26 +489,40 @@ pub fn spawn_body(
         };
         let mid = 0.5 * (js.range[0] + js.range[1]);
         let force = p.motor_torque_per_kg * js.strength * mass;
-        let mut b = GenericJointBuilder::new(match js.kind {
-            JointKind::Hinge => JointAxesMask::LOCKED_REVOLUTE_AXES,
-            JointKind::Swivel => JointAxesMask::LIN_AXES | JointAxesMask::ANG_X,
-        })
-        .local_frame1(js.frame1)
-        .local_frame2(js.frame2)
-        .contacts_enabled(false);
-        let axes: &[JointAxis] = match js.kind {
-            JointKind::Hinge => &[JointAxis::AngX],
-            JointKind::Swivel => &[JointAxis::AngY, JointAxis::AngZ],
+        // One free angle per joint: a hinge's x, or a swivel's y then z (see `JointRef::second`).
+        let hinge = |free: JointAxis, f1: Pose, f2: Pose| {
+            let locked = JointAxesMask::LOCKED_SPHERICAL_AXES
+                | match free {
+                    JointAxis::AngX => JointAxesMask::ANG_Y | JointAxesMask::ANG_Z,
+                    JointAxis::AngY => JointAxesMask::ANG_X | JointAxesMask::ANG_Z,
+                    _ => JointAxesMask::ANG_X | JointAxesMask::ANG_Y,
+                };
+            GenericJointBuilder::new(locked)
+                .local_frame1(f1)
+                .local_frame2(f2)
+                .contacts_enabled(false)
+                .limits(free, js.range)
+                .motor_position(free, mid, p.motor_stiffness, p.motor_damping)
+                .motor_max_force(free, force)
+                .build()
         };
-        for &axis in axes {
-            b = b
-                .limits(axis, js.range)
-                .motor_position(axis, mid, p.motor_stiffness, p.motor_damping)
-                .motor_max_force(axis, force);
-        }
-        let handle = world
-            .impulse_joints
-            .insert(parts[parent].body, parts[k].body, b.build(), true);
+        let mut attach = |a: RigidBodyHandle, b: RigidBodyHandle, joint: GenericJoint| {
+            world.multibody_joints.insert(a, b, joint, true).expect("a body plan is a tree, rooted at the torso")
+        };
+        let (handle, second, knuckle) = match js.kind {
+            JointKind::Hinge => (attach(parts[parent].body, parts[k].body, hinge(JointAxis::AngX, js.frame1, js.frame2)), None, None),
+            JointKind::Swivel => {
+                let km = (spec.shape.volume() * p.body_density * 0.02).max(0.01);
+                let rb = RigidBodyBuilder::dynamic()
+                    .pose(root * parts_rest(plan, parent) * js.frame1)
+                    .can_sleep(false)
+                    .additional_mass_properties(MassProperties::new(Vec3::ZERO, km, Vec3::splat(km * 4e-4)));
+                let knuckle = world.bodies.insert(rb);
+                let first = attach(parts[parent].body, knuckle, hinge(JointAxis::AngY, js.frame1, Pose::IDENTITY));
+                let second = attach(knuckle, parts[k].body, hinge(JointAxis::AngZ, Pose::IDENTITY, js.frame2));
+                (first, Some(second), Some(knuckle))
+            }
+        };
         joints.push(JointRef {
             handle,
             parent,
@@ -507,35 +531,128 @@ pub fn spawn_body(
             slot: js.slot,
             range: js.range,
             strength: js.strength,
+            inertia: subtree_inertia(plan, k, (root * spec.rest * js.frame2).translation, root, p.body_density),
+            second,
+            knuckle,
         });
     }
     (parts, joints)
 }
 
+fn parts_rest(plan: &[PartSpec], k: usize) -> Pose {
+    plan[k].rest
+}
+
+fn axes_of(kind: JointKind) -> &'static [(JointAxis, usize)] {
+    match kind {
+        JointKind::Hinge => &[(JointAxis::AngX, 0)],
+        JointKind::Swivel => &[(JointAxis::AngY, 0), (JointAxis::AngZ, 1)],
+    }
+}
+
+/// Moment of inertia about `anchor` of part `k` and everything hanging off it (as point masses
+/// at their centers, plus a rod's own inertia for each), kg·m².
+fn subtree_inertia(plan: &[PartSpec], k: usize, anchor: Vec3, root: Pose, density: f32) -> f32 {
+    let in_subtree = |mut i: usize| loop {
+        if i == k {
+            return true;
+        }
+        match plan[i].parent {
+            Some(p) => i = p,
+            None => return false,
+        }
+    };
+    plan.iter()
+        .enumerate()
+        .filter(|(i, _)| in_subtree(*i))
+        .map(|(_, s)| {
+            let m = s.shape.volume() * density;
+            let r = (root * s.rest).translation.distance(anchor);
+            let len = s.shape.length();
+            m * (r * r + len * len / 12.0)
+        })
+        .sum::<f32>()
+        .max(1e-4)
+}
+
+/// The multibody a creature's parts form, if it has joints.
+pub fn multibody<'a>(world: &'a PhysicsWorld, parts: &[PartRef]) -> Option<&'a Multibody> {
+    let link = world.multibody_joints.rigid_body_link(parts.first()?.body)?;
+    world.multibody_joints.get_multibody(link.multibody)
+}
+
+pub fn multibody_mut<'a>(world: &'a mut PhysicsWorld, parts: &[PartRef]) -> Option<&'a mut Multibody> {
+    let link = *world.multibody_joints.rigid_body_link(parts.first()?.body)?;
+    world.multibody_joints.get_multibody_mut(link.multibody)
+}
+
+fn link_joint(world: &PhysicsWorld, h: MultibodyJointHandle) -> Option<&GenericJoint> {
+    let (mb, link) = world.multibody_joints.get(h)?;
+    Some(&mb.link(link)?.joint.data)
+}
+
+/// The joint (frames, limit, motor) that drives axis `d` of a creature joint.
+pub fn axis_joint<'a>(world: &'a PhysicsWorld, j: &JointRef, d: usize) -> Option<&'a GenericJoint> {
+    link_joint(world, if d == 0 { j.handle } else { j.second? })
+}
+
+pub fn axis_joint_mut<'a>(world: &'a mut PhysicsWorld, j: &JointRef, d: usize) -> Option<&'a mut GenericJoint> {
+    let (mb, link) = world.multibody_joints.get_mut(if d == 0 { j.handle } else { j.second? })?;
+    Some(&mut mb.link_mut(link)?.joint.data)
+}
+
+/// Mechanical work a joint's muscles do in `dt`, J: the torque each motor applies (what it
+/// takes to give the limb beyond it the acceleration the motor asks for, up to the motor's
+/// strength) times how fast the joint turns. Rapier doesn't report a multibody's motor impulses.
+pub fn muscle_work(world: &PhysicsWorld, parts: &[PartRef], j: &JointRef, dt: f32) -> f32 {
+    let Some((angle, rate)) = joint_state(world, parts, j) else {
+        return 0.0;
+    };
+    let inertia = if j.inertia > 0.0 { j.inertia } else { 0.05 };
+    axes_of(j.kind)
+        .iter()
+        .filter_map(|&(axis, d)| Some((axis, d, axis_joint(world, j, d)?)))
+        .map(|(axis, d, data)| {
+            let m = &data.motors[axis as usize];
+            let ask = m.stiffness * (m.target_pos - angle[d]) + m.damping * (m.target_vel - rate[d]);
+            (inertia * ask.abs()).min(m.max_force) * rate[d].abs() * dt
+        })
+        .sum()
+}
+
 /// Current angles of a joint's axes (a hinge only uses the first), and the relative angular
 /// speeds about them.
 pub fn joint_state(world: &PhysicsWorld, parts: &[PartRef], j: &JointRef) -> Option<([f32; 2], [f32; 2])> {
-    let joint = world.impulse_joints.get(j.handle)?;
-    let b1 = world.bodies.get(parts[j.parent].body)?;
-    let b2 = world.bodies.get(parts[j.child].body)?;
-    let jr1 = *b1.rotation() * joint.data.local_frame1.rotation;
-    let jr2 = *b2.rotation() * joint.data.local_frame2.rotation;
-    let err = jr1.inverse() * jr2;
-    let flip = if err.w < 0.0 { -1.0 } else { 1.0 };
-    let angle = |c: f32| c.clamp(-1.0, 1.0).asin() * 2.0 * flip;
-    let w = b2.angvel() - b1.angvel();
-    Some(match j.kind {
-        JointKind::Hinge => ([angle(err.x), 0.0], [w.dot(jr1 * Vec3::X), 0.0]),
-        JointKind::Swivel => (
-            [angle(err.y), angle(err.z)],
-            [w.dot(jr1 * Vec3::Y), w.dot(jr1 * Vec3::Z)],
-        ),
+    // The angle of one hinge, about `axis`, and how fast it's turning.
+    let hinge = |h: MultibodyJointHandle, a: RigidBodyHandle, b: RigidBodyHandle, axis: Vec3, pick: fn(Quat) -> f32| {
+        let data = link_joint(world, h)?;
+        let (b1, b2) = (world.bodies.get(a)?, world.bodies.get(b)?);
+        let jr1 = *b1.rotation() * data.local_frame1.rotation;
+        let err = jr1.inverse() * (*b2.rotation() * data.local_frame2.rotation);
+        let flip = if err.w < 0.0 { -1.0 } else { 1.0 };
+        let angle = pick(err).clamp(-1.0, 1.0).asin() * 2.0 * flip;
+        Some((angle, (b2.angvel() - b1.angvel()).dot(jr1 * axis)))
+    };
+    let (parent, child) = (parts[j.parent].body, parts[j.child].body);
+    Some(match (j.kind, j.second, j.knuckle) {
+        (JointKind::Swivel, Some(second), Some(knuckle)) => {
+            let (ay, wy) = hinge(j.handle, parent, knuckle, Vec3::Y, |q| q.y)?;
+            let (az, wz) = hinge(second, knuckle, child, Vec3::Z, |q| q.z)?;
+            ([ay, az], [wy, wz])
+        }
+        _ => {
+            let (ax, wx) = hinge(j.handle, parent, child, Vec3::X, |q| q.x)?;
+            ([ax, 0.0], [wx, 0.0])
+        }
     })
 }
 
-pub fn remove_body(world: &mut PhysicsWorld, parts: &[PartRef]) {
+pub fn remove_body(world: &mut PhysicsWorld, parts: &[PartRef], joints: &[JointRef]) {
     for p in parts {
         world.remove_body(p.body);
+    }
+    for k in joints.iter().filter_map(|j| j.knuckle) {
+        world.remove_body(k);
     }
 }
 

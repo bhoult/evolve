@@ -475,3 +475,44 @@ fn a_digging_creature_carries_earth_and_leaves_a_hole() {
     let t = sim.world.bodies[c.parts[0].body].translation();
     assert!(t.y > sim.terrain.height_at(t.x, t.z) - 0.2);
 }
+
+/// A body with many joints on one part, floating in empty space with its muscles off, given a
+/// spin: its motion can only die down. (Separate joint constraints pumped energy into bodies with
+/// six or more joints on the torso until they flung themselves about.)
+#[test]
+fn many_jointed_bodies_never_gain_energy_on_their_own() {
+    let mut p = quiet_params();
+    p.gravity = 0.0;
+    p.motor_torque_per_kg = 0.0;
+    // Even calm weather has a breeze, which really would blow a floating body along.
+    p.wind_force = 0.0;
+    let mut many = legged();
+    for i in 2..6 {
+        let l = many.limbs[i].clone();
+        many.limbs[i] = evolve_sim::genome::LimbGene { present: true, parent: 0, segment: 0, attach: [0.3 - 0.15 * i as f32, -0.4, 1.0], ..l };
+    }
+    for (name, g) in [("snake", snake()), ("tentacled", tentacled()), ("legged", legged()), ("many-limbed", many)] {
+        let mut sim = Sim::new(p.clone());
+        let at = sim.random_land_point(20.0);
+        let id = sim.spawn_creature(g, at, 40.0, f32::MAX, 0, None);
+        let parts = sim.creature(id).unwrap().parts.clone();
+        let joints = sim.creature(id).unwrap().joints.len();
+        let mb = body::multibody_mut(&mut sim.world, &parts).expect("a jointed body is a multibody");
+        // The root's spin (generalized velocities: the root's linear, then angular, velocity).
+        let mut v = mb.generalized_velocity_mut();
+        v[3] = 0.5;
+        v[4] = 1.0;
+        v[5] = 0.3;
+        let energy = |sim: &Sim| -> f32 { parts.iter().map(|q| sim.world.bodies.get(q.body).unwrap().kinetic_energy()).sum() };
+        sim.step();
+        let start = energy(&sim);
+        let mut peak = start;
+        for _ in 0..20 * 60 {
+            sim.step();
+            peak = peak.max(energy(&sim));
+        }
+        eprintln!("{name} ({joints} joints): kinetic energy {start:.3} J, peak {peak:.3} J");
+        assert!(start > 0.01, "{name} should have been spinning");
+        assert!(peak <= start * 1.05, "{name} gained energy: {start} J -> {peak} J");
+    }
+}

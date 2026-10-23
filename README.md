@@ -165,14 +165,21 @@ size, diet (plants or meat), built-in leanings toward eating, mating and attacki
 capacity, the frequency of an internal rhythm, and how fast the brain learns. Lineages have their
 own color hue, which drifts slowly.
 
-**Joints.** Every joint has a genetic range of motion that the physics enforces. That takes two
-constraint passes per solver iteration (`solver_passes`): with one, a thrashing snake could bend
-a joint a radian past its limit.
+**Joints.** A creature's body is one articulation (a rapier multibody): its joints are solved in
+joint coordinates, so they can't drift apart, and a limb pushing on the ground has to lift the
+body's real weight. Every joint has a genetic range of motion that the physics enforces.
 - *Hinges* bend about one axis. They are the cheap kind. A limb's knees bend mostly one way (a
   quarter of the range the other way), like real knees and elbows.
 - *Swivels* bend about two axes, with twisting along the bone locked: a hip or shoulder, or, all
-  the way down a limb, a tentacle. They're more flexible, but each unit of work costs
-  `swivel_energy_cost` (2x) what a hinge's does.
+  the way down a limb, a tentacle. Each is two hinges in series through a small knuckle (a
+  universal joint). They're more flexible, but each unit of work costs `swivel_energy_cost` (2x)
+  what a hinge's does.
+- *Why a multibody:* until 2026-10-22 joints were separate constraints, and rapier's solver
+  pumped energy into any body with many joints on one part (six legs on a torso was enough):
+  bodies flung themselves about even with their muscles off. The best creatures in the zoo had
+  evolved to ride it, bouncing over the ground off the ground three-quarters of the time. Now
+  they barely move until evolution finds them a real gait. The physics costs about twice as
+  much (about 3 ms a step for 50 creatures: one substep of 8 passes).
 - *Speed:* the angle a joint aims for moves at most `max_joint_speed` (8 rad/s for a half-meter
   segment; longer segments slower, shorter ones faster, like pendulums). The brain can change its
   mind 30 times a second, but a limb swings rather than snapping back and forth in a blur.
@@ -239,7 +246,9 @@ weakly, so what the brain already does carries over.
 **Energy and water.**
 - *Energy* comes only from eating: plants, or meat in proportion to the diet gene.
   - *What it costs:* it drains with body mass (mass^0.75), brain size, armor, lung capacity,
-    calling, and the mechanical work the joint motors actually do (double for swivels).
+    calling, and the mechanical work the joint motors do (double for swivels): each motor's
+    torque (what it takes to swing the limb beyond it as asked, up to the motor's strength)
+    times how fast the joint turns. (Rapier doesn't report a multibody's motor impulses.)
   - *Motor work:* until 2026-10-22 a bug meant motor work cost nothing, so flailing was free and
     tentacles were no dearer than hinges. Now ordinary movement costs little and a creature
     thrashing at 80 W per kg pays about twice its resting metabolism.
@@ -346,7 +355,8 @@ swim. Drag is stronger across a part than along it, so a flat paddle swept face-
 an oar.
 
 **Older saves and zoo creatures.**
-- Saves (EVOLVE03) and zoo genomes from before multi-jointed bodies still load.
+- Saves from before multibody joints (EVOLVE04) and before multi-jointed bodies (EVOLVE03), and
+  zoo genomes from before multi-jointed bodies, still load.
 - Their brains are rewired onto the new layout so they behave exactly as before. A test checks
   this.
 - Creatures in an old save are rebuilt from their genomes where they stood.

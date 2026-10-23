@@ -218,13 +218,13 @@ impl Sim {
                 // swings rather than snapping between whatever the brain asks from tick to tick.
                 let len = c.plan.get(j.child).map_or(0.5, |s| s.shape.length()).max(0.05);
                 let step = p.max_joint_speed * (0.5 / len).sqrt().clamp(0.5, 1.5) * bdt;
-                if let Some(joint) = self.world.impulse_joints.get_mut(j.handle, false) {
-                    for &(axis, d) in j.axes() {
+                for &(axis, d) in j.axes() {
+                    if let Some(data) = body::axis_joint_mut(&mut self.world, j, d) {
                         let want = mid + c.output(output::JOINTS + j.slot + d) * half;
-                        let was = joint.data.motors[axis as usize].target_pos;
+                        let was = data.motors[axis as usize].target_pos;
                         let target = was + (want - was).clamp(-step, step);
-                        joint.data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
-                        joint.data.set_motor_max_force(axis, force);
+                        data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                        data.set_motor_max_force(axis, force);
                     }
                 }
             }

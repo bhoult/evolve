@@ -20,10 +20,12 @@ use crate::sim::{Food, LifeStats, Obstacle, Sim};
 use crate::stats::{GenePool, Sample, Stats};
 use crate::terrain::Terrain;
 
-/// EVOLVE04: multi-jointed bodies (spines, knees, swivels) and thirst.
-const MAGIC: &[u8; 8] = b"EVOLVE04";
-/// Single-block bodies with one-hinge limbs. Still loads: see `import_legacy`.
-const LEGACY_MAGIC: &[u8; 8] = b"EVOLVE03";
+/// EVOLVE05: creatures' joints are multibody articulations.
+const MAGIC: &[u8; 8] = b"EVOLVE05";
+/// Older saves still load, their creatures rebuilt from their genomes where they stood (see
+/// `import_legacy`): EVOLVE04 had separate joint constraints (which pumped energy into bodies
+/// with many joints), EVOLVE03 single-block bodies with one-hinge limbs.
+const LEGACY_MAGICS: [&[u8; 8]; 2] = [b"EVOLVE04", b"EVOLVE03"];
 pub const EXTENSION: &str = "evo";
 
 /// Saves the whole world. Takes `&mut` because brain state is first pulled back from the GPU.
@@ -59,7 +61,7 @@ pub fn load(path: &Path) -> Result<Sim, String> {
     let mut magic = [0u8; 8];
     r.read_exact(&mut magic).map_err(|e| format!("read: {e}"))?;
     let gz = GzDecoder::new(r);
-    if &magic == LEGACY_MAGIC {
+    if LEGACY_MAGICS.contains(&&magic) {
         let old: LegacySim = rmp_serde::decode::from_read(gz).map_err(|e| format!("decode: {e}"))?;
         return Ok(import_legacy(old));
     }
@@ -75,8 +77,9 @@ pub fn load(path: &Path) -> Result<Sim, String> {
     Ok(sim)
 }
 
-/// The parts of an EVOLVE03 save worth keeping. Its creatures' joints and brain states don't fit
-/// today's bodies, so they are rebuilt from their (upgraded) genomes where they stood.
+/// The parts of an older save worth keeping. Its creatures' joints (and, for EVOLVE03, brain
+/// states) don't fit today's bodies, so they are rebuilt from their (upgraded) genomes where they
+/// stood.
 #[derive(Deserialize)]
 struct LegacySim {
     params: SimParams,

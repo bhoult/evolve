@@ -1,0 +1,595 @@
+//! Diagnostic: how the best zoo creatures get about. Each is run alone on the island and
+//! measured: how much of the time it's off the ground, how hard it bounces, how fast its joints
+//! swing, and how far it gets.
+//!
+//!     EVOLVE_DIAG_ZOO=~/.local/share/evolve/zoo cargo test --release --test diag_bounce -- --ignored --nocapture
+//!
+//! Reads the zoo's index and genome files only (it never opens the zoo for writing).
+//! `EVOLVE_DIAG_SET=name=value,...` changes params for a what-if run.
+
+use evolve_sim::brain::BRAIN_ERA;
+use evolve_sim::math::Vec3;
+use evolve_sim::params::ParamRef;
+use evolve_sim::sim::TICKS_PER_SECOND;
+use evolve_sim::zoo::{ZooMeta, load_genome};
+use evolve_sim::{Sim, SimParams};
+
+fn params() -> SimParams {
+    let mut p = SimParams { min_population: 0, weather: false, ..SimParams::default() };
+    if let Ok(sets) = std::env::var("EVOLVE_DIAG_SET") {
+        for kv in sets.split(',').filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').expect("name=value");
+            p.visit(&mut |info, r| {
+                if info.name == k {
+                    match r {
+                        ParamRef::F32(x) => *x = v.parse().unwrap(),
+                        ParamRef::U32(x) => *x = v.parse().unwrap(),
+                        ParamRef::U64(x) => *x = v.parse().unwrap(),
+                        ParamRef::Bool(x) => *x = v.parse().unwrap(),
+                    }
+                }
+            });
+        }
+    }
+    p
+}
+
+#[test]
+#[ignore]
+fn bounce() {
+    let Ok(dir) = std::env::var("EVOLVE_DIAG_ZOO") else {
+        println!("set EVOLVE_DIAG_ZOO to a zoo directory");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let index: Vec<ZooMeta> = serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+    let mut best = index.clone();
+    best.sort_by(|a, b| b.score_version.cmp(&a.score_version).then(b.score.total_cmp(&a.score)));
+    let n: usize = std::env::var("EVOLVE_DIAG_N").ok().and_then(|v| v.parse().ok()).unwrap_or(12);
+    println!("{:<16} {:>6} {:>5} {:>7} {:>7} {:>7} {:>7} {:>7}", "creature", "score", "kg", "air%", "up m/s", "hop m", "joint/s", "moved m");
+    let mut totals = [0.0f32; 5];
+    let mut count = 0;
+    for meta in best.iter().take(n) {
+        let Ok(mut genome) = load_genome(&dir, meta.id) else {
+            continue;
+        };
+        genome.brain.era = BRAIN_ERA; // as it was, not doubled
+        if std::env::var_os("EVOLVE_DIAG_HINGES").is_some() {
+            genome.spine.swivel = false;
+            for l in &mut genome.limbs {
+                l.swivel_root = false;
+                l.swivel_knees = false;
+            }
+        }
+        let mut sim = Sim::new(params());
+        let at = sim.random_land_point(30.0);
+        let id = sim.spawn_creature(genome, at, 0.3, f32::MAX, 0, None);
+        for _ in 0..2 * TICKS_PER_SECOND {
+            sim.step();
+        }
+        let steps = 20 * TICKS_PER_SECOND;
+        let (mut air, mut up, mut hop, mut spin) = (0u32, 0.0f32, 0.0f32, 0.0f32);
+        let (mut kind_spin, mut kind_n) = ([0.0f32; 2], [0.0f32; 2]);
+        let com = |sim: &Sim| -> Option<(Vec3, Vec3, f32)> {
+            let c = sim.creature(id)?;
+            let (mut p, mut v, mut m) = (Vec3::ZERO, Vec3::ZERO, 0.0);
+            for part in &c.parts {
+                let b = sim.world.bodies.get(part.body)?;
+                p += b.center_of_mass() * b.mass();
+                v += b.linvel() * b.mass();
+                m += b.mass();
+            }
+            Some((p / m, v / m, m))
+        };
+        let Some((start, _, mass)) = com(&sim) else {
+            continue;
+        };
+        let mut path = 0.0;
+        let mut last = start;
+        for _ in 0..steps {
+            sim.step();
+            let Some(c) = sim.creature(id) else {
+                break;
+            };
+            // Off the ground: no part touching the terrain.
+            let touching = sim
+                .world
+                .narrow_phase
+                .contact_pairs_with(sim.terrain_collider)
+                .any(|pair| pair.has_any_active_contact());
+            if !touching {
+                air += 1;
+            }
+            let (p, v, _) = com(&sim).unwrap();
+            up += v.y.max(0.0);
+            hop = hop.max(p.y - sim.terrain.height_at(p.x, p.z));
+            path += Vec3::new(p.x - last.x, 0.0, p.z - last.z).length();
+            last = p;
+            for j in &c.joints {
+                let (Some(a), Some(b)) = (sim.world.bodies.get(c.parts[j.parent].body), sim.world.bodies.get(c.parts[j.child].body)) else {
+                    continue;
+                };
+                let w = (b.angvel() - a.angvel()).length();
+                spin += w;
+                kind_spin[(j.kind == evolve_sim::body::JointKind::Swivel) as usize] += w;
+                kind_n[(j.kind == evolve_sim::body::JointKind::Swivel) as usize] += 1.0;
+            }
+            let _ = c;
+        }
+        let joints = sim.creature(id).map_or(1, |c| c.joints.len().max(1)) as f32;
+        let exertion = sim.creature(id).map_or(0.0, |c| c.exertion);
+        let row = [
+            air as f32 / steps as f32 * 100.0,
+            up / steps as f32,
+            hop,
+            spin / steps as f32 / joints,
+            Vec3::new(last.x - start.x, 0.0, last.z - start.z).length(),
+        ];
+        println!(
+            "{:<16} {:>6.1} {:>5.0} {:>7.1} {:>7.2} {:>7.2} {:>7.1} {:>7.1}   (path {:.0} m; hinges {:.1} rad/s, swivels {:.1}; {:.2} W/kg)",
+            meta.name, meta.score, mass, row[0], row[1], row[2], row[3], row[4], path,
+            kind_spin[0] / kind_n[0].max(1.0), kind_spin[1] / kind_n[1].max(1.0), exertion
+        );
+        for (t, r) in totals.iter_mut().zip(row) {
+            *t += r;
+        }
+        count += 1;
+    }
+    let c = count.max(1) as f32;
+    println!(
+        "{:<16} {:>6} {:>5} {:>7.1} {:>7.2} {:>7.2} {:>7.1} {:>7.1}",
+        "mean", "", "", totals[0] / c, totals[1] / c, totals[2] / c, totals[3] / c, totals[4] / c
+    );
+}
+
+/// against its range.
+#[test]
+#[ignore]
+fn anatomy() {
+    let (Ok(dir), Ok(name)) = (std::env::var("EVOLVE_DIAG_ZOO"), std::env::var("EVOLVE_DIAG_NAME")) else {
+        println!("set EVOLVE_DIAG_ZOO and EVOLVE_DIAG_NAME");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let index: Vec<ZooMeta> = serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+    let meta = index.iter().find(|m| m.name.starts_with(&name)).expect("no such creature");
+    let mut genome = load_genome(&dir, meta.id).unwrap();
+    genome.brain.era = BRAIN_ERA;
+    let mut sim = Sim::new(params());
+    let at = sim.random_land_point(30.0);
+    let id = sim.spawn_creature(genome, at, 0.3, f32::MAX, 0, None);
+    let c = sim.creature(id).unwrap();
+    for (k, part) in c.parts.iter().enumerate() {
+        let b = sim.world.bodies.get(part.body).unwrap();
+        println!("part {k:>2}: {:?} mass {:.2} kg", c.plan[k].shape, b.mass());
+    }
+    let joints = c.joints.clone();
+    let parts = c.parts.clone();
+    let mut swing = vec![0.0f32; joints.len()];
+    let mut off = vec![0.0f32; joints.len()];
+    let mut worst_out = vec![0.0f32; joints.len()];
+    let steps = 10 * TICKS_PER_SECOND;
+    for _ in 0..steps {
+        sim.step();
+        for (n, j) in joints.iter().enumerate() {
+            let Some((angle, rate)) = evolve_sim::body::joint_state(&sim.world, &parts, j) else {
+                continue;
+            };
+            let a = sim.world.bodies.get(parts[j.parent].body).unwrap();
+            let b = sim.world.bodies.get(parts[j.child].body).unwrap();
+            let total = (b.angvel() - a.angvel()).length();
+            swing[n] += rate[0].abs();
+            off[n] += (total - rate[0].abs()).max(0.0);
+            let out = (j.range[0] - angle[0]).max(angle[0] - j.range[1]).max(0.0);
+            worst_out[n] = worst_out[n].max(out);
+        }
+    }
+    for (n, j) in joints.iter().enumerate() {
+        println!(
+            "joint {n:>2} {:?} parts {}->{} range [{:.2}, {:.2}] strength {:.2}: swing {:.1} rad/s, off-axis {:.1} rad/s, worst past limit {:.2} rad",
+            j.kind, j.parent, j.child, j.range[0], j.range[1], j.strength,
+            swing[n] / steps as f32, off[n] / steps as f32, worst_out[n]
+        );
+    }
+}
+
+/// spun gently. Kinetic energy over 20 s should only fall.
+#[test]
+#[ignore]
+fn rapier_minimal() {
+    use rapier3d::prelude::*;
+    for (legs, passes) in [(4usize, 2usize), (5, 2), (6, 2), (6, 1), (8, 2)] {
+        let mut w = PhysicsWorld::new();
+        w.gravity = Vec3::ZERO;
+        w.integration_parameters.num_solver_iterations = 4;
+        w.integration_parameters.num_internal_pgs_iterations = passes;
+        let torso = w.insert(RigidBodyBuilder::dynamic(), ColliderBuilder::cuboid(0.26, 0.1, 0.1).density(1000.0)).0;
+        let mut bodies = vec![torso];
+        for k in 0..legs {
+            let a = k as f32 * std::f32::consts::TAU / legs as f32;
+            let at = Vec3::new(a.cos() * 0.2, -0.1, a.sin() * 0.1);
+            let leg = w
+                .insert(
+                    RigidBodyBuilder::dynamic().translation(at + Vec3::new(0.0, -0.3, 0.0)),
+                    ColliderBuilder::capsule_y(0.3, 0.06).density(1000.0),
+                )
+                .0;
+            let joint = GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES)
+                .local_anchor1(at)
+                .local_anchor2(Vec3::new(0.0, 0.3, 0.0))
+                .contacts_enabled(false);
+            w.impulse_joints.insert(torso, leg, joint.build(), true);
+            bodies.push(leg);
+        }
+        w.bodies.get_mut(torso).unwrap().set_angvel(Vec3::new(0.5, 1.0, 0.3), true);
+        let mut line = format!("{legs} leg(s), {passes} pass(es):");
+        for t in 0..=1200 {
+            if t % 240 == 0 {
+                let e: f32 = bodies.iter().map(|b| w.bodies.get(*b).unwrap().kinetic_energy()).sum();
+                line += &format!(" {e:>9.4}");
+            }
+            w.step();
+        }
+        println!("{line}   (J at 0,4,8,12,16,20 s)");
+    }
+}
+
+/// and are motor impulses reported?
+#[test]
+#[ignore]
+fn multibody_check() {
+    use rapier3d::prelude::*;
+    use evolve_sim::body::{JointKind, PartShape};
+    let Ok(dir) = std::env::var("EVOLVE_DIAG_ZOO") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let mut index: Vec<ZooMeta> = serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+    index.sort_by(|a, b| b.score_version.cmp(&a.score_version).then(b.score.total_cmp(&a.score)));
+    let p = SimParams::default();
+    let n: usize = std::env::var("EVOLVE_DIAG_N").ok().and_then(|v| v.parse().ok()).unwrap_or(12);
+    let mut rng = evolve_sim::rng::Rng::new(3);
+    for (multi, motors) in [(false, false), (true, false), (false, true), (true, true)] {
+        let (mut air, mut spin, mut joints_n, mut impulse_seen, mut steps_total) = (0usize, 0.0f32, 0usize, false, 0usize);
+        for meta in index.iter().take(n) {
+            let Ok(genome) = load_genome(&dir, meta.id) else { continue };
+            let plan = evolve_sim::body::body_plan(&genome);
+            let mass = evolve_sim::body::plan_mass(&plan, p.body_density);
+            let mut w = PhysicsWorld::new();
+            w.integration_parameters.num_solver_iterations = 4;
+            w.integration_parameters.num_internal_pgs_iterations = 2;
+            let ground = w.colliders.insert(ColliderBuilder::cuboid(100.0, 1.0, 100.0).translation(Vec3::new(0.0, -1.0, 0.0)).friction(p.ground_friction));
+            let root = evolve_sim::math::Pose::from_parts(Vec3::new(0.0, evolve_sim::body::plan_depth(&plan) + 0.3, 0.0), evolve_sim::math::Quat::IDENTITY);
+            let mut bodies = Vec::new();
+            for spec in &plan {
+                let col = match spec.shape {
+                    PartShape::Box { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
+                    PartShape::Capsule { half_height, radius } => ColliderBuilder::capsule_y(half_height, radius),
+                }
+                .density(p.body_density)
+                .friction(p.body_friction)
+                // Parts of one creature don't collide with each other.
+                .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1, InteractionTestMode::And));
+                bodies.push(w.insert(RigidBodyBuilder::dynamic().pose(root * spec.rest).angular_damping(0.3).linear_damping(p.air_drag), col).0);
+            }
+            let _ = ground;
+            let mut handles = Vec::new();
+            for (k, spec) in plan.iter().enumerate() {
+                let (Some(parent), Some(js)) = (spec.parent, &spec.joint) else { continue };
+                // A multibody joint can't have exactly two free angles: a swivel becomes a ball
+                // joint whose twist is held near zero by a limit.
+                let mask = match (js.kind, multi) {
+                    (JointKind::Hinge, _) => JointAxesMask::LOCKED_REVOLUTE_AXES,
+                    (JointKind::Swivel, false) => JointAxesMask::LIN_AXES | JointAxesMask::ANG_X,
+                    (JointKind::Swivel, true) => JointAxesMask::LIN_AXES,
+                };
+                let axes: &[JointAxis] = match js.kind {
+                    JointKind::Hinge => &[JointAxis::AngX],
+                    JointKind::Swivel => &[JointAxis::AngY, JointAxis::AngZ],
+                };
+                let mid = 0.5 * (js.range[0] + js.range[1]);
+                let force = if motors { p.motor_torque_per_kg * js.strength * mass } else { 0.0 };
+                let mut b = GenericJointBuilder::new(mask).local_frame1(js.frame1).local_frame2(js.frame2).contacts_enabled(false);
+                for &axis in axes {
+                    b = b.limits(axis, js.range).motor_position(axis, mid, p.motor_stiffness, p.motor_damping).motor_max_force(axis, force);
+                }
+                if multi && js.kind == JointKind::Swivel {
+                    b = b.limits(JointAxis::AngX, [-0.02, 0.02]);
+                }
+                if multi {
+                    handles.push((Err(w.multibody_joints.insert(bodies[parent], bodies[k], b.build(), true).expect("multibody")), axes, js.range, parent, k));
+                } else {
+                    handles.push((Ok(w.impulse_joints.insert(bodies[parent], bodies[k], b.build(), true)), axes, js.range, parent, k));
+                }
+            }
+            for step in 0..20 * 60 {
+                if motors && step % 2 == 0 {
+                    for (h, axes, range, _, _) in &handles {
+                        for &axis in axes.iter() {
+                            let target = range[0] + (range[1] - range[0]) * rng.f32();
+                            match h {
+                                Ok(h) => {
+                                    w.impulse_joints.get_mut(*h, true).unwrap().data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                                }
+                                Err(h) => {
+                                    let (mb, link) = w.multibody_joints.get_mut(*h).unwrap();
+                                    mb.link_mut(link).unwrap().joint.data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                                }
+                            }
+                        }
+                    }
+                }
+                w.step();
+                if step >= 120 {
+                    steps_total += 1;
+                    let touching = w.contact_pairs_with(ground).any(|pair| pair.has_any_active_contact());
+                    if !touching {
+                        air += 1;
+                    }
+                    for (h, _, _, parent, k) in &handles {
+                        let (a, b) = (w.bodies.get(bodies[*parent]).unwrap(), w.bodies.get(bodies[*k]).unwrap());
+                        spin += (b.angvel() - a.angvel()).length();
+                        joints_n += 1;
+                        let imp = match h {
+                            Ok(h) => w.impulse_joints.get(*h).unwrap().data.motors[3].impulse,
+                            Err(h) => {
+                                let (mb, link) = w.multibody_joints.get(*h).unwrap();
+                                mb.link(link).unwrap().joint.data.motors[3].impulse
+                            }
+                        };
+                        impulse_seen |= imp != 0.0;
+                    }
+                }
+            }
+            // Does an impulse on a link body stick?
+            if multi && meta.id == index[0].id {
+                let b = w.bodies.get_mut(bodies[0]).unwrap();
+                let before = b.linvel();
+                b.apply_impulse(Vec3::new(0.0, 50.0 * mass, 0.0), true);
+                let after_apply = w.bodies.get(bodies[0]).unwrap().linvel();
+                w.step();
+                let after_step = w.bodies.get(bodies[0]).unwrap().linvel();
+                println!("multibody torso: vy {:.2} -> after impulse {:.2} -> after a step {:.2}", before.y, after_apply.y, after_step.y);
+                let b = w.bodies.get_mut(bodies[0]).unwrap();
+                b.add_force(Vec3::new(0.0, 50.0 * mass * 60.0, 0.0), true);
+                w.step();
+                let with_force = w.bodies.get(bodies[0]).unwrap().linvel();
+                w.bodies.get_mut(bodies[0]).unwrap().reset_forces(true);
+                println!("multibody torso: a force of 50 g for one step -> vy {:.2}", with_force.y);
+            }
+        }
+        println!(
+            "{:<10} motors {:<5}: off the ground {:>5.1}%, joint spin {:>5.1} rad/s, motor impulses reported: {impulse_seen}",
+            if multi { "multibody" } else { "impulse" }, motors,
+            air as f32 / steps_total.max(1) as f32 * 100.0, spin / joints_n.max(1) as f32
+        );
+    }
+}
+
+/// Prints the first few hinge angles over time, for impulse and multibody joints.
+#[test]
+#[ignore]
+fn motor_tracking() {
+    use rapier3d::prelude::*;
+    use evolve_sim::body::{JointKind, PartShape};
+    let (Ok(dir), Ok(name)) = (std::env::var("EVOLVE_DIAG_ZOO"), std::env::var("EVOLVE_DIAG_NAME")) else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let index: Vec<ZooMeta> = serde_json::from_slice(&std::fs::read(dir.join("index.json")).unwrap()).unwrap();
+    let meta = index.iter().find(|m| m.name.starts_with(&name)).unwrap();
+    let plan = evolve_sim::body::body_plan(&load_genome(&dir, meta.id).unwrap());
+    let p = SimParams::default();
+    let mass = evolve_sim::body::plan_mass(&plan, p.body_density);
+    for multi in [false, true] {
+        let mut w = PhysicsWorld::new();
+        w.integration_parameters.num_solver_iterations = 4;
+        w.integration_parameters.num_internal_pgs_iterations = 2;
+        w.colliders.insert(ColliderBuilder::cuboid(100.0, 1.0, 100.0).translation(Vec3::new(0.0, -1.0, 0.0)).friction(p.ground_friction));
+        let root = evolve_sim::math::Pose::from_parts(Vec3::new(0.0, evolve_sim::body::plan_depth(&plan) + 0.3, 0.0), evolve_sim::math::Quat::IDENTITY);
+        let mut bodies = Vec::new();
+        for spec in &plan {
+            let col = match spec.shape {
+                PartShape::Box { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
+                PartShape::Capsule { half_height, radius } => ColliderBuilder::capsule_y(half_height, radius),
+            }
+            .density(p.body_density)
+            .friction(p.body_friction)
+            .collision_groups(InteractionGroups::new(Group::GROUP_2, Group::GROUP_1, InteractionTestMode::And));
+            bodies.push(w.insert(RigidBodyBuilder::dynamic().pose(root * spec.rest).angular_damping(0.3).linear_damping(p.air_drag), col).0);
+        }
+        let mut handles = Vec::new();
+        for (k, spec) in plan.iter().enumerate() {
+            let (Some(parent), Some(js)) = (spec.parent, &spec.joint) else { continue };
+            if js.kind != JointKind::Hinge {
+                continue;
+            }
+            let mid = 0.5 * (js.range[0] + js.range[1]);
+            let force = p.motor_torque_per_kg * js.strength * mass;
+            let b = GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES)
+                .local_frame1(js.frame1)
+                .local_frame2(js.frame2)
+                .contacts_enabled(false)
+                .limits(JointAxis::AngX, js.range)
+                .motor_position(JointAxis::AngX, mid, p.motor_stiffness, p.motor_damping)
+                .motor_max_force(JointAxis::AngX, force);
+            let h = if multi {
+                Err(w.multibody_joints.insert(bodies[parent], bodies[k], b.build(), true).unwrap())
+            } else {
+                Ok(w.impulse_joints.insert(bodies[parent], bodies[k], b.build(), true))
+            };
+            handles.push((h, js.range, parent, k));
+        }
+        let mut lines = vec![String::new(); handles.len().min(3)];
+        for step in 0..120 {
+            let high = step < 60;
+            for (h, range, _, _) in &handles {
+                let target = if high { range[1] } else { range[0] };
+                match h {
+                    Ok(h) => {
+                        w.impulse_joints.get_mut(*h, true).unwrap().data.set_motor_position(JointAxis::AngX, target, p.motor_stiffness, p.motor_damping);
+                    }
+                    Err(h) => {
+                        let (mb, link) = w.multibody_joints.get_mut(*h).unwrap();
+                        mb.link_mut(link).unwrap().joint.data.set_motor_position(JointAxis::AngX, target, p.motor_stiffness, p.motor_damping);
+                    }
+                }
+            }
+            w.step();
+            if step % 10 == 9 {
+                for (n, line) in lines.iter_mut().enumerate() {
+                    let (h, range, parent, k) = &handles[n];
+                    let angle = match h {
+                        Ok(h) => {
+                            let j = w.impulse_joints.get(*h).unwrap();
+                            let r1 = *w.bodies.get(bodies[*parent]).unwrap().rotation() * j.data.local_frame1.rotation;
+                            let r2 = *w.bodies.get(bodies[*k]).unwrap().rotation() * j.data.local_frame2.rotation;
+                            let e = r1.inverse() * r2;
+                            2.0 * e.x.atan2(e.w)
+                        }
+                        Err(h) => {
+                            let (mb, link) = w.multibody_joints.get(*h).unwrap();
+                            let j = &mb.link(link).unwrap().joint;
+                            let r1 = *w.bodies.get(bodies[*parent]).unwrap().rotation() * j.data.local_frame1.rotation;
+                            let r2 = *w.bodies.get(bodies[*k]).unwrap().rotation() * j.data.local_frame2.rotation;
+                            let e = r1.inverse() * r2;
+                            2.0 * e.x.atan2(e.w)
+                        }
+                    };
+                    if line.is_empty() {
+                        *line = format!("  hinge {n} range [{:+.2}, {:+.2}]:", range[0], range[1]);
+                    }
+                    *line += &format!(" {angle:+.2}");
+                }
+            }
+        }
+        println!("{} (target high end for 1 s, then low end; angle every 1/6 s):", if multi { "multibody" } else { "impulse" });
+        for l in lines {
+            println!("{l}");
+        }
+    }
+}
+
+/// joint limits, for a few solver settings.
+#[test]
+#[ignore]
+fn multibody_snake_energy() {
+    use rapier3d::prelude::*;
+    use evolve_sim::body::PartShape;
+    let mut g = evolve_sim::genome::Genome::random(&mut evolve_sim::rng::Rng::new(9), &SimParams::default());
+    g.spine.segments = 5;
+    g.spine.swivel = false;
+    for l in &mut g.limbs {
+        l.present = false;
+    }
+    let plan = evolve_sim::body::body_plan(&g);
+    let p = SimParams::default();
+    for (limits, iters, passes, drag) in [(true, 4, 2, 0), (true, 4, 2, 1), (true, 4, 2, 2), (true, 4, 2, 3)] {
+        let mut w = PhysicsWorld::new();
+        w.gravity = Vec3::ZERO;
+        w.integration_parameters.num_solver_iterations = iters;
+        w.integration_parameters.num_internal_pgs_iterations = passes;
+        let root = evolve_sim::math::Pose::from_parts(Vec3::new(0.0, 50.0, 0.0), evolve_sim::math::Quat::IDENTITY);
+        let mut bodies = Vec::new();
+        for spec in &plan {
+            let col = match spec.shape {
+                PartShape::Box { half } => ColliderBuilder::cuboid(half[0], half[1], half[2]),
+                PartShape::Capsule { half_height, radius } => ColliderBuilder::capsule_y(half_height, radius),
+            }
+            .density(p.body_density)
+            .collision_groups(InteractionGroups::none());
+            bodies.push(w.insert(RigidBodyBuilder::dynamic().can_sleep(false).pose(root * spec.rest), col).0);
+        }
+        let mut range0 = [0.0; 2];
+        for (k, spec) in plan.iter().enumerate() {
+            let (Some(parent), Some(js)) = (spec.parent, &spec.joint) else { continue };
+            range0 = js.range;
+            let mut b = GenericJointBuilder::new(JointAxesMask::LOCKED_REVOLUTE_AXES).local_frame1(js.frame1).local_frame2(js.frame2);
+            if limits {
+                b = b.limits(JointAxis::AngX, js.range);
+            }
+            w.multibody_joints.insert(bodies[parent], bodies[k], b.build(), true).unwrap();
+        }
+        {
+            let link = *w.multibody_joints.rigid_body_link(bodies[0]).unwrap();
+            let mb = w.multibody_joints.get_multibody_mut(link.multibody).unwrap();
+            let mut v = mb.generalized_velocity_mut();
+            v[3] = 0.5;
+            v[4] = 1.0;
+            v[5] = 0.3;
+        }
+        let energy = |w: &PhysicsWorld| -> f32 { bodies.iter().map(|b| w.bodies.get(*b).unwrap().kinetic_energy()).sum() };
+        let label = ["no drag", "drag from linvel()", "drag from velocity at COM", "drag, linvel(), as torque-free impulse"][drag];
+        let mut line = format!("limits {limits:<5} {iters}x{passes} {label:<38}:");
+        let _ = range0;
+        for t in 0..=1200 {
+            if t % 240 == 0 {
+                line += &format!(" {:>7.3}", energy(&w));
+            }
+            for &h in &bodies {
+                let b = w.bodies.get_mut(h).unwrap();
+                b.reset_forces(false);
+                let v = match drag {
+                    1 | 3 => b.linvel(),
+                    2 => b.velocity_at_point(b.center_of_mass()),
+                    _ => continue,
+                };
+                let f = -v * v.length() * 2.0;
+                if drag == 3 {
+                    b.apply_impulse(f / 60.0, false);
+                } else {
+                    b.add_force(f, false);
+                }
+            }
+            w.step();
+        }
+        println!("{line}");
+    }
+}
+
+/// The test snake in the sim, zero gravity, muscles off, spun, with sim forces switched off one
+/// at a time: which one adds energy?
+#[test]
+#[ignore]
+fn sim_snake_energy() {
+    use evolve_sim::body;
+    let mut g = evolve_sim::genome::Genome::random(&mut evolve_sim::rng::Rng::new(9), &SimParams::default());
+    g.spine.segments = 5;
+    g.spine.swivel = false;
+    for l in &mut g.limbs {
+        l.present = false;
+    }
+    for case in ["as is", "no wind force", "no air drag", "no wind, no drag", "no spin cap"] {
+        let mut p = SimParams { min_population: 0, weather: false, gravity: 0.0, motor_torque_per_kg: 0.0, ..SimParams::default() };
+        match case {
+            "no wind force" => p.wind_force = 0.0,
+            "no air drag" => p.air_drag = 0.0,
+            "no wind, no drag" => {
+                p.wind_force = 0.0;
+                p.air_drag = 0.0;
+            }
+            "no spin cap" => p.max_body_spin = 1000.0,
+            _ => {}
+        }
+        let mut sim = Sim::new(p);
+        let at = sim.random_land_point(20.0);
+        let id = sim.spawn_creature(g.clone(), at, 40.0, f32::MAX, 0, None);
+        let parts = sim.creature(id).unwrap().parts.clone();
+        {
+            let mb = body::multibody_mut(&mut sim.world, &parts).unwrap();
+            let mut v = mb.generalized_velocity_mut();
+            v[3] = 0.5;
+            v[4] = 1.0;
+            v[5] = 0.3;
+        }
+        let energy = |sim: &Sim| -> f32 { parts.iter().map(|q| sim.world.bodies.get(q.body).unwrap().kinetic_energy()).sum() };
+        let mut line = format!("{case:<18}:");
+        for t in 0..=1200 {
+            if t % 240 == 1 {
+                line += &format!(" {:>7.3}", energy(&sim));
+            }
+            sim.step();
+        }
+        println!("{line}");
+    }
+}

@@ -607,13 +607,22 @@ impl Sim {
     }
 
     fn translate_creature(&mut self, ci: usize, delta: Vec3) {
-        for part in &self.creatures[ci].parts {
+        let parts = &self.creatures[ci].parts;
+        for part in parts {
             if let Some(b) = self.world.bodies.get_mut(part.body) {
                 let t = b.translation();
                 b.set_translation(t + delta, true);
                 b.set_linvel(Vec3::ZERO, true);
                 b.set_angvel(Vec3::ZERO, true);
             }
+        }
+        // A multibody follows its root: re-pose the links from the moved torso, and stop them.
+        if let Some(link) = parts.first().and_then(|p| self.world.multibody_joints.rigid_body_link(p.body)).copied()
+            && let Some(mb) = self.world.multibody_joints.get_multibody_mut(link.multibody)
+        {
+            mb.forward_kinematics(&self.world.bodies, true);
+            mb.update_rigid_bodies(&mut self.world.bodies, false);
+            mb.generalized_velocity_mut().fill(0.0);
         }
         self.creatures[ci].last_pos += delta;
     }
@@ -959,11 +968,21 @@ impl Sim {
         // Air drag, 1/2 rho Cd v^2 per m^2 facing the wind (rho 1.2, Cd 1).
         let wind_push = 0.6 * p.wind_force * DT;
         let mut splashes = Vec::new();
+        // Everything here is a force for this step only. (Forces, not impulses: a creature's
+        // parts form a multibody, which keeps no velocity set on a part directly.)
+        for o in &self.obstacles {
+            if let Some(b) = self.world.bodies.get_mut(o.body) {
+                b.reset_forces(false);
+                b.reset_torques(false);
+            }
+        }
         for c in &mut self.creatures {
             for (k, part) in c.parts.iter().enumerate() {
                 let Some(b) = self.world.bodies.get_mut(part.body) else {
                     continue;
                 };
+                b.reset_forces(false);
+                b.reset_torques(false);
                 let shape = c.plan[k].shape;
                 let pos = b.translation();
                 let vr = shape.vertical_radius().max(0.02);
@@ -981,14 +1000,14 @@ impl Sim {
                     let rel = Vec3::new(rel.x, 0.0, rel.z);
                     let a = shape.areas();
                     let area = (a[0] + a[1] + a[2]) / 3.0;
-                    b.apply_impulse(rel * rel.length() * (wind_push * area * (1.0 - frac)), false);
+                    b.add_force(rel * rel.length() * (wind_push * area * (1.0 - frac)) / DT, false);
                 }
                 if frac <= 0.0 {
                     continue;
                 }
                 let mass = b.mass().max(1e-3);
                 let buoy = p.water_density * shape.volume() * frac * g * DT;
-                b.apply_impulse(Vec3::Y * buoy, false);
+                b.add_force(Vec3::Y * buoy / DT, false);
                 // Drag at two points along the part's long axis, so a limb sweeping about its
                 // joint feels more push at its fast-moving end.
                 let pose = *b.position();
@@ -1013,11 +1032,11 @@ impl Sim {
                         let damp = (coeff * areas[axis] * 0.5 * frac * DT / mass).min(0.45);
                         imp[axis] = -mass * damp * v;
                     }
-                    b.apply_impulse_at_point(rot * imp, at, false);
+                    b.add_force_at_point(rot * imp / DT, at, false);
                 }
                 let ang_damp = (p.water_drag / 400.0 * 3.0 * frac * DT).min(0.5);
                 let w = b.angvel();
-                b.set_angvel(w * (1.0 - ang_damp), false);
+                b.add_torque(-w * (spin_inertia(b) * ang_damp / DT), false);
             }
         }
         for (id, at) in splashes {
@@ -1039,14 +1058,14 @@ impl Sim {
                 if force.length() > max {
                     force = force.normalize() * max;
                 }
-                b.apply_impulse_at_point(force * DT, anchor, true);
+                b.add_force_at_point(force, anchor, true);
             }
             // Calm the rest of a dangling creature so it doesn't spin like a flail.
             if let Some(&i) = grab.creature.and_then(|id| self.index.get(&id)) {
                 for part in &self.creatures[i].parts {
                     if let Some(b) = self.world.bodies.get_mut(part.body) {
                         let w = b.angvel();
-                        b.set_angvel(w * 0.97, false);
+                        b.add_torque(-w * (spin_inertia(b) * 0.03 / DT), false);
                     }
                 }
             }
@@ -1061,9 +1080,6 @@ impl Sim {
         let terrain = &self.terrain;
         let rain = self.weather.rain;
         let wl = p.water_level;
-        // Rapier splits each step into this many substeps but reports only the last one's motor
-        // impulses, so the work it shows is this much short of the step's.
-        let substeps = self.world.integration_parameters.num_solver_iterations.max(1) as f32;
         let mut drowned = Vec::new();
         let mut impacts = Vec::new();
         for c in &mut self.creatures {
@@ -1072,25 +1088,16 @@ impl Sim {
             }
             let mut work = 0.0;
             for j in &c.joints {
-                if let (Some((_, omega)), Some(joint)) = (
-                    body::joint_state(&self.world, &c.parts, j),
-                    self.world.impulse_joints.get(j.handle),
-                ) {
-                    // The motors' own impulses, indexed by axis (lin x, y, z, then ang x, y, z).
-                    // Not `joint.impulses`: that holds the locked axes', which do no work.
-                    let m = &joint.data.motors;
-                    work += match j.kind {
-                        body::JointKind::Hinge => (m[3].impulse * omega[0]).abs(),
-                        body::JointKind::Swivel => {
-                            ((m[4].impulse * omega[0]).abs() + (m[5].impulse * omega[1]).abs()) * p.swivel_energy_cost
-                        }
-                    };
-                }
+                let w = body::muscle_work(&self.world, &c.parts, j, DT);
+                work += match j.kind {
+                    body::JointKind::Hinge => w,
+                    body::JointKind::Swivel => w * p.swivel_energy_cost,
+                };
             }
-            let work = work * substeps;
             c.energy -= work * p.motor_energy_cost;
 
             let mut bad = false;
+            let mut slow = 1.0f32;
             c.fall.resize(c.parts.len(), 0.0);
             for (k, part) in c.parts.iter().enumerate() {
                 let Some(b) = self.world.bodies.get_mut(part.body) else {
@@ -1117,16 +1124,28 @@ impl Sim {
                     bad = true;
                     continue;
                 }
-                if v.length() > max_v {
-                    b.set_linvel(v.normalize() * max_v, false);
-                }
-                if w.length() > max_w {
-                    b.set_angvel(w.normalize() * max_w, false);
-                }
+                slow = slow.min(max_v / v.length().max(1e-6)).min(max_w / w.length().max(1e-6));
             }
             if bad {
                 c.dead = Some(DeathCause::Glitch);
                 continue;
+            }
+            // Over the speed or spin cap: the whole creature slows together (its joints stay
+            // together; slowing one part alone would wrench them).
+            if slow < 1.0 {
+                match body::multibody_mut(&mut self.world, &c.parts) {
+                    Some(mb) => {
+                        let mut v = mb.generalized_velocity_mut();
+                        v *= slow;
+                    }
+                    None => {
+                        if let Some(b) = self.world.bodies.get_mut(c.parts[0].body) {
+                            let (v, w) = (b.linvel(), b.angvel());
+                            b.set_linvel(v * slow, false);
+                            b.set_angvel(w * slow, false);
+                        }
+                    }
+                }
             }
             let torso = &self.world.bodies[c.parts[0].body];
             let pos = torso.translation();
@@ -1360,7 +1379,7 @@ impl Sim {
             if self.selected == Some(c.id) {
                 self.selected = None;
             }
-            body::remove_body(&mut self.world, &c.parts);
+            body::remove_body(&mut self.world, &c.parts, &c.joints);
             if let Some(g) = self.brains.as_mut() {
                 g.unregister(c.id);
             }
@@ -1473,4 +1492,11 @@ pub fn obstacle_lift(shape: ObstacleShape) -> f32 {
         ObstacleShape::Box { half } => half[1] * 0.85,
         ObstacleShape::Ball { radius } => radius * 0.8,
     }
+}
+
+/// A body's typical moment of inertia (the mean about its principal axes), kg·m², for damping
+/// its spin with a torque.
+fn spin_inertia(b: &rapier3d::prelude::RigidBody) -> f32 {
+    let i = b.mass_properties().local_mprops.principal_inertia();
+    (i.x + i.y + i.z) / 3.0
 }
