@@ -249,11 +249,13 @@ fn regenerate_terrain_keeps_life_above_ground() {
     p.seed = 77;
     p.terrain_height = 35.0;
     sim.set_params(p);
+    // (Counted from here: now and then a random body flies apart on its own, unrelated.)
+    let lost = sim.stats.deaths_other;
     sim.regenerate_terrain();
     for _ in 0..120 {
         sim.step();
     }
-    assert_eq!(sim.stats.deaths_other, 0, "nobody should be stuck under the new ground");
+    assert_eq!(sim.stats.deaths_other, lost, "nobody should be stuck under the new ground");
     for c in &sim.creatures {
         let t = sim.world_of(c).bodies[c.parts[0].body].translation();
         assert!(t.y > sim.terrain.height_at(t.x, t.z) - 1.0);

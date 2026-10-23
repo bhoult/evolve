@@ -161,7 +161,9 @@ first) and the time of day.
     is turned on, and caution about being fed enough is forgotten. Each child still has to be
     paid for, so love can't make energy from nothing.
   - *War*: the urge to bite is turned on, and each is drawn toward the nearest other creature.
-  - *Fear*: it hurts, it feels bad (so creatures learn to keep away), and they're driven off.
+  - *Fear*: it hurts and it feels bad, creatures sense where it stands, and every step away from
+    it is a relief (a reward, so they learn to run). It doesn't move them: whether they get away
+    is up to their own legs.
   - Totems are carved poles with a glowing head (pink, red or violet), what they stir drifting
     round it, and their reach marked by a faint ring on the ground. Saves keep them.
 
@@ -307,7 +309,7 @@ of them and costs about as much as resting metabolism, so a big brain has to pay
 On 2026-10-22 every brain was doubled. Genomes from before that (in the zoo, the gene pool or an
 older save) double their neurons once as they come into a world; the new neurons are wired in
 weakly, so what the brain already does carries over.
-- *Senses (132):*
+- *Senses (135):*
   - the rhythm, energy, health, oxygen, thirst and age;
   - a mating drive: an urge that builds while the creature is mature, past its cooldown and fed
     enough to breed (over `mate_drive_time`, faster with a high libido gene), fades when it goes
@@ -321,6 +323,7 @@ weakly, so what the brain already does carries over.
   - the direction of the nearest potential mate (mature and close enough genetically);
   - the direction and closeness of the nearest loose stone it could lift, and whether it holds
     something in its mouth;
+  - the direction and closeness of the nearest totem of fear in reach;
   - three obstacle rays, pain, how submerged it is, and three memory values;
   - every joint angle (82 channels, most of them unused by any one body).
 - *Actions (94):* a target angle for every joint axis (82 channels), eat, attack, mate, call

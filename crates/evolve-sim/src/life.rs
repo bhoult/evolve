@@ -908,7 +908,18 @@ fn approach_reward(c: &mut Creature, x: &[f32; N_IN]) {
         last[k] = close[k];
     }
     c.brain.reward += SEEK_REWARD * c.genome.traits.seek * felt;
+    // Getting farther from a totem of fear is a relief, and closing on it a dread, whatever the
+    // creature's own leanings: so it wants to run.
+    let dread = x[DREAD + 2];
+    let change = dread - c.brain.dread;
+    if change.abs() < 0.05 {
+        c.brain.reward -= DREAD_REWARD * change;
+    }
+    c.brain.dread = dread;
 }
+
+/// Reward per unit of closeness to a totem of fear given up (a full 16 m run from its foot).
+const DREAD_REWARD: f32 = 20.0;
 
 const WATER_SENSE_RANGE: f32 = 24.0;
 
@@ -1002,6 +1013,24 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
         put_dir(&mut x, STONE, cx.stone_at[k as usize].0);
     }
     x[HOLDING] = if c.held.is_some() { 1.0 } else { 0.0 };
+    // Where the nearest totem of fear stands, felt more strongly the nearer it is.
+    let reach = crate::acts::TOTEM_REACH;
+    let dread = sim
+        .acts
+        .totems
+        .iter()
+        .filter(|t| t.kind == crate::acts::TotemKind::Fear)
+        .map(|t| Vec3::new(t.x, pos.y, t.z))
+        .map(|at| (at, (at.x - pos.x).hypot(at.z - pos.z)))
+        .filter(|&(_, d)| d < reach)
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((at, d)) = dread {
+        let rel = at - pos;
+        let d = d.max(1e-3);
+        x[DREAD] = rel.dot(fwd) / d;
+        x[DREAD + 1] = rel.dot(side) / d;
+        x[DREAD + 2] = 1.0 - d / reach;
+    }
     let mut mate: Option<(usize, f32)> = None;
     cx.creatures.for_each_near(pos, r, |k| {
         let k = k as usize;

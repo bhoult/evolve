@@ -116,7 +116,7 @@ pub struct Creature {
     /// What nearby totems stir in it, 0..1: love, war, fear (see `acts`).
     #[serde(skip)]
     pub urge: [f32; 3],
-    /// Where the totems drive it, as an acceleration (m/s²): toward a fight, or away in fear.
+    /// Where a totem of war drives it, as an acceleration (m/s²): toward a fight.
     #[serde(skip)]
     pub urge_push: Vec3,
     /// What it holds in its mouth (see `carry`).
@@ -1386,7 +1386,7 @@ impl Sim {
                     let m = b.mass();
                     b.add_force(dv * m / DT, true);
                 }
-                // Totems drive it: into a fight, or away in fear.
+                // A totem of war drives it into a fight.
                 if c.urge_push != Vec3::ZERO {
                     let m = b.mass();
                     b.add_force(c.urge_push * m, true);

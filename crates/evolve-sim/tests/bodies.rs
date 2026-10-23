@@ -281,7 +281,9 @@ fn check_upgrade(n_in: usize, n_out: usize, map_in: impl Fn(usize) -> usize, map
         let new = st.outputs[map_out(k)];
         assert!((old - new).abs() < 1e-4, "{n_in}-input brain, output {k}: old {old}, upgraded {new}");
     }
-    assert!(st.outputs[output::DIG] < 0.2 && st.outputs[output::PILE] < 0.2, "upgraded creatures don't dig");
+    if n_out <= 90 {
+        assert!(st.outputs[output::DIG] < 0.2 && st.outputs[output::PILE] < 0.2, "upgraded creatures don't dig");
+    }
     if n_in < 127 {
         assert!(st.outputs[output::CALL] < 0.2, "upgraded creatures start silent");
     }
@@ -333,6 +335,18 @@ fn brains_from_before_the_mating_drive_and_voices_upgrade_without_changing_behav
             _ => input::JOINTS + i - 46,
         },
         |k| if k < 89 { k } else { output::MEMORY + k - 89 },
+    );
+    // Before the sense of dread: holding at 46, then memories and joint angles; the actions as
+    // they are now.
+    check_upgrade(
+        132,
+        94,
+        |i| match i {
+            0..47 => i,
+            47..50 => input::MEMORY + i - 47,
+            _ => input::JOINTS + i - 50,
+        },
+        |k| k,
     );
 }
 
@@ -728,7 +742,8 @@ fn totems_make_creatures_breed_fight_and_flee() {
     assert!(bites > 0, "by a totem of war they bite");
     sim.apply(Command::Totem { at: war.to_array(), kind: TotemKind::War });
 
-    // Fear: one by the totem is driven off.
+    // Fear only makes creatures want to run: a block, which can't move itself, stays where it
+    // is, but it hurts by the totem and senses where it stands (getting away would be a relief).
     let fear = sim.random_land_point(40.0);
     let e = sim.spawn_creature(base(21), fear + Vec3::new(3.0, 0.0, 0.0), 0.3, f32::MAX, 0, None);
     run(&mut sim, 2);
@@ -739,7 +754,15 @@ fn totems_make_creatures_breed_fight_and_flee() {
     };
     let before = dist(&sim);
     run(&mut sim, 10);
-    assert!(dist(&sim) > before + 3.0, "a totem of fear drives it away: {before:.1} -> {:.1} m", dist(&sim));
+    assert!(dist(&sim) < before + 0.5, "a totem of fear doesn't drive it off: {before:.1} -> {:.1} m", dist(&sim));
+    let c = sim.creature(e).unwrap();
+    assert_eq!(c.urge_push, Vec3::ZERO, "nor pushes it at all");
+    let x = &c.brain.inputs;
+    assert!(c.pain > 0.5, "it hurts: {}", c.pain);
+    assert!(x[input::DREAD + 2] > 0.7, "it senses the totem close by: {}", x[input::DREAD + 2]);
+    let toward = x[input::DREAD].hypot(x[input::DREAD + 1]);
+    assert!((toward - 1.0).abs() < 0.01, "and which way it is: {toward}");
+    assert!((c.brain.dread - x[input::DREAD + 2]).abs() < 0.05, "and keeps how close it was, for the relief of getting away");
 }
 
 #[test]

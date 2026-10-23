@@ -108,7 +108,7 @@ impl Tool {
             Tool::Landfall => "Click to drop a chunk of land from the sky there: a hill rises where it lands (out of the sea, new land), crushing what's under it.",
             Tool::Manna => "Click to let food fall from heaven there: a ring of full-grown plants.",
             Tool::Tsunami => "Click a shore and a great wave rolls in from the open sea beyond it, across the island: it floods the low ground, carries creatures off, holds them under, and sweeps away the plants it covers.",
-            Tool::Totem => "Click to raise a totem (love, war or fear: pick beside the tools); within 16 m it drives creatures to breed, to fight, or to run. Click a totem to take it down.",
+            Tool::Totem => "Click to raise a totem (love, war or fear: pick beside the tools); within 16 m it drives creatures to breed, to fight, or makes them want to run. Click a totem to take it down.",
         }
     }
 }

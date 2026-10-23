@@ -213,7 +213,8 @@ impl Sim {
     /// What the totems stir in each creature, each brain tick. Love fills the mating drive,
     /// cuts the wait between matings and turns the urge to mate on (breeding still has to pay
     /// for each child); war turns the urge to bite on and draws it toward the nearest other
-    /// creature; fear hurts, feels bad, and drives it away from the totem.
+    /// creature; fear hurts and feels bad, and getting away from it is a relief (see
+    /// `life::approach_reward`), so creatures want to run: it doesn't move them itself.
     pub(crate) fn totem_urges(&mut self) {
         if self.acts.totems.is_empty() {
             for c in &mut self.creatures {
@@ -233,25 +234,20 @@ impl Sim {
         for (i, c) in self.creatures.iter_mut().enumerate() {
             let p = torso[i];
             let mut urge = [0.0f32; 3];
-            let mut away = Vec3::ZERO;
             for t in totems {
-                let off = Vec3::new(p.x - t.x, 0.0, p.z - t.z);
-                let f = ((TOTEM_REACH - off.length()) / (0.5 * TOTEM_REACH)).clamp(0.0, 1.0);
+                let f = ((TOTEM_REACH - (p.x - t.x).hypot(p.z - t.z)) / (0.5 * TOTEM_REACH)).clamp(0.0, 1.0);
                 let k = t.kind as usize;
                 urge[k] = urge[k].max(f);
-                if t.kind == TotemKind::Fear {
-                    away += off.normalize_or(Vec3::X) * f;
-                }
             }
-            // Strong enough to drive even a body that can't move itself off over flat ground
-            // (more than its friction holds it with).
-            let mut push = away.normalize_or_zero() * (12.0 * urge[2]);
-            if urge[1] > 0.0 {
-                // The nearest other creature within reach, to go at.
-                if let Some((j, _)) = everyone.as_ref().and_then(|g| g.nearest(p, 12.0, |j| torso[j as usize], |j| j as usize != i)) {
-                    let q = torso[j as usize];
-                    push += Vec3::new(q.x - p.x, 0.0, q.z - p.z).normalize_or_zero() * (10.0 * urge[1]);
-                }
+            // A totem of war sends it at the nearest other creature within reach, strongly enough
+            // to drive even a body that can't move itself over flat ground (more than its
+            // friction holds it with).
+            let mut push = Vec3::ZERO;
+            if urge[1] > 0.0
+                && let Some((j, _)) = everyone.as_ref().and_then(|g| g.nearest(p, 12.0, |j| torso[j as usize], |j| j as usize != i))
+            {
+                let q = torso[j as usize];
+                push = Vec3::new(q.x - p.x, 0.0, q.z - p.z).normalize_or_zero() * (10.0 * urge[1]);
             }
             if urge[0] > 0.0 {
                 c.mate_drive = c.mate_drive.max(urge[0]);

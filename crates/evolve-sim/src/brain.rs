@@ -109,7 +109,9 @@ pub mod input {
     pub const STONE: usize = 43;
     /// Whether it's holding something in its mouth (a stone, a boulder, a plant, meat), 0 or 1.
     pub const HOLDING: usize = 46;
-    pub const MEMORY: usize = 47;
+    /// The nearest totem of fear in reach: forward, sideways, closeness.
+    pub const DREAD: usize = 47;
+    pub const MEMORY: usize = 50;
     pub const JOINTS: usize = MEMORY + N_MEMORY;
     pub const COUNT: usize = JOINTS + N_MOTORS;
 }
@@ -147,7 +149,7 @@ pub fn input_label(i: usize) -> String {
         "other size", "other aggro", "ray left", "ray mid", "ray right", "pain", "in water",
         "mate fwd", "mate side", "mate near", "hydration", "water fwd", "water side", "water near",
         "mating drive", "hear fwd", "hear side", "hear loud", "hear pitch", "hear kin", "soil carried",
-        "stone fwd", "stone side", "stone near", "holding",
+        "stone fwd", "stone side", "stone near", "holding", "dread fwd", "dread side", "dread near",
     ];
     if i < fixed.len() {
         fixed[i].to_string()
@@ -408,6 +410,7 @@ impl BrainGenes {
     /// - 122 inputs, 88 outputs: before calls and hearing.
     /// - 127 inputs, 90 outputs: before digging.
     /// - 128 inputs, 92 outputs: before carrying (the stone and holding senses, grip and throw).
+    /// - 132 inputs, 94 outputs: before the sense of dread (where a totem of fear stands).
     pub fn upgrade_io(&mut self, rng: &mut Rng) -> bool {
         let h = self.h;
         let (n_in, n_out) = (self.w_in.0.len() / h.max(1), self.b_out.len());
@@ -477,6 +480,16 @@ impl BrainGenes {
                     }),
                     false,
                 ),
+                // Before the sense of dread.
+                (132, 94) => (
+                    Box::new(|i| match i {
+                        0..47 => i,
+                        _ if i < 47 + N_MEMORY => input::MEMORY + i - 47,
+                        _ => input::JOINTS + i - 47 - N_MEMORY,
+                    }),
+                    Box::new(|k| k),
+                    false,
+                ),
                 _ => return false,
             };
         let sigma_in = 1.5 / TYPICAL_INPUTS.sqrt();
@@ -510,6 +523,7 @@ impl BrainGenes {
         // Silent and idle until evolution finds a use for a voice, a spade or a grip: each action
         // the old brain didn't have starts switched off.
         let new_actions: &[usize] = match n_out {
+            94 => &[],
             92 => &[output::GRIP, output::THROW],
             90 => &[output::DIG, output::PILE, output::GRIP, output::THROW],
             _ => &[output::CALL, output::CALL_PITCH, output::DIG, output::PILE, output::GRIP, output::THROW],
@@ -640,6 +654,9 @@ pub struct BrainState {
     /// How close the nearest food, water and mate were last tick, for the approach reward.
     #[serde(default)]
     pub closeness: [f32; 3],
+    /// How close a totem of fear was last tick, for the relief of getting away from it.
+    #[serde(default)]
+    pub dread: f32,
 }
 
 impl BrainState {
@@ -655,6 +672,7 @@ impl BrainState {
             noise: vec![0.0; N_OUT],
             baseline: 0.0,
             closeness: [0.0; 3],
+            dread: 0.0,
         }
     }
 
