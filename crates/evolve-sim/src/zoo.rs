@@ -42,11 +42,12 @@ pub struct ZooMeta {
     pub score_version: u32,
 }
 
-/// 2: as 1, earned with children's bodies paid for. 1 (2026-10-22) was earned while a child's
-/// body was free and its carcass still left meat, which heaps of meat-eaters living on their own
-/// dead exploited. 0 (before 2026-10-22) counted 4 points per child however little it was given,
-/// which tiny do-nothing breeders exploited.
-pub const SCORE_VERSION: u32 = 2;
+/// 3: as 2, earned with servo motors (2026-10-23), whose limbs can push the body; before, a
+/// planted leg could barely push, so limbless bodies won. 2: earned with children's bodies paid
+/// for. 1 (2026-10-22) was earned while a child's body was free and its carcass still left meat,
+/// which heaps of meat-eaters living on their own dead exploited. 0 (before 2026-10-22) counted 4
+/// points per child however little it was given, which tiny do-nothing breeders exploited.
+pub const SCORE_VERSION: u32 = 3;
 
 pub type SharedZoo = Arc<Mutex<Zoo>>;
 
@@ -387,14 +388,16 @@ pub fn load_genome(dir: &Path, id: u64) -> Result<Genome, String> {
 /// Starts a fresh world off with creatures from the zoo: `zoo_seed_fraction` of its minimum
 /// population, as pairs of copies of randomly chosen zoo creatures (so each pair can breed),
 /// and the same genomes in its gene pool so creatures falling from the sky come from them too.
-/// The rest of the population rains down at random as usual.
+/// Only creatures scored under today's rules are chosen: ones that won under older rules (free
+/// children, limbs that couldn't push) would only bring back what those rules rewarded. The rest
+/// of the population rains down at random as usual.
 pub fn seed_world(zoo: &SharedZoo, sim: &mut crate::Sim) {
     let want = (sim.params.min_population as f32 * sim.params.zoo_seed_fraction).round() as usize;
     if want == 0 {
         return;
     }
     let (dir, ids): (PathBuf, Vec<u64>) = match zoo.lock() {
-        Ok(z) => (z.dir.clone(), z.entries.iter().map(|e| e.id).collect()),
+        Ok(z) => (z.dir.clone(), z.entries.iter().filter(|e| e.score_version == SCORE_VERSION).map(|e| e.id).collect()),
         Err(_) => return,
     };
     if ids.is_empty() {

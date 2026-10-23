@@ -221,8 +221,11 @@ that appears in a world, each copy is a slightly mutated variant (a child of the
 Drop 5 or 10 at once if you want them to breed: they're close enough kin to mate. Load another world
 and its zoo is still there. A new world starts with `zoo_seed_fraction` (70%) of its population
 from the zoo, in pairs of copies of randomly chosen creatures so they can breed, and with the
-same genomes in its gene pool. The rest are random. Zoo scores worked out before the scoring
-change are marked with a * and listed after newer ones. When the zoo is full (500), those go
+same genomes in its gene pool. The rest are random. Only creatures scored under today's rules
+seed a world (until there are some, it starts all random): those that won under older rules
+(free children, limbs that couldn't push) would only bring back what those rules rewarded. You
+can still drop any of them by hand. Zoo scores worked out under older rules are marked with a *
+and listed after newer ones. When the zoo is full (500), those go
 first, then the weakest; pinned ones never.
 - Pruned and removed creatures go to `zoo/trash` (the newest 500 are kept there), not deleted.
 - Only one evolve at a time can change the zoo. A second one (another window, or
@@ -360,6 +363,8 @@ weakly, so what the brain already does carries over.
 - *Strength:* each joint's motor is a servo. It holds the angle the brain asks for against any
   load up to its strength, `motor_torque_per_kg` (6) N·m per kg of body times the limb's strength
   gene, and pushes with all of it once the joint is forced `motor_reach` (0.2 rad) off target.
+  It's damped at twice critical for the limb it swings (`motor_damping_ratio`): at once critical,
+  some bodies with several swivels in a row shook themselves apart (a limb at 1,700 m/s).
   - *Why servos:* until 2026-10-23 the motors were rapier's default kind, whose spring scales with
     the inertia of the limb it swings. A light leg planted on the ground could push with only a
     sliver of its strength, however strong, so creatures flapped their limbs without moving

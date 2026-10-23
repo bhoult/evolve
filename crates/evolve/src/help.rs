@@ -810,7 +810,7 @@ fn worlds(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "A new world starts with {} of its creatures from the zoo (zoo_seed_fraction), in pairs so they can breed.",
+            "A new world starts with {} of its creatures from the zoo (zoo_seed_fraction), in pairs so they can breed, choosing only creatures scored under today's rules.",
             pct(p.zoo_seed_fraction)
         ),
     );

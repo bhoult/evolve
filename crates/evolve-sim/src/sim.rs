@@ -1431,7 +1431,7 @@ impl Sim {
                 // A tsunami's water rushes on with it: drag is against the moving water, so it
                 // carries what it covers.
                 let flow = match (&self.acts.tsunami, wave) {
-                    (Some(t), Some(_)) => Vec3::new(t.dir[0], 0.0, t.dir[1]) * (0.8 * crate::acts::TSUNAMI_SPEED),
+                    (Some(t), Some(_)) => Vec3::new(t.dir[0], 0.0, t.dir[1]) * crate::acts::TSUNAMI_SPEED,
                     _ => Vec3::ZERO,
                 };
                 // Drag at two points along the part's long axis, so a limb sweeping about its

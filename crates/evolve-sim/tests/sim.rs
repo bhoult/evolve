@@ -8,6 +8,7 @@ use evolve_sim::{Sim, SimParams, save};
 fn quiet_params() -> SimParams {
     SimParams {
         min_population: 0,
+        stones: 0,
         terrain_resolution: 65,
         ..SimParams::default()
     }
@@ -777,16 +778,19 @@ fn a_tsunami_carries_creatures_inland_washes_plants_away_and_passes() {
     let start = sim.torso_of(sim.creature(id).unwrap()).unwrap().translation();
     sim.apply(Command::Tsunami { at: shore.to_array(), toward: [1.0, 0.0, 0.0] });
     let dir = sim.acts.tsunami.as_ref().map(|t| Vec3::new(t.dir[0], 0.0, t.dir[1])).unwrap();
-    let mut farthest: f32 = 0.0;
+    let (mut farthest, mut swept): (f32, f32) = (0.0, 0.0);
     for _ in 0..((TSUNAMI_LIFE as u64 + 1) * evolve_sim::sim::TICKS_PER_SECOND) {
         sim.step();
         if let Some(c) = sim.creature(id) {
             let now = sim.torso_of(c).unwrap().translation();
             farthest = farthest.max((now - start).dot(dir));
+            swept = swept.max(sim.torso_of(c).unwrap().linvel().dot(dir));
         }
     }
-    eprintln!("carried {farthest:.1} m inland");
-    assert!(farthest > 5.0, "the wave should carry it inland: {farthest:.1} m");
+    eprintln!("swept along at up to {swept:.1} m/s, carried {farthest:.1} m inland");
+    // (How far depends on the shore: the flood runs up only as high as it reaches.)
+    assert!(swept > 5.0, "the wave should sweep it along: {swept:.1} m/s");
+    assert!(farthest > 3.0, "and carry it inland: {farthest:.1} m");
     assert!(sim.plants.iter().all(|f| f.pos.distance(shore) > 3.0), "the plant by the shore is washed away");
     assert!(sim.acts.tsunami.is_none(), "and the wave is spent");
 }

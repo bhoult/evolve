@@ -223,7 +223,8 @@ const WAVE_SPAN: f32 = 420.0;
 fn wave_mesh() -> Mesh {
     use evolve_sim::acts::{TSUNAMI_HEIGHT, tsunami_profile};
     let cols = 140;
-    let rows: Vec<f32> = (0..=24).map(|k| -40.0 + 46.0 * (k as f32 / 24.0).powf(0.8)).collect();
+    let back = evolve_sim::acts::TSUNAMI_BACK;
+    let rows: Vec<f32> = (0..=30).map(|k| -back + (back + 6.0) * (k as f32 / 30.0).powf(0.7)).collect();
     let (mut positions, mut normals, mut colors, mut indices) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for &q in &rows {
         let h = TSUNAMI_HEIGHT * tsunami_profile(q);

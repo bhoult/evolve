@@ -127,15 +127,19 @@ impl Tsunami {
     }
 }
 
+/// How far behind its crest a tsunami's flood reaches, m.
+pub const TSUNAMI_BACK: f32 = 80.0;
+
 /// The wave's shape, 0..1, `q` m ahead of (positive) or behind (negative) its crest: a steep face
-/// 6 m long, then the water behind it, falling slowly back over 40 m.
+/// 6 m long, then the flood behind it, falling slowly back over 80 m (water keeps pouring in for
+/// several seconds after the crest has passed).
 pub fn tsunami_profile(q: f32) -> f32 {
-    if !(-40.0..=6.0).contains(&q) {
+    if !(-TSUNAMI_BACK..=6.0).contains(&q) {
         0.0
     } else if q >= 0.0 {
         (1.0 - q / 6.0).powf(0.6)
     } else {
-        (0.35 + 0.65 * (q / 8.0).exp()) * ((q + 40.0) / 10.0).min(1.0)
+        (0.35 + 0.65 * (q / 8.0).exp()) * ((q + TSUNAMI_BACK) / 20.0).min(1.0)
     }
 }
 

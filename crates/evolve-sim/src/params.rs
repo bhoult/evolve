@@ -163,9 +163,10 @@ params! {
         /// pushes back with full strength, radians. The motors are servos: they hold the angle
         /// against whatever load (a limb on the ground lifting the body) up to their strength.
         motor_reach: f32 = 0.2, [0.02, 2], Live;
-        /// Damping of the joint motors, as a fraction of critical damping for the limb they
-        /// swing: 1 settles on the target without overshooting, less springs past it.
-        motor_damping_ratio: f32 = 1.0, [0, 5], Live;
+        /// Damping of the joint motors, as a multiple of critical damping for the limb they swing
+        /// (reckoned from the limb alone; chains of joints need more than 1 to stay steady: at 1
+        /// some bodies with several swivels in a row shook themselves apart).
+        motor_damping_ratio: f32 = 2.0, [0, 5], Live;
         /// Maximum motor torque per kg of creature mass (scaled by each limb's strength gene).
         motor_torque_per_kg: f32 = 6.0, [0, 30], Live;
         /// Fastest a joint can swing, rad/s, for a limb segment half a meter long; longer

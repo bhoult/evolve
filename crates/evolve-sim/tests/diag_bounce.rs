@@ -1073,3 +1073,45 @@ fn spring_beside_a_crack() {
         .collect();
     println!("pond rim heights: {}  (pond surface {:.1})", rim.join(" "), tr.height_at(at.x, at.z) + tr.water_at(at.x, at.z));
 }
+
+/// Which creature and part spike in speed in the stability test's world, and what its body is.
+#[test]
+#[ignore]
+fn speed_spike() {
+    use evolve_sim::genome::Genome;
+    use evolve_sim::rng::Rng;
+    let p = SimParams { min_population: 0, terrain_resolution: 65, stones: 0, weather: true, physics_shards: 12, ..params() };
+    let seed: u64 = std::env::var("EVOLVE_DIAG_SEED").ok().and_then(|s| s.parse().ok()).unwrap_or(99);
+    let mut sim = Sim::new(SimParams { seed, ..p });
+    let mut rng = Rng::new(seed);
+    for _ in 0..60 {
+        let g = Genome::random(&mut rng, &SimParams::default());
+        let at = sim.random_land_point(10.0);
+        sim.spawn_creature(g, at, 0.5, f32::MAX, 0, None);
+    }
+    for step in 0..(60 * 60) {
+        sim.step();
+        for c in &sim.creatures {
+            for (k, q) in c.parts.iter().enumerate() {
+                let b = &sim.world_of(c).bodies[q.body];
+                let v = b.linvel().length();
+                if v > 40.0 {
+                    let kinds: Vec<String> = c.joints.iter().map(|j| format!("{:?}", j.kind)).collect();
+                    println!(
+                        "step {step}: creature #{} part {k}/{} at {v:.0} m/s, mass {:.0} kg, part mass {:.2} kg, shape {:?}, joints {:?}, held {:?}, in water {:.2}",
+                        c.id,
+                        c.parts.len(),
+                        c.mass,
+                        b.mass(),
+                        c.plan[k].shape,
+                        kinds,
+                        c.held,
+                        c.in_water
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    println!("no spike");
+}
