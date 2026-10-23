@@ -26,6 +26,8 @@ pub struct OrbitCam {
     pub follow: bool,
     /// How fast the focus is moving while following a creature (see `spring`).
     pub follow_vel: Vec3,
+    /// How hard the view is shaking (a meteor strike nearby), m; it dies away by itself.
+    pub shake: f32,
 }
 
 impl Default for OrbitCam {
@@ -37,6 +39,7 @@ impl Default for OrbitCam {
             distance: 150.0,
             follow: false,
             follow_vel: Vec3::ZERO,
+            shake: 0.0,
         }
     }
 }
@@ -67,6 +70,7 @@ fn spawn_camera(mut commands: Commands, args: Res<Args>, mut cam: ResMut<OrbitCa
             distance: d,
             follow: false,
             follow_vel: Vec3::ZERO,
+            shake: 0.0,
         };
     }
     // HDR so the sun, lightning and highlights can bloom; env.rs drives the fog every frame.
@@ -212,6 +216,7 @@ pub fn spring(pos: &mut Vec3, vel: &mut Vec3, target: Vec3, omega: f32, dt: f32)
 pub fn apply_camera(
     snap: Res<Snap>,
     env: Res<crate::env::Env>,
+    time: Res<Time>,
     mut cam: ResMut<OrbitCam>,
     mut tf: Single<&mut Transform, With<MainCamera>>,
 ) {
@@ -238,5 +243,14 @@ pub fn apply_camera(
     }
     // Stay above the highest crests the waves can make.
     pos.y = pos.y.max(snap.0.params.water_level + 0.6 + env.wave_crest);
-    **tf = Transform::from_translation(pos).looking_at(cam.focus, Vec3::Y);
+    // A shake jolts the eye more than what it looks at, so the view jars rather than slides.
+    let mut focus = cam.focus;
+    if cam.shake > 0.001 {
+        let t = time.elapsed_secs();
+        let jolt = Vec3::new((t * 53.0).sin(), (t * 67.0 + 1.0).sin(), (t * 71.0 + 2.0).sin()) * cam.shake;
+        pos += jolt;
+        focus += jolt * 0.3;
+        cam.shake *= (-time.delta_secs() * 3.5).exp();
+    }
+    **tf = Transform::from_translation(pos).looking_at(focus, Vec3::Y);
 }

@@ -197,9 +197,9 @@ fn controls(ui: &mut egui::Ui) {
     bullet(ui, "Right-drag orbits, middle-drag pans, scroll zooms.");
     bullet(ui, "WASD moves, Q and E turn.");
     bullet(ui, "F follows the selected creature (and opens its brain view). C turns on the director; any camera input takes over again.");
-    sub(ui, "Tools (keys 1 to 7)");
+    sub(ui, "Tools (keys 1 to 8)");
     bullet(ui, "1 Select: click a creature to inspect it, or hold and drag to carry it (scroll lifts it).");
-    bullet(ui, "2 Plant food, 3 drop meat, 4 place a rock, 5 place a boulder, 6 drop a creature, 7 remove things.");
+    bullet(ui, "2 Plant food, 3 drop meat, 4 place a rock, 5 place a boulder, 6 drop a creature, 7 remove things, 8 call down a meteor.");
     sub(ui, "Keys");
     bullet(ui, "Space pauses, . steps once, + and - change speed (a quarter of real time up to Max).");
     bullet(ui, "F5 quick save, F9 quick load. Save / Load in the toolbar lists every saved world.");
@@ -212,6 +212,7 @@ fn controls(ui: &mut egui::Ui) {
     bullet(ui, "The clock at the top, in every view, shows the day and the time of day.");
     sub(ui, "Powers");
     bullet(ui, "Storm (toolbar, second row) calls a storm down on the whole island for four minutes; click it again to calm it.");
+    bullet(ui, "Meteor (tool 8): click a spot and a meteor comes down on it. It digs a crater, kills what it lands on, hurts and throws everything within 16 m, scorches the plants, and burns.");
 }
 
 fn watching(ui: &mut egui::Ui) {

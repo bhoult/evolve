@@ -22,6 +22,8 @@ pub enum Command {
     SummonStorm { seconds: f32 },
     /// Let the summoned storm die away.
     CalmStorm,
+    /// A meteor strikes here.
+    Meteor { at: [f32; 3] },
     RemoveCreature(u64),
     KillCreature(u64),
     FeedCreature(u64),
@@ -90,6 +92,7 @@ impl Sim {
                 self.refresh_weather();
                 self.log("A storm is called down");
             }
+            Command::Meteor { at } => self.meteor(Vec3::from(at)),
             Command::CalmStorm => {
                 self.acts.calm_storm(self.time);
                 self.log("The storm is calmed");

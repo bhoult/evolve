@@ -24,9 +24,22 @@ pub struct AudioPlugin;
 impl Plugin for AudioPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<SoundSettings>()
+            .add_message::<PlaySound>()
             .add_systems(Startup, start_audio)
             .add_systems(Update, feed_audio);
     }
+}
+
+/// Play a sound from a place in the world (for sounds the app makes itself, like a meteor's
+/// fall, rather than ones from the sim's highlights).
+#[derive(Message, Clone, Copy)]
+pub struct PlaySound {
+    pub sfx: Sfx,
+    pub at: Vec3,
+    /// Loudness at the source.
+    pub gain: f32,
+    /// Quietest it gets however far away.
+    pub floor: f32,
 }
 
 /// What the user controls.
@@ -66,6 +79,10 @@ pub enum Sfx {
     Blessing,
     /// A shimmer rising away (a creature taken out of the world).
     Ascend,
+    /// A meteor's roar as it comes down.
+    Whoosh,
+    /// A meteor's impact: a crack, a deep thump and a long rumble.
+    Explosion,
 }
 
 impl Sfx {
@@ -85,6 +102,8 @@ impl Sfx {
             Sfx::Call => 0.359,
             Sfx::Blessing => 0.822,
             Sfx::Ascend => 0.776,
+            Sfx::Whoosh => 0.372,
+            Sfx::Explosion => 0.966,
         }
     }
 }
@@ -184,6 +203,8 @@ impl Voice {
             Sfx::Call => 0.55 - 0.3 * self.voice[3],
             Sfx::Blessing => 3.6,
             Sfx::Ascend => 2.2,
+            Sfx::Whoosh => 1.9,
+            Sfx::Explosion => 5.0,
         }
     }
 
@@ -318,6 +339,20 @@ impl Voice {
                 }
                 let air = self.lp.run(n.next(), 2500.0 + 3000.0 * u, rate);
                 (s * 0.5 + air * 0.6 * (1.0 - u)) * env
+            }
+            Sfx::Whoosh => {
+                // Roaring noise, louder and brighter as it comes, cut off by the impact.
+                let len = self.length();
+                let u = (t / len).min(1.0);
+                let cutoff = 250.0 + 2600.0 * u * u;
+                let band = self.lp.run(n.next(), cutoff, rate) - self.lp2.run(n.next(), cutoff * 0.2, rate);
+                band * 3.0 * (0.05 + u * u) * ((len - t) / 0.05).clamp(0.0, 1.0)
+            }
+            Sfx::Explosion => {
+                let crack = (n.next() - self.lp2.run(n.next(), 3000.0, rate)) * 1.5 * (-t * 30.0).exp();
+                let thump = tone(&mut self.phase, 55.0 - 25.0 * (t / 0.5).min(1.0)) * 1.5 * (-t * 3.0).exp();
+                let roar = self.lp.run(n.next(), 250.0 + 900.0 * (-t * 2.0).exp(), rate) * 6.0;
+                crack + thump + roar * (1.0 - (-t * 60.0).exp()) * (-t * 0.9).exp()
             }
             Sfx::Impact => {
                 // A short low knock with a little grit on top; `pitch` drops for heavy parts.
@@ -707,6 +742,7 @@ struct FeedState {
     rng: u32,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn feed_audio(
     sound: Option<Res<Sound>>,
     mut settings: ResMut<SoundSettings>,
@@ -714,6 +750,7 @@ fn feed_audio(
     time: Res<Time>,
     camera: Query<&GlobalTransform, With<MainCamera>>,
     mut strikes: MessageReader<LightningStrike>,
+    mut sounds: MessageReader<PlaySound>,
     mut st: Local<FeedState>,
 ) {
     let Some(sound) = sound else {
@@ -786,6 +823,11 @@ fn feed_audio(
         }
         now < at
     });
+    for s in sounds.read() {
+        let gain = (s.gain * distance_gain(s.at.distance(pos))).max(s.floor);
+        let pan = (s.at - pos).normalize_or_zero().dot(right);
+        send(s.sfx, gain, pan, 1.0, [0.0; 4]);
+    }
     // And storms rumble now and then from lightning out of sight.
     if w.storm > 0.15 && now >= st.next_thunder {
         if st.next_thunder > 0.0 {
@@ -821,6 +863,7 @@ fn feed_audio(
             HighlightKind::Call => (Sfx::Call, h.strength, 0.0, 1.0),
             HighlightKind::Blessing => (Sfx::Blessing, 1.0, 0.5, 1.0),
             HighlightKind::Ascension => (Sfx::Ascend, 1.0, 0.5, 1.0),
+            HighlightKind::Meteor => (Sfx::Explosion, 1.0, 0.3, 1.0),
             // A smite's sound is its thunder, which the lightning sends.
             HighlightKind::Smite => continue,
         };
@@ -836,7 +879,7 @@ fn feed_audio(
             // News worth hearing from anywhere, quietly.
             gain = gain.max(0.1);
         }
-        if matches!(sfx, Sfx::Blessing | Sfx::Ascend) {
+        if matches!(sfx, Sfx::Blessing | Sfx::Ascend | Sfx::Explosion) {
             // Acts of god are heard wherever the camera is.
             gain = gain.max(0.5);
         }
@@ -886,6 +929,8 @@ mod tests {
             Sfx::Call,
             Sfx::Blessing,
             Sfx::Ascend,
+            Sfx::Whoosh,
+            Sfx::Explosion,
         ];
         let out = render([1.0; 4], &all, 4.0);
         assert!(out.iter().all(|x| x.is_finite() && x.abs() <= 1.0));
@@ -895,7 +940,7 @@ mod tests {
 
     #[test]
     fn each_sound_makes_a_sound_and_muting_silences() {
-        for sfx in [Sfx::Bite, Sfx::Kill, Sfx::Birth, Sfx::Record, Sfx::Splash, Sfx::Bubbles, Sfx::Thunder { near: true }, Sfx::Impact, Sfx::Call, Sfx::Blessing, Sfx::Ascend] {
+        for sfx in [Sfx::Bite, Sfx::Kill, Sfx::Birth, Sfx::Record, Sfx::Splash, Sfx::Bubbles, Sfx::Thunder { near: true }, Sfx::Impact, Sfx::Call, Sfx::Blessing, Sfx::Ascend, Sfx::Whoosh, Sfx::Explosion] {
             let out = render([1.0, 0.0, 0.0, 0.0], &[sfx], 1.5);
             let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
             assert!(peak > 0.05, "{sfx:?} is too quiet: peak {peak}");
@@ -994,6 +1039,8 @@ mod mix {
             (Sfx::Call, -20.0),
             (Sfx::Blessing, -18.0),
             (Sfx::Ascend, -20.0),
+            (Sfx::Whoosh, -18.0),
+            (Sfx::Explosion, -10.0),
         ];
         for (sfx, target) in events {
             let e = SoundEvent { sfx, gain: 1.0, pan: 0.0, pitch: 1.0, voice: [0.5; 4] };

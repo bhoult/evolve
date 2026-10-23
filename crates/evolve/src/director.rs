@@ -257,7 +257,7 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
                 push(d, Kind::Call, Some(s.id), None, at, 3.5, "A call", detail);
             }
             // Acts of god happen where the person at the controls is already looking.
-            HighlightKind::Attack | HighlightKind::Impact | HighlightKind::Blessing | HighlightKind::Smite | HighlightKind::Ascension => {}
+            HighlightKind::Attack | HighlightKind::Impact | HighlightKind::Blessing | HighlightKind::Smite | HighlightKind::Ascension | HighlightKind::Meteor => {}
         }
     }
     // Keep recent highlights around for a few seconds in case nothing better comes along.

@@ -74,6 +74,8 @@ pub enum HighlightKind {
     Smite,
     /// The hand of god took `subject` out of the world; `strength` is its size.
     Ascension,
+    /// A meteor struck here; `strength` is how far its blast reached, m.
+    Meteor,
 }
 
 #[derive(Clone, Copy, Debug)]

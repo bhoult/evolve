@@ -577,3 +577,73 @@ fn a_summoned_storm_builds_rages_survives_a_save_and_dies_away() {
     assert_eq!(back.weather.rain, 0.0, "calmed, it dies away: {:?}", back.weather);
     assert!(back.acts.storm.is_none(), "and is forgotten");
 }
+
+#[test]
+fn a_meteor_digs_a_crater_kills_what_it_hits_and_throws_what_is_near() {
+    use evolve_sim::Command;
+    use evolve_sim::acts::{BLAST, CRATER};
+    let mut p = quiet_params();
+    p.weather = false;
+    p.wind_force = 0.0;
+    p.terrain_resolution = SimParams::default().terrain_resolution;
+    let mut sim = Sim::new(p);
+    let at = sim.random_land_point(30.0);
+    let before = sim.terrain.heights.clone();
+    let h0 = sim.terrain.height_at(at.x, at.z);
+    // A legged body near it, and one right where it lands.
+    let mut rng = Rng::new(5);
+    let legged = loop {
+        let g = Genome::random(&mut rng, &SimParams::default());
+        if g.limbs.iter().filter(|l| l.present).count() >= 2 {
+            break g;
+        }
+    };
+    let near = sim.spawn_creature(legged.clone(), at + Vec3::new(8.0, 0.0, 0.0), 0.2, f32::MAX, 0, None);
+    let hit = sim.spawn_creature(legged, at, 0.2, f32::MAX, 0, None);
+    for _ in 0..120 {
+        sim.step();
+    }
+    let pos = |sim: &Sim, id: u64| sim.torso_of(sim.creature(id).unwrap()).unwrap().translation();
+    let health = sim.creature(near).unwrap().health;
+    let v0 = sim.torso_of(sim.creature(near).unwrap()).unwrap().linvel();
+    sim.apply(Command::Meteor { at: at.to_array() });
+    // (A body part's velocity is refreshed from its multibody's at the start of the next step.)
+    sim.step();
+    sim.step();
+    // The crater: the middle is lower, the rim higher, and no earth was made or lost.
+    let h1 = sim.terrain.height_at(at.x, at.z);
+    assert!(h1 < h0 - 1.0, "the middle should be dug out: {h0} -> {h1}");
+    let rim = (0..16)
+        .map(|k| {
+            let a = k as f32 * std::f32::consts::TAU / 16.0;
+            let (x, z) = (at.x + a.cos() * CRATER * 1.35, at.z + a.sin() * CRATER * 1.35);
+            sim.terrain.height_at(x, z) - before_height(&before, &sim, x, z)
+        })
+        .sum::<f32>()
+        / 16.0;
+    assert!(rim > 0.1, "the rim should be piled up: {rim}");
+    let change: f32 = sim.terrain.heights.iter().zip(&before).map(|(a, b)| a - b).sum();
+    let cell = sim.terrain.cell();
+    assert!((change * cell * cell).abs() < 0.5, "earth is conserved: {} m³", change * cell * cell);
+    // What it landed on is dead; what was near was thrown up and away, and hurt.
+    assert!(sim.creature(hit).is_none(), "the creature it hit should be dead");
+    let c = sim.creature(near).unwrap();
+    assert!(c.health < health, "the near one is hurt");
+    let v = sim.torso_of(c).unwrap().linvel() - v0;
+    let f = 1.0 - (pos(&sim, near) - at).length().min(BLAST) / BLAST;
+    eprintln!("thrown at {v:?} (expected about {:.1} out, {:.1} up)", 16.0 * f, 9.0 * f);
+    assert!(v.x > 3.0 && v.y > 1.5, "thrown up and away: {v:?}");
+    // A second strike on the same spot can't dig below the limit.
+    sim.apply(Command::Meteor { at: at.to_array() });
+    sim.apply(Command::Meteor { at: at.to_array() });
+    let h2 = sim.terrain.height_at(at.x, at.z);
+    let original = before_height(&before, &sim, at.x, at.z);
+    assert!(h2 >= original - sim.params.dig_depth - 0.05, "dug no deeper than the limit: {h2} vs {original}");
+}
+
+/// The ground height at (x, z) in a copy of the heights from before.
+fn before_height(before: &[f32], sim: &Sim, x: f32, z: f32) -> f32 {
+    let mut t = sim.terrain.clone();
+    t.heights = before.to_vec();
+    t.height_at(x, z)
+}

@@ -1299,6 +1299,7 @@ impl Sim {
         // Air drag, 1/2 rho Cd v^2 per m^2 facing the wind (rho 1.2, Cd 1).
         let wind_push = 0.6 * p.wind_force * DT;
         let mut splashes = Vec::new();
+        let kicks: HashMap<u64, Vec3> = self.acts.kicks.drain(..).collect();
         // Everything here is a force for this step only. (Forces, not impulses: a creature's
         // parts form a multibody, which keeps no velocity set on a part directly.)
         for o in &self.obstacles {
@@ -1315,6 +1316,11 @@ impl Sim {
                 };
                 b.reset_forces(false);
                 b.reset_torques(false);
+                // A throw: the same change of velocity for every part, over this one step.
+                if let Some(&dv) = kicks.get(&c.id) {
+                    let m = b.mass();
+                    b.add_force(dv * m / DT, true);
+                }
                 let shape = c.plan[k].shape;
                 let pos = b.translation();
                 let vr = shape.vertical_radius().max(0.02);

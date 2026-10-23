@@ -26,10 +26,11 @@ pub enum Tool {
     Boulder,
     Creature,
     Remove,
+    Meteor,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 7] = [
+    pub const ALL: [Tool; 8] = [
         Tool::Select,
         Tool::Plant,
         Tool::Meat,
@@ -37,6 +38,7 @@ impl Tool {
         Tool::Boulder,
         Tool::Creature,
         Tool::Remove,
+        Tool::Meteor,
     ];
 
     pub fn label(self) -> &'static str {
@@ -48,6 +50,7 @@ impl Tool {
             Tool::Boulder => "Boulder",
             Tool::Creature => "Drop creature",
             Tool::Remove => "Remove",
+            Tool::Meteor => "Meteor",
         }
     }
 
@@ -60,6 +63,7 @@ impl Tool {
             Tool::Boulder => "Click to place a boulder that can roll and be pushed.",
             Tool::Creature => "Click to drop a new creature from the sky (bred from the gene pool or random).",
             Tool::Remove => "Click a creature, plant, meat or obstacle to remove it.",
+            Tool::Meteor => "Click to call a meteor down there: a crater, a blast that throws and hurts what's near and kills what it lands on, and fire.",
         }
     }
 }
@@ -85,6 +89,8 @@ pub struct ToolState {
     pub drag: Option<Drag>,
     /// A zoo creature waiting to be placed with the next click: (zoo id, name, copies).
     pub zoo_place: Option<(u64, String, u32)>,
+    /// A power just called down at a spot, for miracles.rs to carry out.
+    pub summon: Option<(Tool, Vec3)>,
     paint_timer: f32,
 }
 
@@ -96,6 +102,7 @@ impl Default for ToolState {
             obstacle_size: 2.0,
             drag: None,
             zoo_place: None,
+            summon: None,
             paint_timer: 0.0,
         }
     }
@@ -322,6 +329,7 @@ fn use_tool(
         (Tool::Remove, Hit::Plant(id)) => link.cmd(Command::RemovePlant(id)),
         (Tool::Remove, Hit::Meat(id)) => link.cmd(Command::RemoveMeat(id)),
         (Tool::Remove, Hit::Obstacle(id)) => link.cmd(Command::RemoveObstacle(id)),
+        (Tool::Meteor, _) => tools.summon = Some((tools.tool, point)),
         _ => {}
     }
 }
@@ -335,6 +343,7 @@ fn hotkeys(keys: Res<ButtonInput<KeyCode>>, snap: Res<Snap>, link: Res<SimLink>,
         KeyCode::Digit5,
         KeyCode::Digit6,
         KeyCode::Digit7,
+        KeyCode::Digit8,
     ];
     for (k, t) in digits.iter().zip(Tool::ALL) {
         if keys.just_pressed(*k) {

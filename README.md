@@ -53,7 +53,7 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 | F | follow the selected creature (opens its brain view) |
 | C | director: the camera runs itself (any camera input takes over again) |
 | M | mute; the volume slider is in the toolbar |
-| 1-7 | tools: select and drag, plant food, meat, rock, boulder, drop creature, remove |
+| 1-8 | tools: select and drag, plant food, meat, rock, boulder, drop creature, remove, meteor |
 | Left click | use the tool. With Select, click a creature to inspect it, or hold and drag to carry it (scroll lifts it) |
 | Space, `.` | pause, single step |
 | + / - | speed (¼× up to Max) |
@@ -113,6 +113,13 @@ first) and the time of day.
   to a downpour and a gale with lightning, and dies away over the last 45 seconds. Click it again
   (it shows the time left) to calm it early. Plants grow faster in it, streams swell and lakes
   fill. A saved world keeps its storm.
+- *Meteor* (tool 8): click a spot and a meteor streaks down onto it, roaring, trailing fire and
+  smoke. It blasts out a crater 4 m across the bowl, its earth thrown up into a rim (earth is
+  conserved, and the crater can't go deeper than `dig_depth`), kills whatever it lands on, hurts
+  and throws everything within 16 m (up and away, harder the closer), scatters boulders, and
+  burns the plants nearby. A fireball, a mushroom of smoke, a ring of dust and flying rock follow,
+  the view jolts, and the crater burns for a while. Creatures thrown by it land unhurt by the
+  landing itself: nothing in the world takes fall damage.
 
 **Miracles.** When the hand of god (you) touches a creature, it shows.
 - *Feed* is a blessing: a shaft of golden light comes down from the sky onto the creature, which
@@ -123,8 +130,8 @@ first) and the time of day.
 - Each casts real light on the ground around it, so they glow best at night, and they keep their
   colors through the night's cool grading. With the lightning checkbox off (in Graphics), a smite
   still strikes but doesn't flash the whole sky.
-- `--miracle bless|smite|take:N` (with `--select-first` and `--screenshot`) works one on the
-  selected creature N frames before the screenshot.
+- `--miracle bless|smite|take|meteor:N` (with `--select-first` and `--screenshot`) works one on
+  the selected creature (a meteor lands 8 m from it) N frames before the screenshot.
 
 **Leaders** (in the right panel) names who's ahead right now: top score, oldest, most evolved,
 biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest
