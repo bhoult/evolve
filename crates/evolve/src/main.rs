@@ -5,6 +5,8 @@ mod audio;
 mod camera;
 mod director;
 mod env;
+mod genome_view;
+mod help;
 mod neural_view;
 mod preview;
 mod recording;
@@ -95,6 +97,10 @@ pub struct Args {
     pub mute: bool,
     /// Open the brain view on its neural picture (with --select-first, for screenshots).
     pub neural_view: bool,
+    /// Open the help on this topic (the start of its title), for screenshots.
+    pub help_page: Option<String>,
+    /// Open the genome window (with --select-first, for screenshots).
+    pub genome_view: bool,
     /// Start recording the window to this video file at launch.
     pub record: Option<PathBuf>,
     pub pick_test: bool,
@@ -134,6 +140,8 @@ fn main() -> AppExit {
             "--director" => args.director = true,
             "--mute" => args.mute = true,
             "--neural-view" => args.neural_view = true,
+            "--help-page" => args.help_page = Some(val()),
+            "--genome-view" => args.genome_view = true,
             "--record" => args.record = Some(val().into()),
             "--time-of-day" => visuals.time_of_day = Some(val().parse().unwrap_or_else(|_| usage())),
             "--weather" => visuals.weather = Some(val().parse().unwrap_or_else(|_| usage())),

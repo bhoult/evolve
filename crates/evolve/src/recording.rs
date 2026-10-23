@@ -1,4 +1,4 @@
-//! Recording the window to a video file (F10, or the toolbar's Record button). Every frame the
+//! Recording the window to a video file (R or F10, or a Record button). Every frame the
 //! window is captured as shown, the 3D view with whatever panels and overlays are open, and
 //! streamed to an ffmpeg process that encodes it on the GPU (NVENC) if it can, else on the CPU.
 //!
@@ -160,7 +160,7 @@ fn record_at_launch(args: Res<crate::Args>, mut rec: ResMut<Recorder>) {
 }
 
 fn hotkey(keys: Res<ButtonInput<KeyCode>>, mut rec: ResMut<Recorder>) {
-    if keys.just_pressed(KeyCode::F10) {
+    if keys.just_pressed(KeyCode::F10) || keys.just_pressed(KeyCode::KeyR) {
         rec.toggle = true;
     }
 }

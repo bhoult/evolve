@@ -59,7 +59,8 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 | + / - | speed (¼× up to Max) |
 | F5 / F9 | quick save / quick load |
 | F12 | screenshot |
-| F10 | start / stop recording a video (also the Record button) |
+| R or F10 | start / stop recording a video (also the Record button, in the toolbar and in the director's bar) |
+| H | help: a guide to the controls and to every dynamic of the world |
 | Delete, Esc | remove selected creature, deselect |
 
 **The director** (toolbar button, C, or start with `--director`) is a camera for just watching.
@@ -105,7 +106,8 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest
 and best swimmer. Click one to go and follow it.
 
-**Recording.** F10 or the toolbar's Record button records the window to
+**Recording.** R, F10 or the Record button (in the toolbar, and in the director's bar when the
+panels are hidden) records the window to
 `~/Videos/evolve-<date>-<time>.mp4`, with whatever panels and overlays are showing, at 30 frames
 a second in real time. It encodes on the GPU (NVENC) through `ffmpeg`, falling back to x264, and
 drops frames rather than slowing the app if encoding falls behind. A window resize starts a new
@@ -124,6 +126,16 @@ inspector's Brain view button.
   neuron fires as often as it is active. Spikes run down its axons to synapses, warm where they
   excite and cool where they inhibit, and the next cell body glows as they arrive. Thicker axons
   are stronger connections. `--neural-view` with `--select-first` opens it, for screenshots.
+
+**The genome view** (Genome in a creature's inspector) lists every gene of the creature: its body
+(size, torso, spine and each of the six limb genes, including the ones switched off), its
+instincts and upkeep (diet, aggression, libido, appetite, armor, lungs, rhythm), its learning
+genes, its voice and its brain. Each gene has a bar for where it sits in its possible range and a
+line on what it does to this creature.
+
+**Help** (H, or the toolbar's Help) is a guide to the controls and to how everything works:
+bodies, brains, learning, energy, food, water, breeding, fighting, evolution, land, weather,
+voices and worlds. Its numbers are the current parameters, so it follows your changes.
 
 **The zoo** (toolbar button, or start with `--zoo`) keeps the best creatures from every world
 across sessions, in `~/.local/share/evolve/zoo`. Every `zoo_interval` simulated seconds (default

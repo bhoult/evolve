@@ -51,6 +51,8 @@ pub struct UiState {
     saves: Vec<(PathBuf, SystemTime, u64)>,
     saves_refreshed: f64,
     show_help: bool,
+    help_topic: crate::help::Topic,
+    show_genome: bool,
     plot: PlotKind,
     confirm_new_world: bool,
     show_zoo: bool,
@@ -200,6 +202,8 @@ impl Default for UiState {
             saves: Vec::new(),
             saves_refreshed: -100.0,
             show_help: false,
+            help_topic: crate::help::Topic::default(),
+            show_genome: false,
             plot: PlotKind::Population,
             confirm_new_world: false,
             show_zoo: false,
@@ -229,6 +233,11 @@ impl Plugin for UiPlugin {
                     st.show_brain = true;
                     st.brain_tab = BrainTab::Neural;
                 }
+                if let Some(name) = &args.help_page {
+                    st.show_help = true;
+                    st.help_topic = crate::help::Topic::named(name).unwrap_or_default();
+                }
+                st.show_genome = args.genome_view;
             })
             .add_systems(Update, shortcuts.run_if(not(egui_wants_any_keyboard_input)));
     }
@@ -345,7 +354,7 @@ fn ui_system(
         .unwrap_or(0.0);
 
     if director.active {
-        director_overlay(ctx, &mut director, &mut sound, now);
+        director_overlay(ctx, &mut director, &mut sound, &mut rec, now);
         if !director.panels {
             return Ok(());
         }
@@ -355,7 +364,10 @@ fn ui_system(
     stats_panel(ctx, snap, st, fps, &link, &mut cam);
     events_panel(ctx, snap, rec.fresh_notice());
     if let Some(sel) = &snap.selected {
-        inspector(ctx, sel, &link, &mut cam, &mut st.show_brain);
+        inspector(ctx, sel, &link, &mut cam, &mut st.show_brain, &mut st.show_genome);
+        if st.show_genome {
+            crate::genome_view::genome_window(ctx, sel, &mut st.show_genome, &snap.params);
+        }
         let following = cam.follow && st.brain_closed_for != Some(sel.id);
         if st.show_brain || following {
             let mut open = true;
@@ -368,7 +380,7 @@ fn ui_system(
     }
     saves_window(ctx, &link, st, now);
     zoo_window(ctx, snap, &link, st, &mut tools, &mut preview);
-    help_window(ctx, st);
+    crate::help::help_window(ctx, &mut st.show_help, &mut st.help_topic, &st.params);
     Ok(())
 }
 
@@ -835,7 +847,14 @@ fn bar(ui: &mut egui::Ui, label: &str, value: f32, max: f32) {
     );
 }
 
-fn inspector(ctx: &mut egui::Context, c: &CreatureDetail, link: &SimLink, cam: &mut OrbitCam, show_brain: &mut bool) {
+fn inspector(
+    ctx: &mut egui::Context,
+    c: &CreatureDetail,
+    link: &SimLink,
+    cam: &mut OrbitCam,
+    show_brain: &mut bool,
+    show_genome: &mut bool,
+) {
     egui::Window::new(format!("Creature #{}", c.id))
         .id(egui::Id::new("inspector"))
         .default_pos([360.0, 90.0])
@@ -867,6 +886,13 @@ fn inspector(ctx: &mut egui::Context, c: &CreatureDetail, link: &SimLink, cam: &
                     .clicked()
                 {
                     *show_brain = !*show_brain;
+                }
+                if ui
+                    .selectable_label(*show_genome, "Genome")
+                    .on_hover_text("Its genes, and what each one does")
+                    .clicked()
+                {
+                    *show_genome = !*show_genome;
                 }
                 if ui.button("Feed").on_hover_text("Fill energy and health").clicked() {
                     link.cmd(Command::FeedCreature(c.id));
@@ -1061,20 +1087,6 @@ fn saves_window(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, now: 
             });
         });
     st.show_saves = open;
-}
-
-fn help_window(ctx: &mut egui::Context, st: &mut UiState) {
-    let mut open = st.show_help;
-    egui::Window::new("Help").open(&mut open).default_width(420.0).show(ctx, |ui| {
-        ui.label("Camera: right-drag orbit, middle-drag pan, scroll zoom, WASD move, Q/E turn, F follow the selected creature.");
-        ui.label("Tools (1-7): select and drag creatures, plant food, drop meat, place rocks and boulders, drop creatures, remove things. While dragging, scroll to lift.");
-        ui.label("Keys: Space pause, . single step, + / - speed, F5 quick save, F9 quick load, F12 screenshot, F10 start or stop recording a video, Delete removes the selected creature, Esc deselects, H this help.");
-        ui.separator();
-        ui.label("Every creature is built from its genome: a head-end torso, optionally followed by a spine of up to five more segments (a snake or a caterpillar), plus up to six limb genes. A limb has up to three segments (thigh, shin, foot), can grow from any body segment or from the tip of another limb, can be mirrored into a symmetric pair, and can end in a flat paddle. Joints are hinges (one axis, cheap, knees bend mostly one way) or swivels (two axes, like a tentacle, costing more energy per unit of work); every joint's range of motion is genetic. A neural network reads its senses (food, meat, water, other creatures, obstacle rays, thirst, its own joint angles, an internal rhythm) and drives the joints and the eat / attack / mate actions. Creatures must drink: putting the mouth in water refills them, rain helps a little.");
-        ui.label("Brains range between the min and max neuron params; each neuron costs energy every second. Energy comes from eating; it drains with body mass, brain size and motor work. Two willing, related creatures near each other breed: their genomes cross over and mutate. When the population falls below the minimum, new creatures rain from the sky, mostly bred from the best genomes seen so far. Creatures also learn while they live: they vary their movements a little, remember what they tried for a moment, and keep what turned out better than usual (food, water, mating, closing in on food when hungry). Parents pass part of what they learned on to their children. They can call out in voices of their own and hear each other's calls (direction, loudness, pitch, and whether the caller sounds like kin); what calls come to mean is up to evolution. Lives are scored by what they achieve: eating, hunting, breeding and travelling, not by how long they last.");
-        ui.label("Parameters marked ⟳ shape the terrain and apply on Regenerate terrain. Everything else applies immediately.");
-    });
-    st.show_help = open;
 }
 
 fn species_list(ui: &mut egui::Ui, snap: &Snapshot, link: &SimLink, cam: &mut OrbitCam) {
@@ -1558,7 +1570,7 @@ fn record_button(ui: &mut egui::Ui, rec: &mut crate::recording::Recorder) {
     };
     if ui
         .add(button)
-        .on_hover_text("Record the window to a video in ~/Videos, panels and all, as you see it (F10)")
+        .on_hover_text("Record the window to a video in ~/Videos, panels and all, as you see it (R or F10)")
         .clicked()
     {
         rec.toggle = true;
@@ -1579,7 +1591,13 @@ fn sound_controls(ui: &mut egui::Ui, sound: &mut SoundSettings) {
 }
 
 /// While the director runs: what it's showing, and how to take over.
-fn director_overlay(ctx: &mut egui::Context, director: &mut Director, sound: &mut SoundSettings, now: f64) {
+fn director_overlay(
+    ctx: &mut egui::Context,
+    director: &mut Director,
+    sound: &mut SoundSettings,
+    rec: &mut crate::recording::Recorder,
+    now: f64,
+) {
     egui::Area::new(egui::Id::new("director_hint"))
         .anchor(egui::Align2::LEFT_TOP, [12.0, 10.0])
         .show(ctx, |ui| {
@@ -1591,7 +1609,7 @@ fn director_overlay(ctx: &mut egui::Context, director: &mut Director, sound: &mu
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("Director").strong());
                         ui.label(
-                            egui::RichText::new("Press C or move the camera to take over.")
+                            egui::RichText::new("Press C or move the camera to take over, R to record.")
                                 .small()
                                 .color(egui::Color32::from_gray(200)),
                         );
@@ -1599,6 +1617,7 @@ fn director_overlay(ctx: &mut egui::Context, director: &mut Director, sound: &mu
                             director.toggle();
                         }
                         ui.checkbox(&mut director.panels, "panels");
+                        record_button(ui, rec);
                         sound_controls(ui, sound);
                     });
                 });
