@@ -665,3 +665,67 @@ fn a_body_moved_to_another_world_carries_on_exactly() {
         }
     }
 }
+
+/// A genome whose brain never asks for output `k`.
+fn never(mut g: Genome, k: usize) -> Genome {
+    let h = g.brain.h;
+    g.brain.w_out.0[k * h..(k + 1) * h].fill(f16::ZERO);
+    g.brain.b_out[k] = -5.0;
+    g
+}
+
+#[test]
+fn totems_make_creatures_breed_fight_and_flee() {
+    use evolve_sim::Command;
+    use evolve_sim::acts::TotemKind;
+    use evolve_sim::math::Vec3;
+    let mut p = quiet_params();
+    p.maturity_age = 0.0;
+    p.plant_max_count = 0;
+    p.plant_spawn_rate = 0.0;
+    let mut sim = Sim::new(p);
+    let run = |sim: &mut Sim, s: u64| {
+        for _ in 0..s * evolve_sim::sim::TICKS_PER_SECOND {
+            sim.step();
+        }
+    };
+    // Love: a pair that would never mate breeds by the totem.
+    let mut prude = never(legged(), output::MATE);
+    prude.traits.libido = -1.0;
+    let at = sim.random_land_point(40.0);
+    let a = sim.spawn_creature(prude.clone(), at, 0.3, f32::MAX, 0, None);
+    let b = sim.spawn_creature(prude, at + Vec3::new(1.5, 0.0, 0.0), 0.3, f32::MAX, 0, None);
+    run(&mut sim, 5);
+    let kids = |sim: &Sim| [a, b].iter().filter_map(|&id| sim.creature(id)).map(|c| c.life.children).sum::<u32>();
+    assert_eq!(kids(&sim), 0, "without the totem they don't breed");
+    sim.apply(Command::Totem { at: at.to_array(), kind: TotemKind::Love });
+    run(&mut sim, 20);
+    assert!(kids(&sim) > 0, "by a totem of love they do");
+    sim.apply(Command::Totem { at: at.to_array(), kind: TotemKind::Love });
+    assert!(sim.acts.totems.is_empty(), "clicking it again takes it down");
+
+    // War: two that never bite fight by the totem.
+    let mut meek = never(legged(), output::ATTACK);
+    meek.traits.aggression = -1.0;
+    let war = sim.random_land_point(40.0) + Vec3::new(0.0, 0.0, 30.0);
+    let c = sim.spawn_creature(meek.clone(), war, 0.3, f32::MAX, 0, None);
+    let d = sim.spawn_creature(meek, war + Vec3::new(2.0, 0.0, 0.0), 0.3, f32::MAX, 0, None);
+    sim.apply(Command::Totem { at: war.to_array(), kind: TotemKind::War });
+    run(&mut sim, 30);
+    let bites: u32 = [c, d].iter().filter_map(|&id| sim.creature(id)).map(|c| c.life.attacks).sum();
+    assert!(bites > 0, "by a totem of war they bite");
+    sim.apply(Command::Totem { at: war.to_array(), kind: TotemKind::War });
+
+    // Fear: one by the totem is driven off.
+    let fear = sim.random_land_point(40.0);
+    let e = sim.spawn_creature(base(21), fear + Vec3::new(3.0, 0.0, 0.0), 0.3, f32::MAX, 0, None);
+    run(&mut sim, 2);
+    sim.apply(Command::Totem { at: fear.to_array(), kind: TotemKind::Fear });
+    let dist = |sim: &Sim| {
+        let t = sim.torso_of(sim.creature(e).unwrap()).unwrap().translation();
+        (t.x - fear.x).hypot(t.z - fear.z)
+    };
+    let before = dist(&sim);
+    run(&mut sim, 10);
+    assert!(dist(&sim) > before + 3.0, "a totem of fear drives it away: {before:.1} -> {:.1} m", dist(&sim));
+}

@@ -142,6 +142,18 @@ first) and the time of day.
 - *Land from the sky*: click a spot and a clod of earth topped with grass tumbles down onto it,
   trailing dust. A hill 9 m across rises where it lands, standing out of the sea if it fell into
   it, so it adds to the island. It crushes what it lands on and throws what's near.
+- *Manna*: click a spot and food falls from heaven: sixteen full-grown plants in a ring 6 m
+  across, under a soft shaft of golden light and drifting golden flakes, to a choir.
+- *Totem*: pick love, war or fear beside the tools, then click to raise one (click a totem to take
+  it down). It sways every creature within 16 m (fully over the inner half), overriding its own
+  leanings:
+  - *Love*: the mating drive fills, the wait between matings shrinks to nothing, the urge to mate
+    is turned on, and caution about being fed enough is forgotten. Each child still has to be
+    paid for, so love can't make energy from nothing.
+  - *War*: the urge to bite is turned on, and each is drawn toward the nearest other creature.
+  - *Fear*: it hurts, it feels bad (so creatures learn to keep away), and they're driven off.
+  - Totems are carved poles with a glowing head (pink, red or violet), what they stir drifting
+    round it, and their reach marked by a faint ring on the ground. Saves keep them.
 
 **Miracles.** When the hand of god (you) touches a creature, it shows.
 - *Feed* is a blessing: a shaft of golden light comes down from the sky onto the creature, which
@@ -152,9 +164,9 @@ first) and the time of day.
 - Each casts real light on the ground around it, so they glow best at night, and they keep their
   colors through the night's cool grading. With the lightning checkbox off (in Graphics), a smite
   still strikes but doesn't flash the whole sky.
-- `--miracle bless|smite|take|meteor|whirl:N` (with `--select-first` and `--screenshot`) works
-  one on the selected creature (a meteor lands 8 m from it, a whirlwind 3 m) N frames before the
-  screenshot.
+- `--miracle KIND:N` (with `--select-first` and `--screenshot`) works one on or near the selected
+  creature N frames before the screenshot: bless, smite, take, meteor, whirl, quake, land,
+  spring, manna, love, war or fear.
 
 **Leaders** (in the right panel) names who's ahead right now: top score, oldest, most evolved,
 biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest

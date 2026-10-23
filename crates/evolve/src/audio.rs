@@ -890,6 +890,7 @@ fn feed_audio(
             HighlightKind::Ascension => (Sfx::Ascend, 1.0, 0.5, 1.0),
             HighlightKind::Meteor => (Sfx::Explosion, 1.0, 0.3, 1.0),
             HighlightKind::Landfall => (Sfx::Explosion, 0.8, 0.3, 1.0),
+            HighlightKind::Manna => (Sfx::Blessing, 1.0, 0.5, 1.0),
             // A smite's sound is its thunder, which the lightning sends.
             HighlightKind::Smite => continue,
         };

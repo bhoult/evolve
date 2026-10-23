@@ -522,6 +522,12 @@ fn toolbar(
                 Tool::Rock | Tool::Boulder => {
                     ui.add(egui::Slider::new(&mut tools.obstacle_size, 0.5..=10.0).text("size m"));
                 }
+                Tool::Totem => {
+                    use evolve_sim::acts::TotemKind;
+                    for (k, name) in [(TotemKind::Love, "Love"), (TotemKind::War, "War"), (TotemKind::Fear, "Fear")] {
+                        ui.selectable_value(&mut tools.totem, k, name);
+                    }
+                }
                 _ => {}
             }
             ui.separator();

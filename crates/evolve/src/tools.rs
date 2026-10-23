@@ -33,10 +33,12 @@ pub enum Tool {
     Spring,
     Quake,
     Landfall,
+    Manna,
+    Totem,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 14] = [
+    pub const ALL: [Tool; 16] = [
         Tool::Select,
         Tool::Plant,
         Tool::Meat,
@@ -51,11 +53,13 @@ impl Tool {
         Tool::Spring,
         Tool::Quake,
         Tool::Landfall,
+        Tool::Manna,
+        Tool::Totem,
     ];
 
     /// The acts of god, shown apart from the everyday tools.
     pub fn is_power(self) -> bool {
-        matches!(self, Tool::Meteor | Tool::Whirlwind | Tool::Raise | Tool::Lower | Tool::Spring | Tool::Quake | Tool::Landfall)
+        !matches!(self, Tool::Select | Tool::Plant | Tool::Meat | Tool::Rock | Tool::Boulder | Tool::Creature | Tool::Remove)
     }
 
     pub fn label(self) -> &'static str {
@@ -74,6 +78,8 @@ impl Tool {
             Tool::Spring => "Spring",
             Tool::Quake => "Earthquake",
             Tool::Landfall => "Land from the sky",
+            Tool::Manna => "Manna",
+            Tool::Totem => "Totem",
         }
     }
 
@@ -93,6 +99,8 @@ impl Tool {
             Tool::Spring => "Click to make an eternal spring there: water wells up forever, runs downhill and fills the hollows it reaches. Click a spring to stop it.",
             Tool::Quake => "Click to split the land with an earthquake there: a crack opens across your view, one side heaves up, and everything nearby shakes.",
             Tool::Landfall => "Click to drop a chunk of land from the sky there: a hill rises where it lands (out of the sea, new land), crushing what's under it.",
+            Tool::Manna => "Click to let food fall from heaven there: a ring of full-grown plants.",
+            Tool::Totem => "Click to raise a totem (love, war or fear: pick beside the tools); within 16 m it drives creatures to breed, to fight, or to run. Click a totem to take it down.",
         }
     }
 }
@@ -120,6 +128,8 @@ pub struct ToolState {
     pub zoo_place: Option<(u64, String, u32)>,
     /// A power just called down at a spot, for miracles.rs to carry out.
     pub summon: Option<(Tool, Vec3)>,
+    /// What the next totem stirs.
+    pub totem: evolve_sim::acts::TotemKind,
     paint_timer: f32,
 }
 
@@ -132,6 +142,7 @@ impl Default for ToolState {
             drag: None,
             zoo_place: None,
             summon: None,
+            totem: evolve_sim::acts::TotemKind::Love,
             paint_timer: 0.0,
         }
     }
@@ -370,6 +381,8 @@ fn use_tool(
         (Tool::Meteor, _) => tools.summon = Some((tools.tool, point)),
         (Tool::Whirlwind, _) => link.cmd(Command::Whirlwind { at: point.to_array() }),
         (Tool::Spring, _) => link.cmd(Command::Spring { at: point.to_array() }),
+        (Tool::Manna, _) => link.cmd(Command::Manna { at: point.to_array() }),
+        (Tool::Totem, _) => link.cmd(Command::Totem { at: point.to_array(), kind: tools.totem }),
         (Tool::Quake | Tool::Landfall, _) => tools.summon = Some((tools.tool, point)),
         _ => {}
     }

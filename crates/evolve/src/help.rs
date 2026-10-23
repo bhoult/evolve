@@ -218,6 +218,8 @@ fn controls(ui: &mut egui::Ui) {
     bullet(ui, "Spring: click to make an eternal spring. Its stream runs downhill whatever the weather and fills the hollows it reaches; click it again to stop it.");
     bullet(ui, "Earthquake: click to split the land across your view: a crack opens, one side heaves up, and everything within 70 m shakes for six seconds.");
     bullet(ui, "Land from the sky: click and a chunk of land falls there, raising a hill (out of the sea, new land) and crushing what's under it.");
+    bullet(ui, "Manna: click and food falls from heaven there, a ring of full-grown plants.");
+    bullet(ui, "Totem: pick love, war or fear, then click to raise one (click it again to take it down). Within 16 m, love drives creatures to breed (they still have to pay for each child), war to bite and go at each other, and fear to run.");
 }
 
 fn watching(ui: &mut egui::Ui) {

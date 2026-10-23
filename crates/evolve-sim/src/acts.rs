@@ -22,6 +22,8 @@ pub struct Acts {
     /// An earthquake shaking the ground: its center (x, z) and the sim times it began and ends.
     #[serde(default)]
     pub quake: Option<([f32; 2], f64, f64)>,
+    #[serde(default)]
+    pub totems: Vec<Totem>,
     /// Throws waiting for the next step: a change of velocity for every part of a creature
     /// (a multibody keeps no velocity set on a part directly, so it goes in as a force).
     #[serde(skip)]
@@ -74,6 +76,27 @@ impl Whirlwind {
     }
 }
 
+/// What a totem stirs in the creatures near it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TotemKind {
+    /// Uncontrollable breeding.
+    Love,
+    /// Uncontrollable fighting.
+    War,
+    /// Running away.
+    Fear,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Totem {
+    pub kind: TotemKind,
+    pub x: f32,
+    pub z: f32,
+}
+
+/// How far a totem's sway reaches, m (full over the inner half, fading to nothing at the edge).
+pub const TOTEM_REACH: f32 = 16.0;
+
 /// How far an earthquake shakes the ground, m, and how long, s.
 pub const QUAKE_REACH: f32 = 70.0;
 const QUAKE_TIME: f64 = 6.0;
@@ -86,6 +109,89 @@ pub const CRATER: f32 = 4.0;
 pub const BLAST: f32 = 16.0;
 
 impl Sim {
+    /// Food falls from heaven around `at`: a ring of full-grown plants.
+    pub fn manna(&mut self, at: Vec3) {
+        let full = self.params.plant_max_energy;
+        for _ in 0..16 {
+            let a = self.rng.range(0.0, std::f32::consts::TAU);
+            let r = 6.0 * self.rng.range(0.0, 1.0).sqrt();
+            self.add_plant(at + Vec3::new(a.cos() * r, 0.0, a.sin() * r), full);
+        }
+        self.highlight_with(HighlightKind::Manna, 0, None, at, 6.0);
+        self.log("Manna falls from heaven");
+    }
+
+    /// Sets up a totem at `at`, or takes down the one there.
+    pub fn toggle_totem(&mut self, at: Vec3, kind: TotemKind) {
+        match self.acts.totems.iter().position(|t| (t.x - at.x).hypot(t.z - at.z) < 3.0) {
+            Some(i) => {
+                self.acts.totems.swap_remove(i);
+                self.log("A totem is taken down");
+            }
+            None if self.terrain.contains(at.x, at.z, 1.0) => {
+                self.acts.totems.push(Totem { kind, x: at.x, z: at.z });
+                self.log(match kind {
+                    TotemKind::Love => "A totem of love is raised",
+                    TotemKind::War => "A totem of war is raised",
+                    TotemKind::Fear => "A totem of fear is raised",
+                });
+            }
+            None => {}
+        }
+    }
+
+    /// What the totems stir in each creature, each brain tick. Love fills the mating drive,
+    /// cuts the wait between matings and turns the urge to mate on (breeding still has to pay
+    /// for each child); war turns the urge to bite on and draws it toward the nearest other
+    /// creature; fear hurts, feels bad, and drives it away from the totem.
+    pub(crate) fn totem_urges(&mut self) {
+        if self.acts.totems.is_empty() {
+            for c in &mut self.creatures {
+                c.urge = [0.0; 3];
+                c.urge_push = Vec3::ZERO;
+            }
+            return;
+        }
+        let torso = self.torso_positions();
+        let totems = &self.acts.totems;
+        for (i, c) in self.creatures.iter_mut().enumerate() {
+            let p = torso[i];
+            let mut urge = [0.0f32; 3];
+            let mut away = Vec3::ZERO;
+            for t in totems {
+                let off = Vec3::new(p.x - t.x, 0.0, p.z - t.z);
+                let f = ((TOTEM_REACH - off.length()) / (0.5 * TOTEM_REACH)).clamp(0.0, 1.0);
+                let k = t.kind as usize;
+                urge[k] = urge[k].max(f);
+                if t.kind == TotemKind::Fear {
+                    away += off.normalize_or(Vec3::X) * f;
+                }
+            }
+            let mut push = away.normalize_or_zero() * (6.0 * urge[2]);
+            if urge[1] > 0.0 {
+                // The nearest other creature within reach, to go at.
+                let near = torso
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, q)| j != i && q.distance(p) < 12.0)
+                    .min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)));
+                if let Some((_, q)) = near {
+                    push += Vec3::new(q.x - p.x, 0.0, q.z - p.z).normalize_or_zero() * (3.0 * urge[1]);
+                }
+            }
+            if urge[0] > 0.0 {
+                c.mate_drive = c.mate_drive.max(urge[0]);
+                c.mate_cooldown = c.mate_cooldown.min(3.0 * (1.0 - urge[0]));
+            }
+            if urge[2] > 0.0 {
+                c.pain = c.pain.max(urge[2]);
+                c.brain.reward -= 0.05 * urge[2];
+            }
+            c.urge = urge;
+            c.urge_push = push;
+        }
+    }
+
     /// Raises the land around `at` by up to `amount` m (lowers it if negative), less toward
     /// `radius`.
     pub fn terraform(&mut self, at: Vec3, radius: f32, amount: f32) {

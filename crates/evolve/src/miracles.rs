@@ -13,6 +13,7 @@ use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::render::view::{ColorGrading, ColorGradingGlobal};
+use evolve_sim::acts::TotemKind;
 use evolve_sim::snapshot::HighlightKind;
 
 use crate::audio::{PlaySound, Sfx};
@@ -44,6 +45,8 @@ enum Kind {
     Impact,
     /// A chunk of land landing (`size` is its radius).
     Landfall,
+    /// Manna falling (`size` is how wide).
+    Manna,
 }
 
 impl Kind {
@@ -54,6 +57,7 @@ impl Kind {
             Kind::Ascension => 3.5,
             Kind::Impact => 10.0,
             Kind::Landfall => 4.0,
+            Kind::Manna => 4.0,
         }
     }
 }
@@ -146,6 +150,19 @@ struct Miracles {
     chunk: [(Handle<Mesh>, Handle<StandardMaterial>); 2],
     /// Bubbles owed to the springs, carried between frames.
     spring_owed: f32,
+    /// The totems standing: where, what kind, and their pole, head and light.
+    totems: Vec<(Vec3, TotemKind, [Entity; 3])>,
+    /// Pole, then a head for each kind (love, war, fear).
+    totem_look: (Handle<Mesh>, Handle<Mesh>, Handle<StandardMaterial>, [Handle<StandardMaterial>; 3]),
+}
+
+/// A totem's glow: love pink, war red, fear violet.
+fn totem_color(kind: TotemKind) -> Vec3 {
+    match kind {
+        TotemKind::Love => Vec3::new(1.0, 0.35, 0.65),
+        TotemKind::War => Vec3::new(1.0, 0.2, 0.08),
+        TotemKind::Fear => Vec3::new(0.55, 0.25, 1.0),
+    }
 }
 
 impl Miracles {
@@ -275,7 +292,24 @@ fn setup(
             materials.add(StandardMaterial { base_color: Color::srgb(0.3, 0.5, 0.2), perceptual_roughness: 1.0, ..default() }),
         ),
     ];
+    let wood = materials.add(StandardMaterial { base_color: Color::srgb(0.28, 0.2, 0.13), perceptual_roughness: 0.9, ..default() });
+    let heads = [TotemKind::Love, TotemKind::War, TotemKind::Fear].map(|k| {
+        let c = totem_color(k);
+        materials.add(StandardMaterial {
+            base_color: Color::srgb(c.x * 0.5, c.y * 0.5, c.z * 0.5),
+            emissive: LinearRgba::rgb(c.x * 2.5, c.y * 2.5, c.z * 2.5),
+            ..default()
+        })
+    });
+    let totem_look = (
+        meshes.add(Cylinder::new(0.22, 1.0)),
+        meshes.add(Sphere::new(0.55).mesh().ico(2).expect("a small icosphere")),
+        wood,
+        heads,
+    );
     commands.insert_resource(Miracles {
+        totems: Vec::new(),
+        totem_look,
         chunk,
         spring_owed: 0.0,
         epoch: u64::MAX,
@@ -413,6 +447,7 @@ fn watch(
             HighlightKind::Ascension => Kind::Ascension,
             HighlightKind::Meteor => Kind::Impact,
             HighlightKind::Landfall => Kind::Landfall,
+            HighlightKind::Manna => Kind::Manna,
             _ => continue,
         };
         let at = Vec3::from_array(h.pos);
@@ -466,9 +501,24 @@ fn scripted(
                 link.cmd(evolve_sim::Command::Spring { at: at.to_array() });
             }
         }
+        "manna" => {
+            if let Some(at) = near(5.0) {
+                link.cmd(evolve_sim::Command::Manna { at: at.to_array() });
+            }
+        }
+        "love" | "war" | "fear" => {
+            let totem = match kind.as_str() {
+                "love" => TotemKind::Love,
+                "war" => TotemKind::War,
+                _ => TotemKind::Fear,
+            };
+            if let Some(at) = near(4.0) {
+                link.cmd(evolve_sim::Command::Totem { at: at.to_array(), kind: totem });
+            }
+        }
         _ => {}
     }
-    if matches!(kind.as_str(), "quake" | "land" | "spring") {
+    if matches!(kind.as_str(), "quake" | "land" | "spring" | "manna" | "love" | "war" | "fear") {
         return;
     }
     if kind == "whirl" {
@@ -750,6 +800,28 @@ fn animate(
                 }
                 (Color::srgb(0.85, 0.9, 1.0), 450_000.0 * e)
             }
+            Kind::Manna => {
+                let e = envelope(age, 0.3, 1.5, m.kind.length());
+                // Golden flakes drifting down over the spot.
+                for _ in 0..emit(m, 0, 140.0 * (1.0 - age / 2.5).max(0.0)) {
+                    let high = st.range(15.0, 30.0);
+                    let pos = st.around(at + Vec3::Y * high, s);
+                    let fall = st.range(3.0, 6.0);
+                    let drift = Vec3::new(st.range(-0.6, 0.6), -fall, st.range(-0.6, 0.6));
+                    let life = st.range(3.0, 5.0);
+                    st.spark(Spark {
+                        pos,
+                        vel: drift,
+                        lift: 0.0,
+                        drag: 1.0,
+                        age: 0.0,
+                        life,
+                        size: [0.12, 0.08],
+                        color: [Vec4::new(4.0, 3.4, 1.8, 1.0), Vec4::new(3.0, 2.4, 1.0, 0.0)],
+                    });
+                }
+                (Color::srgb(1.0, 0.85, 0.5), 500_000.0 * e)
+            }
             Kind::Landfall => {
                 if age < dt * 1.5 {
                     // A ring of dust racing out from under it, and earth flung up.
@@ -935,6 +1007,88 @@ fn animate(
     }
     st.smoke.retain(|p| p.age < p.life);
 
+    // Totems: put up and taken down with the world's, each glowing, with what it stirs drifting
+    // round its head and its reach marked faintly on the ground.
+    st.totems.retain(|&(pos, kind, ents)| {
+        let standing = snap.totems.iter().any(|&(p, k)| k == kind && Vec3::from_array(p).distance(pos) < 0.5);
+        if !standing {
+            for e in ents {
+                commands.entity(e).despawn();
+            }
+        }
+        standing
+    });
+    for &(p, kind) in &snap.totems {
+        let pos = Vec3::from_array(p);
+        if st.totems.iter().any(|&(q, k, _)| k == kind && q.distance(pos) < 0.5) {
+            continue;
+        }
+        let (pole, head, wood, heads) = st.totem_look.clone();
+        let c = totem_color(kind);
+        let ents = [
+            commands.spawn((Mesh3d(pole), MeshMaterial3d(wood), Transform::from_translation(pos + Vec3::Y * 2.0).with_scale(Vec3::new(1.0, 4.0, 1.0)))).id(),
+            commands.spawn((Mesh3d(head), MeshMaterial3d(heads[kind as usize].clone()), Transform::from_translation(pos + Vec3::Y * 4.4))).id(),
+            commands
+                .spawn((
+                    PointLight { color: Color::srgb(c.x, c.y, c.z), intensity: 250_000.0, range: 25.0, shadows_enabled: false, ..default() },
+                    Transform::from_translation(pos + Vec3::Y * 4.6),
+                ))
+                .id(),
+        ];
+        st.totems.push((pos, kind, ents));
+    }
+    let totems: Vec<(Vec3, TotemKind)> = st.totems.iter().map(|&(p, k, _)| (p, k)).collect();
+    for (pos, kind) in totems {
+        let c = totem_color(kind);
+        let head = pos + Vec3::Y * 4.4;
+        for _ in 0..(20.0 * dt).ceil() as usize {
+            let a = st.range(0.0, std::f32::consts::TAU);
+            let ring = Vec3::new(a.cos(), 0.0, a.sin()) * evolve_sim::acts::TOTEM_REACH;
+            let ground = snap.terrain.height_at(pos.x + ring.x, pos.z + ring.z);
+            st.spark(Spark {
+                pos: Vec3::new(pos.x + ring.x, ground + 0.3, pos.z + ring.z),
+                vel: Vec3::Y * 0.3,
+                lift: 0.0,
+                drag: 1.0,
+                age: 0.0,
+                life: 1.5,
+                size: [0.3, 0.1],
+                color: [(c * 2.0).extend(0.5), (c * 2.0).extend(0.0)],
+            });
+        }
+        for _ in 0..(14.0 * dt).ceil() as usize {
+            let around = st.around(head, 1.2);
+            let life = st.range(1.5, 2.5);
+            match kind {
+                TotemKind::Fear => {
+                    let vel = Vec3::new(st.range(-0.6, 0.6), st.range(0.2, 0.8), st.range(-0.6, 0.6));
+                    st.puff(Spark {
+                        pos: around,
+                        vel,
+                        lift: 0.1,
+                        drag: 0.6,
+                        age: 0.0,
+                        life,
+                        size: [0.4, 1.2],
+                        color: [Vec4::new(0.2, 0.08, 0.3, 0.6), Vec4::new(0.12, 0.05, 0.2, 0.0)],
+                    });
+                }
+                _ => {
+                    let vel = Vec3::new(st.range(-0.3, 0.3), st.range(0.5, 1.5), st.range(-0.3, 0.3));
+                    st.spark(Spark {
+                        pos: around,
+                        vel,
+                        lift: 0.2,
+                        drag: 0.7,
+                        age: 0.0,
+                        life,
+                        size: [0.12, 0.05],
+                        color: [(c * 4.0).extend(1.0), (c * 2.0).extend(0.0)],
+                    });
+                }
+            }
+        }
+    }
     // While the ground shakes, so does the view.
     if snap.quaking {
         cam.shake = cam.shake.max(0.35);
@@ -1125,6 +1279,7 @@ fn draw(
                 (0.0, burn * 0.6, Vec3::new(2.5, 0.9, 0.2), 0.0)
             }
             Kind::Landfall => (0.0, 0.0, Vec3::ZERO, 0.0),
+            Kind::Manna => (envelope(age, 0.3, 1.5, m.kind.length()) * 0.4, 0.0, Vec3::new(2.4, 1.9, 0.9), 120.0),
             // The flash of the impact, a moment wide.
             Kind::Impact => {
                 buf.quad(m.at + Vec3::Y * 2.0, 10.0, Vec4::new(9.0, 7.5, 5.0, 0.7 * (1.0 - age / 0.25).max(0.0)));
@@ -1139,7 +1294,8 @@ fn draw(
         }
         // The shaft: columns of (edge, middle, edge) vertices going up, widening and fading.
         let base = m.at - Vec3::Y * m.size;
-        let w0 = m.size * 1.4 + 0.6;
+        // (Manna's size is the spread of its food; its shaft is narrower.)
+        let w0 = if m.kind == Kind::Manna { 2.5 } else { m.size * 1.4 + 0.6 };
         const ROWS: usize = 10;
         let start = buf.positions.len() as u32;
         for i in 0..=ROWS {

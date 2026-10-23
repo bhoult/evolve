@@ -113,6 +113,12 @@ pub struct Creature {
     /// Which physics world its body is in (see `Sim::shards`).
     #[serde(default)]
     pub shard: usize,
+    /// What nearby totems stir in it, 0..1: love, war, fear (see `acts`).
+    #[serde(skip)]
+    pub urge: [f32; 3],
+    /// Where the totems drive it, as an acceleration (m/s²): toward a fight, or away in fear.
+    #[serde(skip)]
+    pub urge_push: Vec3,
 }
 
 impl Creature {
@@ -134,10 +140,11 @@ impl Creature {
 
     pub fn output_bias(&self) -> crate::brain::OutputBias {
         let t = &self.genome.traits;
+        // A totem's urge overrides the creature's own leaning.
         crate::brain::OutputBias {
             eat: t.appetite,
-            attack: t.aggression,
-            mate: t.libido,
+            attack: t.aggression + 10.0 * self.urge[1],
+            mate: t.libido + 10.0 * self.urge[0],
         }
     }
 
@@ -160,10 +167,12 @@ impl Creature {
     }
 
     pub fn ready_to_mate(&self, p: &SimParams, energy_fraction: f32) -> bool {
+        // A totem of love drowns out caution about being fed enough (though a child's body
+        // still has to be paid for).
         self.dead.is_none()
             && self.age >= p.maturity_age
             && self.mate_cooldown <= 0.0
-            && self.energy >= energy_fraction * self.max_energy
+            && self.energy >= energy_fraction * (1.0 - self.urge[0]) * self.max_energy
             && self.output(output::MATE) > 0.0
     }
 }
@@ -1009,6 +1018,8 @@ impl Sim {
             pain: 0.0,
             in_water: 0.0,
             drowning: false,
+            urge: [0.0; 3],
+            urge_push: Vec3::ZERO,
             last_attacker: None,
             attacked_ago: long_ago(),
             attack_flash: 0.0,
@@ -1234,6 +1245,7 @@ impl Sim {
             self.refresh_weather();
         }
         if brain_tick {
+            self.totem_urges();
             self.think(bdt);
         }
         let t1 = Instant::now();
@@ -1332,6 +1344,11 @@ impl Sim {
                 if let Some(&dv) = kicks.get(&c.id) {
                     let m = b.mass();
                     b.add_force(dv * m / DT, true);
+                }
+                // Totems drive it: into a fight, or away in fear.
+                if c.urge_push != Vec3::ZERO {
+                    let m = b.mass();
+                    b.add_force(c.urge_push * m, true);
                 }
                 // An earthquake shakes every part (the same for a whole creature).
                 let shake = self.acts.shaking(b.translation().x, b.translation().z, self.time, (c.id % 97) as f32 * 0.37);

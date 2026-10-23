@@ -34,6 +34,10 @@ pub enum Command {
     Earthquake { path: Vec<[f32; 2]> },
     /// A chunk of land falls from the sky here.
     Landfall { at: [f32; 3] },
+    /// Food falls from heaven here.
+    Manna { at: [f32; 3] },
+    /// Raise a totem here, or take down the one there.
+    Totem { at: [f32; 3], kind: crate::acts::TotemKind },
     RemoveCreature(u64),
     KillCreature(u64),
     FeedCreature(u64),
@@ -108,6 +112,8 @@ impl Sim {
             Command::Spring { at } => self.toggle_spring(Vec3::from(at)),
             Command::Earthquake { path } => self.earthquake(&path),
             Command::Landfall { at } => self.landfall(Vec3::from(at)),
+            Command::Manna { at } => self.manna(Vec3::from(at)),
+            Command::Totem { at, kind } => self.toggle_totem(Vec3::from(at), kind),
             Command::CalmStorm => {
                 self.acts.calm_storm(self.time);
                 self.log("The storm is calmed");
