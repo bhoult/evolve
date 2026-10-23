@@ -27,10 +27,11 @@ pub enum Tool {
     Creature,
     Remove,
     Meteor,
+    Whirlwind,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 8] = [
+    pub const ALL: [Tool; 9] = [
         Tool::Select,
         Tool::Plant,
         Tool::Meat,
@@ -39,6 +40,7 @@ impl Tool {
         Tool::Creature,
         Tool::Remove,
         Tool::Meteor,
+        Tool::Whirlwind,
     ];
 
     pub fn label(self) -> &'static str {
@@ -51,6 +53,7 @@ impl Tool {
             Tool::Creature => "Drop creature",
             Tool::Remove => "Remove",
             Tool::Meteor => "Meteor",
+            Tool::Whirlwind => "Whirlwind",
         }
     }
 
@@ -64,6 +67,7 @@ impl Tool {
             Tool::Creature => "Click to drop a new creature from the sky (bred from the gene pool or random).",
             Tool::Remove => "Click a creature, plant, meat or obstacle to remove it.",
             Tool::Meteor => "Click to call a meteor down there: a crater, a blast that throws and hurts what's near and kills what it lands on, and fire.",
+            Tool::Whirlwind => "Click to set a whirlwind down there: for 25 seconds it wanders the island, lifting and flinging creatures and tearing up plants.",
         }
     }
 }
@@ -330,6 +334,7 @@ fn use_tool(
         (Tool::Remove, Hit::Meat(id)) => link.cmd(Command::RemoveMeat(id)),
         (Tool::Remove, Hit::Obstacle(id)) => link.cmd(Command::RemoveObstacle(id)),
         (Tool::Meteor, _) => tools.summon = Some((tools.tool, point)),
+        (Tool::Whirlwind, _) => link.cmd(Command::Whirlwind { at: point.to_array() }),
         _ => {}
     }
 }
@@ -344,6 +349,7 @@ fn hotkeys(keys: Res<ButtonInput<KeyCode>>, snap: Res<Snap>, link: Res<SimLink>,
         KeyCode::Digit6,
         KeyCode::Digit7,
         KeyCode::Digit8,
+        KeyCode::Digit9,
     ];
     for (k, t) in digits.iter().zip(Tool::ALL) {
         if keys.just_pressed(*k) {

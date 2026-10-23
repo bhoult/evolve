@@ -797,7 +797,13 @@ fn feed_audio(
     let water = water / 24.0;
     let near = 1.0 / (1.0 + ((pos.y - ground).max(0.0) / 60.0).powi(2));
     let wind = ((w.wind[0].powi(2) + w.wind[1].powi(2)).sqrt() / 18.0).min(1.2);
-    store(&lv.wind, wind * (0.5 + 0.5 * (1.0 - near)));
+    // A whirlwind roars, louder the nearer it is.
+    let roar = snap
+        .whirlwinds
+        .iter()
+        .map(|&([x, z], s, _)| s * (1.0 - Vec2::new(x - pos.x, z - pos.z).length() / 150.0).clamp(0.0, 1.0))
+        .fold(0.0f32, f32::max);
+    store(&lv.wind, (wind * (0.5 + 0.5 * (1.0 - near))).max(1.2 * roar));
     store(&lv.rain, w.rain * (0.4 + 0.6 * near));
     // Loudest at the shoreline, where land and water meet.
     store(&lv.surf, (4.0 * water * (1.0 - water) * 0.8 + water * 0.2) * near * (0.6 + 0.6 * wind.min(1.0)));

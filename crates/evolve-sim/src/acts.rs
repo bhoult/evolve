@@ -17,10 +17,58 @@ pub struct Acts {
     /// A summoned storm: the sim time it was called and when it ends.
     #[serde(default)]
     pub storm: Option<(f64, f64)>,
+    #[serde(default)]
+    pub whirlwinds: Vec<Whirlwind>,
     /// Throws waiting for the next step: a change of velocity for every part of a creature
     /// (a multibody keeps no velocity set on a part directly, so it goes in as a force).
     #[serde(skip)]
     pub kicks: Vec<(u64, Vec3)>,
+}
+
+/// A whirlwind: a funnel of spinning, rising air that wanders the island for a while.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Whirlwind {
+    pub x: f32,
+    pub z: f32,
+    /// Which way it's wandering, radians.
+    pub heading: f32,
+    pub start: f64,
+    pub end: f64,
+    pub seed: u32,
+}
+
+/// The whirlwind's core (where it lifts), how far its pull reaches, how fast it wanders (m/s),
+/// and how long it lasts (s).
+pub const WHIRL_CORE: f32 = 3.0;
+pub const WHIRL_REACH: f32 = 14.0;
+const WHIRL_TRAVEL: f32 = 3.0;
+pub const WHIRL_LIFE: f64 = 25.0;
+
+impl Whirlwind {
+    /// 0..1: it spins up over a few seconds and dies away over the last few.
+    pub fn strength(&self, time: f64) -> f32 {
+        ((time - self.start) / 3.0).min((self.end - time) / 4.0).clamp(0.0, 1.0) as f32
+    }
+
+    /// The air's velocity at `p` (m/s), `ground` the ground's height below it: round the core,
+    /// in toward it, and up through it (the lift fading out between 6 and 18 m up, so what it
+    /// catches whirls round at a few meters and is flung out, not carried off into the sky).
+    pub fn wind_at(&self, p: Vec3, ground: f32, time: f64) -> Vec3 {
+        let s = self.strength(time);
+        let off = Vec3::new(p.x - self.x, 0.0, p.z - self.z);
+        let r = off.length();
+        if s <= 0.0 || r > WHIRL_REACH {
+            return Vec3::ZERO;
+        }
+        let out = if r > 1e-3 { off / r } else { Vec3::X };
+        let round = Vec3::new(-out.z, 0.0, out.x);
+        let spin = 22.0 * s * if r < WHIRL_CORE { r / WHIRL_CORE } else { WHIRL_CORE / r };
+        // Fades out toward the edge of its reach so nothing jolts as it passes.
+        let edge = ((WHIRL_REACH - r) / 4.0).clamp(0.0, 1.0);
+        let height = ((18.0 - (p.y - ground)) / 12.0).clamp(0.0, 1.0);
+        let up = 18.0 * s * (-(r / (1.5 * WHIRL_CORE)).powi(2)).exp() * height;
+        (round * spin - out * (0.35 * spin)) * edge + Vec3::Y * up
+    }
 }
 
 /// A meteor's crater radius, and how far its blast reaches, m.
@@ -28,6 +76,47 @@ pub const CRATER: f32 = 4.0;
 pub const BLAST: f32 = 16.0;
 
 impl Sim {
+    /// A whirlwind touches down at `at` and wanders off.
+    pub fn whirlwind(&mut self, at: Vec3) {
+        if !self.terrain.contains(at.x, at.z, 2.0) {
+            return;
+        }
+        let heading = self.rng.range(0.0, std::f32::consts::TAU);
+        let seed = self.rng.next_u64() as u32;
+        self.acts.whirlwinds.push(Whirlwind { x: at.x, z: at.z, heading, start: self.time, end: self.time + WHIRL_LIFE, seed });
+        self.log("A whirlwind touches down");
+    }
+
+    /// Moves the whirlwinds on: each wanders, turning back from the sea and the world's edge,
+    /// and tears up the plants and meat in its path.
+    pub(crate) fn move_whirlwinds(&mut self, dt: f32) {
+        if self.acts.whirlwinds.is_empty() {
+            return;
+        }
+        let (time, wl) = (self.time, self.params.water_level);
+        for w in &mut self.acts.whirlwinds {
+            let wobble = ((time as f32) * 0.7 + w.seed as f32 * 1e-3).sin() * 0.8 + ((time as f32) * 0.23 + w.seed as f32).sin() * 0.5;
+            w.heading += wobble * dt;
+            let ahead = (w.x + w.heading.cos() * 8.0, w.z + w.heading.sin() * 8.0);
+            if !self.terrain.contains(ahead.0, ahead.1, 10.0) || self.terrain.height_at(ahead.0, ahead.1) < wl + 0.3 {
+                // Turn toward the middle of the island.
+                let home = (-w.z).atan2(-w.x);
+                let turn = (home - w.heading + std::f32::consts::PI).rem_euclid(std::f32::consts::TAU) - std::f32::consts::PI;
+                w.heading += turn.clamp(-2.0 * dt, 2.0 * dt);
+            }
+            // It sits while it spins up, then wanders faster as it strengthens.
+            let pace = WHIRL_TRAVEL * w.strength(time).powi(2);
+            w.x += w.heading.cos() * pace * dt;
+            w.z += w.heading.sin() * pace * dt;
+        }
+        let tears = |pos: Vec3, ws: &[Whirlwind]| {
+            ws.iter().any(|w| w.strength(time) > 0.25 && (pos.x - w.x).hypot(pos.z - w.z) < WHIRL_CORE + 0.5)
+        };
+        let ws = &self.acts.whirlwinds;
+        self.plants.retain(|f| !tears(f.pos, ws));
+        self.meat.retain(|f| !tears(f.pos, ws));
+    }
+
     /// A meteor strikes at `at`: it blasts out a crater (the earth thrown up into its rim),
     /// kills what it lands on, throws and hurts what's near, and scorches the plants.
     pub fn meteor(&mut self, at: Vec3) {
@@ -149,5 +238,6 @@ impl Acts {
         if self.storm.is_some_and(|(_, end)| time >= end) {
             self.storm = None;
         }
+        self.whirlwinds.retain(|w| time < w.end);
     }
 }

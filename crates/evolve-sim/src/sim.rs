@@ -1240,6 +1240,7 @@ impl Sim {
         if self.tick % REGROUP_EVERY == 0 {
             self.regroup();
         }
+        self.move_whirlwinds(DT);
         self.environment_forces();
         let t_forces = Instant::now();
         // The physics worlds step in parallel: rapier solves a world's articulations on one
@@ -1306,6 +1307,17 @@ impl Sim {
             if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body) {
                 b.reset_forces(false);
                 b.reset_torques(false);
+                if b.is_dynamic() {
+                    for w in &self.acts.whirlwinds {
+                        let pos = b.translation();
+                        let air = w.wind_at(pos, self.terrain.height_at(pos.x, pos.z), self.time);
+                        if air != Vec3::ZERO {
+                            let pull = ((air - b.linvel()) / 0.6).clamp_length_max(40.0);
+                            let m = b.mass();
+                            b.add_force((pull + Vec3::Y * (air.y / 18.0 * g * 1.1)) * m, true);
+                        }
+                    }
+                }
             }
         }
         for c in &mut self.creatures {
@@ -1320,6 +1332,18 @@ impl Sim {
                 if let Some(&dv) = kicks.get(&c.id) {
                     let m = b.mass();
                     b.add_force(dv * m / DT, true);
+                }
+                // A whirlwind drags each part toward its air (over about half a second), and
+                // holds up some of its weight in the core, so it lifts heavy bodies too.
+                for w in &self.acts.whirlwinds {
+                    let pos = b.translation();
+                    let air = w.wind_at(pos, self.terrain.height_at(pos.x, pos.z), self.time);
+                    if air != Vec3::ZERO {
+                        let m = b.mass();
+                        let pull = ((air - b.linvel()) / 0.6).clamp_length_max(40.0);
+                        let carry = air.y / 18.0 * g * 1.1;
+                        b.add_force((pull + Vec3::Y * carry) * m, true);
+                    }
                 }
                 let shape = c.plan[k].shape;
                 let pos = b.translation();

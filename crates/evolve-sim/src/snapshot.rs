@@ -174,6 +174,8 @@ pub struct Snapshot {
     pub selected: Option<CreatureDetail>,
     /// Seconds left of a storm called down by hand (0 without one).
     pub storm_left: f32,
+    /// Whirlwinds: where each is (x, z), how strong (0..1), and its seed.
+    pub whirlwinds: Vec<([f32; 2], f32, u32)>,
     /// Which day it is, counting from 1.
     pub day: u64,
     pub grabbing: bool,
@@ -343,6 +345,7 @@ impl Sim {
             brain_memory_bytes: self.brains.as_ref().map(|g| g.memory_bytes()).unwrap_or(0),
             selected,
             storm_left: self.acts.storm_left(self.time),
+            whirlwinds: self.acts.whirlwinds.iter().map(|w| ([w.x, w.z], w.strength(self.time), w.seed)).collect(),
             day: crate::weather::day_number(&self.params, self.time),
             grabbing: self.grab.is_some(),
             pool_size: self.pool.entries.len(),

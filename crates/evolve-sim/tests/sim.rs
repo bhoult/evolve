@@ -647,3 +647,49 @@ fn before_height(before: &[f32], sim: &Sim, x: f32, z: f32) -> f32 {
     t.heights = before.to_vec();
     t.height_at(x, z)
 }
+
+#[test]
+fn a_whirlwind_lifts_creatures_tears_up_plants_and_dies_away() {
+    use evolve_sim::Command;
+    use evolve_sim::acts::WHIRL_LIFE;
+    let mut p = quiet_params();
+    p.weather = false;
+    p.wind_force = 0.0;
+    p.plant_spawn_rate = 0.0;
+    let mut sim = Sim::new(p);
+    let at = sim.random_land_point(40.0);
+    let mut rng = Rng::new(9);
+    let g = Genome::random(&mut rng, &SimParams::default());
+    let id = sim.spawn_creature(g, at, 0.2, f32::MAX, 0, None);
+    for k in 0..6 {
+        let a = k as f32;
+        sim.add_plant(at + Vec3::new(a.cos() * 1.5, 0.0, a.sin() * 1.5), 10.0);
+    }
+    for _ in 0..60 {
+        sim.step();
+    }
+    let ground_gap = |sim: &Sim| {
+        let t = sim.torso_of(sim.creature(id).unwrap()).unwrap().translation();
+        t.y - sim.terrain.height_at(t.x, t.z)
+    };
+    let rest = ground_gap(&sim);
+    sim.apply(Command::Whirlwind { at: at.to_array() });
+    let mut highest: f32 = 0.0;
+    for _ in 0..(8 * evolve_sim::sim::TICKS_PER_SECOND) {
+        sim.step();
+        if sim.creature(id).is_some() {
+            highest = highest.max(ground_gap(&sim) - rest);
+        }
+    }
+    eprintln!("lifted {highest:.1} m; {} plants left near it", sim.plants.iter().filter(|f| f.pos.distance(at) < 2.5).count());
+    assert!(highest > 2.0, "the whirlwind should lift it off the ground: {highest:.2} m");
+    assert!(highest < 25.0, "but not carry it off into the sky: {highest:.2} m");
+    assert!(sim.plants.iter().all(|f| f.pos.distance(at) > 2.5), "the plants where it touched down are torn up");
+    assert_eq!(sim.acts.whirlwinds.len(), 1);
+    let w = &sim.acts.whirlwinds[0];
+    assert!(sim.terrain.contains(w.x, w.z, 5.0), "it stays in the world");
+    for _ in 0..((WHIRL_LIFE as u64 - 7) * evolve_sim::sim::TICKS_PER_SECOND) {
+        sim.step();
+    }
+    assert!(sim.acts.whirlwinds.is_empty(), "and dies away");
+}

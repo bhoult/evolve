@@ -24,6 +24,8 @@ pub enum Command {
     CalmStorm,
     /// A meteor strikes here.
     Meteor { at: [f32; 3] },
+    /// A whirlwind touches down here.
+    Whirlwind { at: [f32; 3] },
     RemoveCreature(u64),
     KillCreature(u64),
     FeedCreature(u64),
@@ -93,6 +95,7 @@ impl Sim {
                 self.log("A storm is called down");
             }
             Command::Meteor { at } => self.meteor(Vec3::from(at)),
+            Command::Whirlwind { at } => self.whirlwind(Vec3::from(at)),
             Command::CalmStorm => {
                 self.acts.calm_storm(self.time);
                 self.log("The storm is calmed");

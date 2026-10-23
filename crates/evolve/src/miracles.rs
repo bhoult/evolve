@@ -55,6 +55,26 @@ impl Kind {
     }
 }
 
+/// A bit of a whirlwind's funnel: dust (or a scrap of debris) circling its axis and rising.
+struct Swirl {
+    /// The whirlwind it belongs to (its seed).
+    whirl: u32,
+    angle: f32,
+    height: f32,
+    /// Its distance from the axis, relative to the funnel's width at its height.
+    out: f32,
+    rise: f32,
+    age: f32,
+    life: f32,
+    size: f32,
+    color: Vec4,
+}
+
+/// How wide a whirlwind's funnel is at a height, m: narrow at the ground, opening upward.
+fn funnel(height: f32) -> f32 {
+    1.2 + 0.22 * height
+}
+
 /// Seconds a meteor takes to come down.
 const FALL: f32 = 1.8;
 
@@ -100,6 +120,9 @@ struct Miracles {
     last_seq: u64,
     miracles: Vec<Miracle>,
     flights: Vec<Flight>,
+    swirls: Vec<Swirl>,
+    /// Funnel bits owed to each whirlwind (by seed), carried between frames.
+    swirl_owed: std::collections::HashMap<u32, f32>,
     /// Glowing sparks, and smoke, dust and debris.
     sparks: Vec<Spark>,
     smoke: Vec<Spark>,
@@ -230,6 +253,8 @@ fn setup(
         last_seq: 0,
         miracles: Vec::new(),
         flights: Vec::new(),
+        swirls: Vec::new(),
+        swirl_owed: Default::default(),
         sparks: Vec::new(),
         smoke: Vec::new(),
         rng: 0x2545_F491_4F6C_DD1D,
@@ -323,6 +348,14 @@ fn scripted(
     let Some(id) = snap.0.selected.as_ref().map(|c| c.id) else {
         return;
     };
+    if kind == "whirl" {
+        if let Some(c) = snap.0.creatures.iter().find(|c| c.id == id)
+            && let Some(p) = c.parts.first()
+        {
+            link.cmd(evolve_sim::Command::Whirlwind { at: (Vec3::from_array(p.pos) + Vec3::new(3.0, 0.0, 0.0)).to_array() });
+        }
+        return;
+    }
     if kind == "meteor" {
         if let Some(c) = snap.0.creatures.iter().find(|c| c.id == id)
             && let Some(p) = c.parts.first()
@@ -696,6 +729,68 @@ fn animate(
         }
     }
     st.smoke.retain(|p| p.age < p.life);
+
+    // Whirlwinds: their funnels, debris and the dust at their feet.
+    for &([x, z], s, seed) in &snap.whirlwinds {
+        if s <= 0.0 {
+            continue;
+        }
+        let ground = snap.terrain.height_at(x, z).max(snap.params.water_level);
+        let owed = st.swirl_owed.entry(seed).or_insert(0.0);
+        *owed += 320.0 * s * dt;
+        let n = owed.floor();
+        *owed -= n;
+        for _ in 0..n as usize {
+            let debris = st.rand() < 0.2;
+            let height = if debris { st.range(0.0, 8.0) } else { st.range(0.0, 1.0).powi(2) * 32.0 };
+            let (size, color) = if debris {
+                let leaf = st.rand() < 0.3;
+                (st.range(0.1, 0.25), if leaf { Vec4::new(0.25, 0.45, 0.18, 1.0) } else { Vec4::new(0.24, 0.19, 0.14, 1.0) })
+            } else {
+                (st.range(1.0, 2.6), Vec4::new(0.5, 0.45, 0.38, 0.32))
+            };
+            let swirl = Swirl {
+                whirl: seed,
+                angle: st.range(0.0, std::f32::consts::TAU),
+                height,
+                out: if debris { st.range(0.6, 1.6) } else { st.range(0.75, 1.1) },
+                rise: st.range(2.0, 5.0),
+                age: 0.0,
+                life: st.range(2.0, 4.0),
+                size,
+                color,
+            };
+            st.swirls.push(swirl);
+        }
+        // Dust kicked up round its foot.
+        for _ in 0..(40.0 * s * dt).ceil() as usize {
+            let a = st.range(0.0, std::f32::consts::TAU);
+            let r = st.range(2.0, 6.0);
+            let out = Vec3::new(a.cos(), 0.0, a.sin());
+            let life = st.range(1.5, 3.0);
+            let size = st.range(1.2, 2.2);
+            st.puff(Spark {
+                pos: Vec3::new(x, ground + 0.3, z) + out * r,
+                vel: out * 2.0 + Vec3::new(-out.z, 0.0, out.x) * 6.0,
+                lift: 0.5,
+                drag: 0.4,
+                age: 0.0,
+                life,
+                size: [size, size * 2.5],
+                color: [Vec4::new(0.52, 0.46, 0.37, 0.4), Vec4::new(0.55, 0.5, 0.42, 0.0)],
+            });
+        }
+    }
+    let live: std::collections::HashSet<u32> = snap.whirlwinds.iter().map(|w| w.2).collect();
+    st.swirl_owed.retain(|k, _| live.contains(k));
+    for p in &mut st.swirls {
+        // Spinning fastest low down, where the funnel is narrow; a whirlwind gone, it fades fast.
+        let r = funnel(p.height) * p.out;
+        p.angle += (22.0 / r.max(1.0)).min(9.0) * dt;
+        p.height += p.rise * dt;
+        p.age += dt * if live.contains(&p.whirl) { 1.0 } else { 4.0 };
+    }
+    st.swirls.retain(|p| p.age < p.life && p.height < 40.0);
 }
 
 type CameraView = (With<MainCamera>, Without<MiracleMesh>, Without<SmokeMesh>);
@@ -709,6 +804,7 @@ fn draw(
     mut st: ResMut<Miracles>,
     mut meshes: ResMut<Assets<Mesh>>,
     time: Res<Time>,
+    snap: Res<Snap>,
     cam: Single<(&Transform, &ColorGrading), CameraView>,
     ent: Single<(&mut Transform, &mut Visibility), GlowView>,
     smoke_ent: Single<(&mut Transform, &mut Visibility), SmokeView>,
@@ -716,23 +812,36 @@ fn draw(
     let (cam, grading) = cam.into_inner();
     let st = &mut *st;
     let (mut tf, mut vis) = ent.into_inner();
+    let snap_whirls = &snap.0.whirlwinds;
+    let ground_at = |x: f32, z: f32| snap.0.terrain.height_at(x, z).max(snap.0.params.water_level);
     let cam_pos = cam.translation;
     let right = cam.right().as_vec3();
     let up = cam.up().as_vec3();
     // Smoke, dust and debris, lit as if facing up and toward the camera.
     {
         let (mut stf, mut svis) = smoke_ent.into_inner();
-        let want = if st.smoke.is_empty() { Visibility::Hidden } else { Visibility::Inherited };
+        let want = if st.smoke.is_empty() && st.swirls.is_empty() { Visibility::Hidden } else { Visibility::Inherited };
         if *svis != want {
             *svis = want;
         }
-        if !st.smoke.is_empty() {
+        if want == Visibility::Inherited {
             stf.translation = cam_pos;
             let mut buf = Buf { origin: cam_pos, right, up, ..default() };
             for p in &st.smoke {
                 let u = (p.age / p.life).clamp(0.0, 1.0);
                 let size = p.size[0] + (p.size[1] - p.size[0]) * u;
                 buf.quad(p.pos, size, p.color[0].lerp(p.color[1], u));
+            }
+            for p in &st.swirls {
+                let Some(&([x, z], s, _)) = snap_whirls.iter().find(|w| w.2 == p.whirl) else {
+                    continue;
+                };
+                let ground = ground_at(x, z);
+                let r = funnel(p.height) * p.out;
+                let pos = Vec3::new(x + p.angle.cos() * r, ground + p.height, z + p.angle.sin() * r);
+                let u = (p.age / p.life).clamp(0.0, 1.0);
+                let fade = (u * 6.0).min(1.0) * (1.0 - u) * s.max(0.2);
+                buf.quad(pos, p.size, p.color * Vec4::new(1.0, 1.0, 1.0, fade));
             }
             let normal = (-cam.forward().as_vec3() + Vec3::Y * 0.8).normalize().to_array();
             if let Some(m) = meshes.get_mut(&st.smoke_mesh) {

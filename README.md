@@ -53,7 +53,7 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 | F | follow the selected creature (opens its brain view) |
 | C | director: the camera runs itself (any camera input takes over again) |
 | M | mute; the volume slider is in the toolbar |
-| 1-8 | tools: select and drag, plant food, meat, rock, boulder, drop creature, remove, meteor |
+| 1-9 | tools: select and drag, plant food, meat, rock, boulder, drop creature, remove, meteor, whirlwind |
 | Left click | use the tool. With Select, click a creature to inspect it, or hold and drag to carry it (scroll lifts it) |
 | Space, `.` | pause, single step |
 | + / - | speed (¼× up to Max) |
@@ -120,6 +120,14 @@ first) and the time of day.
   burns the plants nearby. A fireball, a mushroom of smoke, a ring of dust and flying rock follow,
   the view jolts, and the crater burns for a while. Creatures thrown by it land unhurt by the
   landing itself: nothing in the world takes fall damage.
+- *Whirlwind* (tool 9): click a spot and a whirlwind touches down there. It spins up in place over
+  a few seconds, then wanders the island for 25 seconds, turning back from the sea and the
+  world's edge. Its air circles the core at up to 22 m/s, draws inward and rises through the
+  middle: every body part within 14 m is dragged toward that air, and in the core it's held up
+  against its weight, so creatures and boulders are lifted, whirled round a few meters up and
+  flung out (the lift fades between 6 and 18 m up). It tears up the plants and meat in its path,
+  roars as it nears the camera, and is drawn as a funnel of dust with debris and leaves circling
+  low and a cloud churned up at its foot. A saved world keeps its whirlwinds.
 
 **Miracles.** When the hand of god (you) touches a creature, it shows.
 - *Feed* is a blessing: a shaft of golden light comes down from the sky onto the creature, which
@@ -130,8 +138,9 @@ first) and the time of day.
 - Each casts real light on the ground around it, so they glow best at night, and they keep their
   colors through the night's cool grading. With the lightning checkbox off (in Graphics), a smite
   still strikes but doesn't flash the whole sky.
-- `--miracle bless|smite|take|meteor:N` (with `--select-first` and `--screenshot`) works one on
-  the selected creature (a meteor lands 8 m from it) N frames before the screenshot.
+- `--miracle bless|smite|take|meteor|whirl:N` (with `--select-first` and `--screenshot`) works
+  one on the selected creature (a meteor lands 8 m from it, a whirlwind 3 m) N frames before the
+  screenshot.
 
 **Leaders** (in the right panel) names who's ahead right now: top score, oldest, most evolved,
 biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest
