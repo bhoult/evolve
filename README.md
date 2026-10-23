@@ -134,8 +134,10 @@ first) and the time of day.
   below it, the sea comes in. This is the world remade, so creatures dig relative to the new
   ground.
 - *Spring*: click to make an eternal spring. It pours out a stream as big as a hillside of 3,000
-  m² gives in steady rain, whatever the weather, which runs downhill to the sea or fills the
-  hollow it reaches (about 0.35 m³ a second, a pond within minutes) and spills on from there.
+  m² gives in steady rain, whatever the weather. Its water creeps downhill at about half a meter
+  a second into the first hollow in its way and fills it (about 0.35 m³ a second, a pond within
+  minutes); only when that is full does it spill over the rim and run on, into the next hollow
+  or down to the sea, wearing a channel wherever it runs.
   Click a spring to stop it. Springs bubble and froth where they rise, and saves keep them.
 - *Earthquake*: click a spot and the land splits across your view through it: a jagged crack of
   raw earth up to 3 m deep opens, the ground on one side heaves up nearly a meter, dust bursts

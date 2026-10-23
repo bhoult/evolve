@@ -5,7 +5,9 @@
 //! fills it and spills over the lowest edge), and adding up the rain from everything uphill gives
 //! the flow at each point. Enough flow makes a stream. Hollows hold lakes and ponds: the rain on
 //! everything draining into a hollow collects there, levels out, evaporates slowly and spills
-//! over the rim when full, on downhill into the next hollow or the sea (see `fill_lakes`). Now
+//! over the rim when full, on downhill into the next hollow or the sea (see `fill_lakes`). A
+//! spring's water creeps downhill from it, fills the first hollow in its way and only then runs
+//! on over the rim (see `run_springs`). Now
 //! and then the flow cuts its channel deeper (the "stream power" law: faster on
 //! steeper ground with more water behind it, and faster on ground trampled bare), solved
 //! implicitly downstream-first so it never digs a pit or overshoots. Trampling fades as the
@@ -30,6 +32,12 @@ pub const SPRING_FLOW: f32 = 3000.0;
 /// What a spring pours into the hollow it runs into, m³/s (about ten times what it would gather
 /// from that much rain, so a spring makes a pond within minutes).
 const SPRING_FILL: f32 = 0.35;
+/// How fast a spring's water creeps on over dry ground, m/s.
+const SPRING_SPEED: f32 = 0.5;
+/// Its stream thins out over this much of its leading edge, m.
+const SPRING_EDGE: f32 = 6.0;
+/// A hollow within this of its rim is full, m.
+const BRIM: f32 = 0.005;
 /// Soil wets in a few minutes of rain and dries over half an hour.
 const WETTING_TIME: f32 = 120.0;
 const DRYING_TIME: f32 = 1800.0;
@@ -133,11 +141,6 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
     // steady rain.
     let fall = rain.max(BASE_FLOW * soak) * p.runoff * t.cell() * t.cell();
     let mut flow: Vec<f32> = (0..count).map(|k| if t.heights[k] > wl { fall } else { 0.0 }).collect();
-    for &k in &t.springs {
-        if let Some(f) = flow.get_mut(k as usize) {
-            *f += SPRING_FLOW;
-        }
-    }
     for &k in d.order.iter().rev() {
         let r = d.receiver[k as usize];
         if r != NONE {
@@ -145,7 +148,7 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
         }
     }
 
-    let mut budget = fill_lakes(t, p, &d, fall, dt);
+    let mut budget = fill_lakes(t, p, &d, fall, &mut flow, dt);
 
     // Streams where enough flows, and the lakes.
     let wet_k = 1.0 - (-dt / WETTING_TIME).exp();
@@ -194,7 +197,7 @@ const HOLLOW: f32 = 1e-4;
 ///
 /// A basin with two pits under its rim is levelled as one (both fill together), a fair likeness
 /// at this scale.
-fn fill_lakes(t: &mut Terrain, p: &SimParams, d: &Drainage, fall: f32, dt: f32) -> Budget {
+fn fill_lakes(t: &mut Terrain, p: &SimParams, d: &Drainage, fall: f32, flow: &mut [f32], dt: f32) -> Budget {
     let (n, wl) = (t.res, p.water_level);
     let count = n * n;
     let area = t.cell() * t.cell();
@@ -280,13 +283,15 @@ fn fill_lakes(t: &mut Terrain, p: &SimParams, d: &Drainage, fall: f32, dt: f32) 
             budget.rained += v;
         }
     }
-    for &k in &t.springs {
-        if let Some(&to) = down.get(k as usize)
-            && to != NONE
-        {
-            volume[to as usize] += (SPRING_FILL * dt) as f64;
-        }
-    }
+    let full: Vec<bool> = basins
+        .iter()
+        .map(|cells| {
+            let rim = d.filled[cells[0] as usize];
+            cells.iter().any(|&k| h[k as usize] + t.pooled[k as usize] >= rim - BRIM)
+        })
+        .collect();
+    let cell = t.cell();
+    let (fed, reached) = run_springs((&t.springs, &mut t.spring_reach), (n, cell), d, &label, &full, &mut volume, flow, dt);
 
     // Fill from the highest rim down, passing what spills over on. (Water spills to a rim no
     // higher, but one exactly as high may already be done: it's levelled again.)
@@ -319,6 +324,9 @@ fn fill_lakes(t: &mut Terrain, p: &SimParams, d: &Drainage, fall: f32, dt: f32) 
                 NONE => budget.to_sea += over as f32,
                 // Re-levelling is bounded, in case odd ground makes basins spill into each other.
                 to if done[to as usize] && relevels >= basins.len() => budget.to_sea += over as f32,
+                // What a spring's hollow spills soaks into the dry ground ahead of its stream
+                // until the stream gets to the next hollow.
+                to if fed[b] && !reached[to as usize] => budget.to_sea += over as f32,
                 to => {
                     volume[to as usize] += over;
                     if done[to as usize] {
@@ -349,6 +357,65 @@ fn fill_lakes(t: &mut Terrain, p: &SimParams, d: &Drainage, fall: f32, dt: f32) 
         }
     }
     budget
+}
+
+/// Each spring's water, followed down its path as far as it has got (`Terrain::spring_reach`):
+/// it runs as a stream (added to `flow`, thinning toward its leading edge) into the first hollow
+/// in its way and pours into it (`volume`); while that hollow isn't full it goes no further, and
+/// once it is, on over the rim through whatever is downhill. Where nothing stops it, it creeps
+/// on at `SPRING_SPEED`. Returns which hollows springs feed, and which their water has reached.
+#[allow(clippy::too_many_arguments)]
+fn run_springs(
+    (springs, spring_reach): (&[u32], &mut std::collections::HashMap<u32, f32>),
+    (n, cell): (usize, f32),
+    d: &Drainage,
+    label: &[u32],
+    full: &[bool],
+    volume: &mut [f64],
+    flow: &mut [f32],
+    dt: f32,
+) -> (Vec<bool>, Vec<bool>) {
+    let mut fed = vec![false; full.len()];
+    let mut reached = vec![false; full.len()];
+    spring_reach.retain(|k, _| springs.contains(k));
+    for &s in springs {
+        let reach = spring_reach.get(&s).copied().unwrap_or(0.0);
+        let (mut k, mut dist, mut first) = (s as usize, 0.0f32, true);
+        // Where something stops it (a hollow still filling, or the sea), if anything does.
+        let mut stopped = None;
+        while dist <= reach && k < label.len() {
+            let b = label[k];
+            if b != NONE {
+                let b = b as usize;
+                if first {
+                    volume[b] += (SPRING_FILL * dt) as f64;
+                    first = false;
+                }
+                fed[b] = true;
+                reached[b] = true;
+                if !full[b] {
+                    stopped = Some(dist);
+                    break;
+                }
+            } else {
+                flow[k] += SPRING_FLOW * ((reach - dist) / SPRING_EDGE).clamp(0.15, 1.0);
+            }
+            let r = d.receiver[k];
+            if r == NONE {
+                stopped = Some(dist);
+                break;
+            }
+            let r = r as usize;
+            // (Across a full hollow it's at once over the far rim: its surface is level.)
+            if b == NONE {
+                dist += if r / n != k / n && r % n != k % n { cell * std::f32::consts::SQRT_2 } else { cell };
+            }
+            k = r;
+        }
+        let on = reach + SPRING_SPEED * dt;
+        spring_reach.insert(s, stopped.map_or(on, |at: f32| on.min(at + cell)));
+    }
+    (fed, reached)
 }
 
 /// Cuts channels for `dt` seconds of the given flow, downstream first, each point toward its

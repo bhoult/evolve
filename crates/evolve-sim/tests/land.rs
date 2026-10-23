@@ -327,3 +327,57 @@ fn creatures_drink_from_a_stream() {
     let wet = sim.creature(id).unwrap().hydration;
     assert!(wet > dry + 0.3, "standing in a stream it should drink: {dry} -> {wet}");
 }
+
+#[test]
+fn a_spring_creeps_downhill_fills_the_hollow_in_its_way_then_runs_on() {
+    let mut p = quiet_params();
+    p.world_size = 80.0;
+    p.erosion_rate = 2.0;
+    let mut t = Terrain::generate(&p, 1);
+    let (n, size, wl) = (t.res, t.size, p.water_level);
+    // A valley falling along x, with a round hollow 6 m across in its middle.
+    let at = |v: usize| (v as f32 / (n - 1) as f32 - 0.5) * size;
+    for i in 0..n {
+        for j in 0..n {
+            let (x, z) = (at(j), at(i));
+            let r = x.hypot(z) / 6.0;
+            let bowl = if r < 1.0 { 1.5 * (1.0 - r * r) } else { 0.0 };
+            t.heights[i * n + j] = wl + 4.0 - 0.08 * x + 0.15 * z.abs() - bowl;
+        }
+    }
+    t.ground = t.heights.clone();
+    t.springs.push(t.nearest_point(-20.0, 0.0) as u32);
+    let center = t.nearest_point(0.0, 0.0);
+    let brim = hydro::drainage(&t, wl).filled[center];
+    let below = t.nearest_point(16.0, 0.0);
+
+    // When the water first gets to points down the valley, and when the hollow is full.
+    let marks = [-18.0, -12.0, 8.0, 16.0, 28.0];
+    let mut wet_at = [f32::MAX; 5];
+    let mut full_at = f32::MAX;
+    let dt = 2.0;
+    for step in 1..=300 {
+        let now = step as f32 * dt;
+        hydro::update(&mut t, &p, 0.0, 0.0, dt, Some(dt));
+        for (m, &x) in marks.iter().enumerate() {
+            if wet_at[m] == f32::MAX && t.water[t.nearest_point(x, 0.0)] > 0.0 {
+                wet_at[m] = now;
+            }
+        }
+        if full_at == f32::MAX && t.heights[center] + t.pooled[center] >= brim - 0.01 {
+            full_at = now;
+        }
+        if now < full_at {
+            assert_eq!(t.water[below], 0.0, "nothing runs on below the hollow before it's full (at {now} s)");
+            assert_eq!(t.eroded[below], 0.0, "nor wears the ground there");
+        }
+    }
+    let [a, b, c, d, e] = wet_at;
+    println!("wet at {wet_at:?} s, hollow full at {full_at} s");
+    assert!(a < b && b < f32::MAX, "it creeps down the slope: {a} then {b}");
+    assert!((8.0..=16.0).contains(&(b - a)), "at about half a meter a second: 6 m in {} s", b - a);
+    assert!(full_at > b + 20.0 && full_at < f32::MAX, "the hollow fills, gradually: full at {full_at} s");
+    assert!(c >= full_at && c < full_at + 10.0, "then it spills over the rim: {c} s");
+    assert!(c < d && d < e && e < f32::MAX, "and runs on down the valley: {c}, {d}, {e}");
+    assert!(t.eroded[below] > 0.0, "wearing a channel where it runs");
+}

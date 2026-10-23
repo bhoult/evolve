@@ -216,7 +216,7 @@ fn controls(ui: &mut egui::Ui) {
     bullet(ui, "Meteor: click a spot and a meteor comes down on it. It digs a crater, kills what it lands on, hurts and throws everything within 16 m, scorches the plants, and burns.");
     bullet(ui, "Whirlwind: click a spot and a whirlwind touches down there and wanders the island for 25 seconds, lifting creatures and boulders, whirling them round and flinging them out, and tearing up plants.");
     bullet(ui, "Raise land and Lower land: hold and sweep to reshape the island (the brush sets how wide). Raised out of the sea, it's new land; sunk below it, the sea comes in.");
-    bullet(ui, "Spring: click to make an eternal spring. Its stream runs downhill whatever the weather and fills the hollows it reaches; click it again to stop it.");
+    bullet(ui, "Spring: click to make an eternal spring. Whatever the weather, its water creeps downhill, fills the first hollow in its way, then spills over the rim and runs on, wearing a channel as it goes; click it again to stop it.");
     bullet(ui, "Earthquake: click to split the land across your view: a crack opens, one side heaves up, and everything within 70 m shakes for six seconds.");
     bullet(ui, "Land from the sky: click and a chunk of land falls there, raising a hill (out of the sea, new land) and crushing what's under it.");
     bullet(ui, "Manna: click and food falls from heaven there, a ring of full-grown plants.");

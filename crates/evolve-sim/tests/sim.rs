@@ -712,14 +712,15 @@ fn the_land_can_be_raised_lowered_split_and_added_to_and_springs_run() {
     sim.apply(Command::Terraform { at: at.to_array(), radius: 6.0, amount: -2.0 });
     assert!((h(&sim, at.x, at.z) - h0).abs() < 0.1, "and lowered back");
 
-    // A spring makes a stream, and stops when told.
+    // A spring wells up (running off, or filling the hollow it's in: raised and lowered, the
+    // ground isn't quite as it was), and stops when told.
     sim.apply(Command::Spring { at: at.to_array() });
     assert_eq!(sim.terrain.springs.len(), 1);
     for _ in 0..(10 * evolve_sim::sim::TICKS_PER_SECOND) {
         sim.step();
     }
-    let wet = sim.terrain.water_at(at.x, at.z);
-    assert!(wet > 0.2, "water runs from the spring: {wet} m");
+    let wet = sim.terrain.water[sim.terrain.springs[0] as usize];
+    assert!(wet > 0.02, "water wells up at the spring: {wet} m");
     sim.apply(Command::Spring { at: (at + Vec3::new(1.0, 0.0, 0.0)).to_array() });
     assert!(sim.terrain.springs.is_empty(), "clicking it again stops it");
 

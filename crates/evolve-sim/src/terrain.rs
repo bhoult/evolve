@@ -46,6 +46,9 @@ pub struct Terrain {
     /// Eternal springs, by grid point: each pours out water forever (see `hydro`).
     #[serde(default)]
     pub springs: Vec<u32>,
+    /// How far down its path each spring's water has got, m (by grid point; see `hydro`).
+    #[serde(default)]
+    pub spring_reach: std::collections::HashMap<u32, f32>,
     /// Grid rows and columns changed since the last `take_dirty` (i0, i1, j0, j1, inclusive).
     #[serde(skip)]
     pub dirty: Option<(usize, usize, usize, usize)>,
@@ -68,6 +71,7 @@ impl Default for Terrain {
             pooled: vec![0.0; 4],
             moisture: vec![0.0; 4],
             springs: Vec::new(),
+            spring_reach: Default::default(),
             dirty: None,
             version: 0,
         }
@@ -123,6 +127,7 @@ impl Terrain {
             pooled: vec![0.0; n],
             moisture: vec![0.0; n],
             springs: Vec::new(),
+            spring_reach: Default::default(),
             version,
             dirty: None,
         }
