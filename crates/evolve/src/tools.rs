@@ -26,6 +26,7 @@ pub enum Tool {
     Boulder,
     Creature,
     Remove,
+    Stones,
     Meteor,
     Whirlwind,
     Raise,
@@ -39,7 +40,7 @@ pub enum Tool {
 }
 
 impl Tool {
-    pub const ALL: [Tool; 17] = [
+    pub const ALL: [Tool; 18] = [
         Tool::Select,
         Tool::Plant,
         Tool::Meat,
@@ -47,6 +48,7 @@ impl Tool {
         Tool::Boulder,
         Tool::Creature,
         Tool::Remove,
+        Tool::Stones,
         Tool::Meteor,
         Tool::Whirlwind,
         Tool::Raise,
@@ -61,7 +63,7 @@ impl Tool {
 
     /// The acts of god, shown apart from the everyday tools.
     pub fn is_power(self) -> bool {
-        !matches!(self, Tool::Select | Tool::Plant | Tool::Meat | Tool::Rock | Tool::Boulder | Tool::Creature | Tool::Remove)
+        !matches!(self, Tool::Select | Tool::Plant | Tool::Meat | Tool::Rock | Tool::Boulder | Tool::Creature | Tool::Remove | Tool::Stones)
     }
 
     pub fn label(self) -> &'static str {
@@ -73,6 +75,7 @@ impl Tool {
             Tool::Boulder => "Boulder",
             Tool::Creature => "Drop creature",
             Tool::Remove => "Remove",
+            Tool::Stones => "Stones",
             Tool::Meteor => "Meteor",
             Tool::Whirlwind => "Whirlwind",
             Tool::Raise => "Raise land",
@@ -95,6 +98,7 @@ impl Tool {
             Tool::Boulder => "Click to place a boulder that can roll and be pushed.",
             Tool::Creature => "Click to drop a new creature from the sky (bred from the gene pool or random).",
             Tool::Remove => "Click a creature, plant, meat or obstacle to remove it.",
+            Tool::Stones => "Click to scatter a few loose stones there: creatures can pick them up, carry them and pile them (if they evolve to).",
             Tool::Meteor => "Click to call a meteor down there: a crater, a blast that throws and hurts what's near and kills what it lands on, and fire.",
             Tool::Whirlwind => "Click to set a whirlwind down there: for 25 seconds it wanders the island, lifting and flinging creatures and tearing up plants.",
             Tool::Raise => "Hold and sweep to raise the land (the brush sets how wide). Out of the sea, it makes new land.",
@@ -383,6 +387,18 @@ fn use_tool(
         (Tool::Remove, Hit::Meat(id)) => link.cmd(Command::RemoveMeat(id)),
         (Tool::Remove, Hit::Obstacle(id)) => link.cmd(Command::RemoveObstacle(id)),
         (Tool::Meteor, _) => tools.summon = Some((tools.tool, point)),
+        (Tool::Stones, _) => {
+            for k in 0..5 {
+                let a = rng_yaw + k as f32 * 1.3;
+                let r = 0.4 + 0.5 * k as f32;
+                link.cmd(Command::SpawnObstacle {
+                    pos: (point + Vec3::new(a.cos() * r, 0.0, a.sin() * r)).to_array(),
+                    shape: evolve_sim::carry::stone_shape(((rng_yaw * 3.7 + k as f32 * 0.61).sin() + 1.0) * 0.5),
+                    dynamic: true,
+                    yaw: a,
+                });
+            }
+        }
         (Tool::Whirlwind, _) => link.cmd(Command::Whirlwind { at: point.to_array() }),
         (Tool::Spring, _) => link.cmd(Command::Spring { at: point.to_array() }),
         (Tool::Manna, _) => link.cmd(Command::Manna { at: point.to_array() }),
@@ -403,9 +419,9 @@ fn hotkeys(keys: Res<ButtonInput<KeyCode>>, snap: Res<Snap>, link: Res<SimLink>,
         KeyCode::Digit6,
         KeyCode::Digit7,
         KeyCode::Digit8,
-        KeyCode::Digit9,
     ];
-    for (k, t) in digits.iter().zip(Tool::ALL) {
+    // Number keys pick the everyday tools; the powers are in their menu.
+    for (k, t) in digits.iter().zip(Tool::ALL.into_iter().filter(|t| !t.is_power())) {
         if keys.just_pressed(*k) {
             tools.tool = t;
         }

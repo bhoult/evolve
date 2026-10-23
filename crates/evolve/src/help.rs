@@ -197,9 +197,9 @@ fn controls(ui: &mut egui::Ui) {
     bullet(ui, "Right-drag orbits, middle-drag pans, scroll zooms.");
     bullet(ui, "WASD moves, Q and E turn.");
     bullet(ui, "F follows the selected creature (and opens its brain view). C turns on the director; any camera input takes over again.");
-    sub(ui, "Tools (keys 1 to 9)");
+    sub(ui, "Tools (keys 1 to 8)");
     bullet(ui, "1 Select: click a creature to inspect it, or hold and drag to carry it (scroll lifts it).");
-    bullet(ui, "2 Plant food, 3 drop meat, 4 place a rock, 5 place a boulder, 6 drop a creature, 7 remove things, 8 call down a meteor, 9 set down a whirlwind.");
+    bullet(ui, "2 Plant food, 3 drop meat, 4 place a rock, 5 place a boulder, 6 drop a creature, 7 remove things, 8 scatter stones. The powers are in the Powers menu.");
     sub(ui, "Keys");
     bullet(ui, "Space pauses, . steps once, + and - change speed (a quarter of real time up to Max).");
     bullet(ui, "F5 quick save, F9 quick load. Save / Load in the toolbar lists every saved world.");
@@ -211,9 +211,10 @@ fn controls(ui: &mut egui::Ui) {
     bullet(ui, "Right: population, charts, species and leaders. Bottom: the event log.");
     bullet(ui, "The clock at the top, in every view, shows the day and the time of day.");
     sub(ui, "Powers");
-    bullet(ui, "Storm (toolbar, second row) calls a storm down on the whole island for four minutes; click it again to calm it.");
-    bullet(ui, "Meteor (tool 8): click a spot and a meteor comes down on it. It digs a crater, kills what it lands on, hurts and throws everything within 16 m, scorches the plants, and burns.");
-    bullet(ui, "Whirlwind (tool 9): click a spot and a whirlwind touches down there and wanders the island for 25 seconds, lifting creatures and boulders, whirling them round and flinging them out, and tearing up plants.");
+    para(ui, "The Powers menu on the toolbar's second row holds the acts of god; pick one, then click where it should fall.");
+    bullet(ui, "Call a storm brings a storm down on the whole island for four minutes; the menu can calm it early.");
+    bullet(ui, "Meteor: click a spot and a meteor comes down on it. It digs a crater, kills what it lands on, hurts and throws everything within 16 m, scorches the plants, and burns.");
+    bullet(ui, "Whirlwind: click a spot and a whirlwind touches down there and wanders the island for 25 seconds, lifting creatures and boulders, whirling them round and flinging them out, and tearing up plants.");
     bullet(ui, "Raise land and Lower land: hold and sweep to reshape the island (the brush sets how wide). Raised out of the sea, it's new land; sunk below it, the sea comes in.");
     bullet(ui, "Spring: click to make an eternal spring. Its stream runs downhill whatever the weather and fills the hollows it reaches; click it again to stop it.");
     bullet(ui, "Earthquake: click to split the land across your view: a crack opens, one side heaves up, and everything within 70 m shakes for six seconds.");
@@ -730,6 +731,10 @@ fn land(ui: &mut egui::Ui, p: &SimParams) {
         ),
     );
     bullet(ui, "Creatures start with digging off, so evolution has to find it worth the effort.");
+    sub(ui, "Carrying and building");
+    bullet(ui, "With its grip on, a creature picks up what's at its mouth: a loose stone or boulder it can lift (up to 80% of its own mass), a plant or meat. With its grip off it sets it down; throwing tosses it forward. Its weight drags on the body while it's carried.");
+    bullet(ui, "Stones set down on stones make piles and walls; a plant takes root again where it's set down, so gardens can be made; meat can be cached.");
+    bullet(ui, "Creatures sense the nearest stone they could lift and whether they're holding something. Grip and throw start switched off, so building is up to evolution. Stones lie about each new world in patches; the Stones tool scatters more.");
 }
 
 fn weather(ui: &mut egui::Ui, p: &SimParams) {

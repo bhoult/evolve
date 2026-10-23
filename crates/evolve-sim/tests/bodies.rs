@@ -14,6 +14,7 @@ fn quiet_params() -> SimParams {
         min_population: 0,
         terrain_resolution: 65,
         weather: false,
+        stones: 0,
         ..SimParams::default()
     }
 }
@@ -321,6 +322,17 @@ fn brains_from_before_the_mating_drive_and_voices_upgrade_without_changing_behav
             _ => input::JOINTS + i - 45,
         },
         |k| if k < 87 { k } else { output::MEMORY + k - 87 },
+    );
+    // Before carrying: the soil sense at 42, then memories and joint angles; digging at 87-88.
+    check_upgrade(
+        128,
+        92,
+        |i| match i {
+            0..43 => i,
+            43..46 => input::MEMORY + i - 43,
+            _ => input::JOINTS + i - 46,
+        },
+        |k| if k < 89 { k } else { output::MEMORY + k - 89 },
     );
 }
 
@@ -704,8 +716,8 @@ fn totems_make_creatures_breed_fight_and_flee() {
     sim.apply(Command::Totem { at: at.to_array(), kind: TotemKind::Love });
     assert!(sim.acts.totems.is_empty(), "clicking it again takes it down");
 
-    // War: two that never bite fight by the totem.
-    let mut meek = never(legged(), output::ATTACK);
+    // War: two that never bite fight by the totem (blocks, whose whole body is a head).
+    let mut meek = never(base(13), output::ATTACK);
     meek.traits.aggression = -1.0;
     let war = sim.random_land_point(40.0) + Vec3::new(0.0, 0.0, 30.0);
     let c = sim.spawn_creature(meek.clone(), war, 0.3, f32::MAX, 0, None);
@@ -728,4 +740,83 @@ fn totems_make_creatures_breed_fight_and_flee() {
     let before = dist(&sim);
     run(&mut sim, 10);
     assert!(dist(&sim) > before + 3.0, "a totem of fear drives it away: {before:.1} -> {:.1} m", dist(&sim));
+}
+
+#[test]
+fn creatures_can_pick_up_and_carry_stones_and_drop_them() {
+    use evolve_sim::carry::{Held, stone_shape};
+    use evolve_sim::math::Vec3;
+    let mut p = quiet_params();
+    p.stones = 0;
+    p.plant_max_count = 0;
+    p.plant_spawn_rate = 0.0;
+    p.maturity_age = 1000.0;
+    let mut sim = Sim::new(p);
+    let at = sim.random_land_point(40.0);
+    // A low creature (its mouth near the ground) that always grips, with a stone at its mouth.
+    let g = always(base(12), output::GRIP);
+    let id = sim.spawn_creature(g, at, 0.3, f32::MAX, 0, None);
+    for _ in 0..30 {
+        sim.step();
+    }
+    let mouth = |sim: &Sim| {
+        let c = sim.creature(id).unwrap();
+        let t = sim.torso_of(c).unwrap();
+        t.position().transform_point(Vec3::new(c.torso_half().x, 0.0, 0.0))
+    };
+    let m = mouth(&sim);
+    let stone = sim.add_obstacle(Vec3::new(m.x, 0.0, m.z), stone_shape(0.3), true, 0.0);
+    for _ in 0..10 {
+        sim.step();
+    }
+    assert!(
+        matches!(sim.creature(id).unwrap().held, Some(Held::Obstacle { id, .. }) if id == stone),
+        "it picks up the stone at its mouth: {:?}",
+        sim.creature(id).unwrap().held
+    );
+    // Carried: the stone stays at its mouth as it moves.
+    for _ in 0..120 {
+        sim.step();
+    }
+    let o = sim.obstacles.iter().find(|o| o.id == stone).unwrap();
+    let pos = sim.shards[o.shard].world.bodies[o.body].translation();
+    assert!(pos.distance(mouth(&sim)) < 1.0, "carried at its mouth: {:.2} m away", pos.distance(mouth(&sim)));
+    assert_eq!(sim.creature(id).unwrap().brain.inputs[input::HOLDING], 1.0, "and it feels it's holding something");
+    // When it's gone, what it held falls and lies on the ground.
+    sim.apply(evolve_sim::Command::RemoveCreature(id));
+    for _ in 0..180 {
+        sim.step();
+    }
+    let o = sim.obstacles.iter().find(|o| o.id == stone).unwrap();
+    let b = &sim.shards[o.shard].world.bodies[o.body];
+    assert!(b.is_dynamic(), "set down, it's a loose stone again");
+    let ground = sim.terrain.height_at(b.translation().x, b.translation().z);
+    assert!(b.translation().y < ground + 0.5, "lying on the ground: {:.2} above it", b.translation().y - ground);
+}
+
+#[test]
+fn a_plant_carried_off_takes_root_where_it_is_dropped() {
+    use evolve_sim::carry::Held;
+    use evolve_sim::math::Vec3;
+    let mut p = quiet_params();
+    p.stones = 0;
+    p.plant_max_count = 0;
+    p.plant_spawn_rate = 0.0;
+    let mut sim = Sim::new(p);
+    let at = sim.random_land_point(40.0);
+    let id = sim.spawn_creature(always(base(12), output::GRIP), at, 0.3, f32::MAX, 0, None);
+    for _ in 0..30 {
+        sim.step();
+    }
+    let c = sim.creature(id).unwrap();
+    let mouth = sim.torso_of(c).unwrap().position().transform_point(Vec3::new(c.torso_half().x, 0.0, 0.0));
+    sim.add_plant(mouth, 12.0);
+    for _ in 0..10 {
+        sim.step();
+    }
+    assert!(matches!(sim.creature(id).unwrap().held, Some(Held::Plant(_))), "it picks the plant up");
+    assert!(sim.plants.is_empty(), "so it's no longer in the ground");
+    sim.apply(evolve_sim::Command::RemoveCreature(id));
+    sim.step();
+    assert_eq!(sim.plants.len(), 1, "dropped, it takes root again");
 }

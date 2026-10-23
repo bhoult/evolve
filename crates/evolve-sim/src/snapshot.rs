@@ -152,6 +152,8 @@ pub struct CreatureDetail {
     pub synapses: usize,
     pub neurons: usize,
     pub basal_cost: f32,
+    /// What it holds in its mouth, in words (None: nothing).
+    pub holding: Option<String>,
     /// A sketch of the brain's wiring, refreshed about once a second.
     pub wiring: Arc<crate::wiring::Wiring>,
 }
@@ -211,6 +213,22 @@ pub struct Snapshot {
 }
 
 impl Sim {
+    /// Plants (or meat) creatures are carrying, drawn at their mouths (with ids of their own).
+    fn carried(&self, plants: bool) -> Vec<FoodView> {
+        self.creatures
+            .iter()
+            .filter_map(|c| {
+                let energy = match (c.held, plants) {
+                    (Some(crate::carry::Held::Plant(e)), true) | (Some(crate::carry::Held::Meat(e)), false) => e,
+                    _ => return None,
+                };
+                let t = self.torso_of(c)?;
+                let mouth = t.position().transform_point(crate::math::Vec3::new(c.torso_half().x + 0.1, -0.1, 0.0));
+                Some(FoodView { id: u64::MAX - c.id, pos: mouth.to_array(), energy })
+            })
+            .collect()
+    }
+
     pub fn snapshot(&self, terrain: Arc<Terrain>, history: Arc<Vec<Sample>>) -> Snapshot {
         let pose = |shard: usize, h| {
             self.shards[shard]
@@ -331,6 +349,11 @@ impl Sim {
                 brain_cost: c.brain_cost(p, self.brain_price),
                 synapses: c.genome.brain.synapses(),
                 neurons: c.genome.brain.h,
+                holding: c.held.map(|h| match h {
+                    crate::carry::Held::Obstacle { mass, .. } => format!("a stone ({mass:.0} kg)"),
+                    crate::carry::Held::Plant(_) => "a plant".to_string(),
+                    crate::carry::Held::Meat(_) => "meat".to_string(),
+                }),
                 basal_cost: p.basal_metabolism
                     * c.mass.powf(0.75)
                     * (1.0 + 0.5 * t.armor + 0.3 * t.breath),
@@ -341,8 +364,8 @@ impl Sim {
             tick: self.tick,
             time: self.time,
             creatures,
-            plants: self.plants.iter().map(food).collect(),
-            meat: self.meat.iter().map(food).collect(),
+            plants: self.plants.iter().map(food).chain(self.carried(true)).collect(),
+            meat: self.meat.iter().map(food).chain(self.carried(false)).collect(),
             obstacles,
             terrain,
             params: self.params.clone(),

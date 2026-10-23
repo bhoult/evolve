@@ -491,28 +491,35 @@ fn toolbar(
                 }
             }
             ui.separator();
-            ui.label(egui::RichText::new("Powers").strong());
-            for t in Tool::ALL.into_iter().filter(|t| t.is_power()) {
+            // The acts of god, in a menu of their own: the one in hand shows on the button.
+            let title = if tools.tool.is_power() { format!("Powers: {} ⏷", tools.tool.label()) } else { "Powers ⏷".to_string() };
+            let button = egui::Button::new(title).selected(tools.tool.is_power());
+            egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                for t in Tool::ALL.into_iter().filter(|t| t.is_power()) {
+                    if ui.selectable_label(tools.tool == t, t.label()).on_hover_text(t.hint()).clicked() {
+                        tools.tool = t;
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                let storm = if snap.storm_left > 0.0 {
+                    let s = snap.storm_left as u32;
+                    format!("Calm the storm ({}:{:02} left)", s / 60, s % 60)
+                } else {
+                    "Call a storm".to_string()
+                };
                 if ui
-                    .selectable_label(tools.tool == t, t.label())
-                    .on_hover_text(t.hint())
+                    .button(storm)
+                    .on_hover_text("A storm over the whole island for four minutes: wind, rain and lightning")
                     .clicked()
                 {
-                    tools.tool = t;
+                    link.cmd(if snap.storm_left > 0.0 { Command::CalmStorm } else { Command::SummonStorm { seconds: 240.0 } });
+                    ui.close();
                 }
-            }
-            let storm = if snap.storm_left > 0.0 {
+            });
+            if snap.storm_left > 0.0 {
                 let s = snap.storm_left as u32;
-                format!("Calm the storm {}:{:02}", s / 60, s % 60)
-            } else {
-                "Storm".to_string()
-            };
-            if ui
-                .selectable_label(snap.storm_left > 0.0, storm)
-                .on_hover_text("Call a storm down on the island for four minutes: wind, rain and lightning (click again to calm it)")
-                .clicked()
-            {
-                link.cmd(if snap.storm_left > 0.0 { Command::CalmStorm } else { Command::SummonStorm { seconds: 240.0 } });
+                ui.label(egui::RichText::new(format!("storm {}:{:02}", s / 60, s % 60)).weak());
             }
             ui.separator();
             match tools.tool {
@@ -1024,6 +1031,7 @@ fn inspector(
                     format!("{} children, {} kills, {} bites", c.life.children, c.life.kills, c.life.attacks),
                 );
                 row("Exertion", format!("{:.2} W per kg of body", c.exertion));
+                row("Holding", c.holding.clone().unwrap_or_else(|| "nothing".to_string()));
                 let [eat, hunt, breed, travel] = c.score;
                 row(
                     "Score",

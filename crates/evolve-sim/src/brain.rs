@@ -105,7 +105,11 @@ pub mod input {
     pub const HEAR_LIKE: usize = 41;
     /// How full its load of carried earth is, 0..1.
     pub const SOIL: usize = 42;
-    pub const MEMORY: usize = 43;
+    /// The nearest stone it could pick up: forward, sideways, closeness.
+    pub const STONE: usize = 43;
+    /// Whether it's holding something in its mouth (a stone, a boulder, a plant, meat), 0 or 1.
+    pub const HOLDING: usize = 46;
+    pub const MEMORY: usize = 47;
     pub const JOINTS: usize = MEMORY + N_MEMORY;
     pub const COUNT: usize = JOINTS + N_MOTORS;
 }
@@ -123,7 +127,11 @@ pub mod output {
     /// Digging out the ground at its mouth (above 0.2), and piling carried earth there.
     pub const DIG: usize = N_MOTORS + 5;
     pub const PILE: usize = N_MOTORS + 6;
-    pub const MEMORY: usize = N_MOTORS + 7;
+    /// Gripping in its mouth: picks up what's at its mouth above 0.2, lets go below 0.
+    pub const GRIP: usize = N_MOTORS + 7;
+    /// Throwing what it holds: above 0.5 it lets go with a toss forward, harder the higher.
+    pub const THROW: usize = N_MOTORS + 8;
+    pub const MEMORY: usize = N_MOTORS + 9;
     pub const COUNT: usize = MEMORY + N_MEMORY;
 }
 
@@ -139,6 +147,7 @@ pub fn input_label(i: usize) -> String {
         "other size", "other aggro", "ray left", "ray mid", "ray right", "pain", "in water",
         "mate fwd", "mate side", "mate near", "hydration", "water fwd", "water side", "water near",
         "mating drive", "hear fwd", "hear side", "hear loud", "hear pitch", "hear kin", "soil carried",
+        "stone fwd", "stone side", "stone near", "holding",
     ];
     if i < fixed.len() {
         fixed[i].to_string()
@@ -159,6 +168,8 @@ pub fn output_label(i: usize) -> String {
         CALL_PITCH => "call pitch".into(),
         DIG => "dig".into(),
         PILE => "pile".into(),
+        GRIP => "grip".into(),
+        THROW => "throw".into(),
         _ if i >= MEMORY => format!("memory {}", i - MEMORY),
         _ => format!("{} target", motor_label(i)),
     }
@@ -452,6 +463,19 @@ impl BrainGenes {
                     }),
                     false,
                 ),
+                // Before carrying: no stone or holding senses, no grip.
+                (128, 92) => (
+                    Box::new(|i| match i {
+                        0..43 => i,
+                        _ if i < 43 + N_MEMORY => input::MEMORY + i - 43,
+                        _ => input::JOINTS + i - 43 - N_MEMORY,
+                    }),
+                    Box::new(|k| match k {
+                        0..89 => k,
+                        _ => output::MEMORY + k - 89,
+                    }),
+                    false,
+                ),
                 _ => return false,
             };
         let sigma_in = 1.5 / TYPICAL_INPUTS.sqrt();
@@ -482,11 +506,14 @@ impl BrainGenes {
             w_out[nk * h..(nk + 1) * h].copy_from_slice(&self.w_out.0[k * h..(k + 1) * h]);
             b_out[nk] = self.b_out[k];
         }
-        // Silent and idle until evolution finds a use for a voice or a spade.
-        for k in [output::CALL, output::CALL_PITCH, output::DIG, output::PILE] {
-            if (n_in, n_out) == (127, 90) && k < output::DIG {
-                continue;
-            }
+        // Silent and idle until evolution finds a use for a voice, a spade or a grip: each action
+        // the old brain didn't have starts switched off.
+        let new_actions: &[usize] = match n_out {
+            92 => &[output::GRIP, output::THROW],
+            90 => &[output::DIG, output::PILE, output::GRIP, output::THROW],
+            _ => &[output::CALL, output::CALL_PITCH, output::DIG, output::PILE, output::GRIP, output::THROW],
+        };
+        for &k in new_actions {
             w_out[k * h..(k + 1) * h].fill(f16::ZERO);
             b_out[k] = if k == output::CALL_PITCH { 0.0 } else { -1.0 };
         }

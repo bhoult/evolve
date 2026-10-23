@@ -7,11 +7,15 @@ use evolve_sim::rng::Rng;
 /// learn to push it up. With learning off it shouldn't change.
 fn train(lr_scale: f32) -> (f32, f32) {
     let mut rng = Rng::new(5);
-    let g = BrainGenes::random(&mut rng, 16);
+    let k = 3;
+    let mut g = BrainGenes::random(&mut rng, 16);
+    // Starting low, so there's room to learn to raise it (whatever the random wiring).
+    let h = g.h;
+    g.w_out.0[k * h..(k + 1) * h].fill(half::f16::ZERO);
+    g.b_out[k] = -1.0;
     let mut st = BrainState::new(&g);
     let x: [f32; N_IN] = std::array::from_fn(|_| rng.signed() * 0.5);
     let dt = 1.0 / 30.0;
-    let k = 3;
     let (mut early, mut late) = (0.0, 0.0);
     let ticks = 6000;
     for t in 0..ticks {
@@ -26,8 +30,9 @@ fn train(lr_scale: f32) -> (f32, f32) {
         st.noise[k] = 0.2 * rng.normal();
         let action = (st.outputs[k] + st.noise[k]).clamp(-1.0, 1.0);
         st.reward = action;
-        if t < 300 {
-            early += st.outputs[k] / 300.0;
+        // The first second, before much is learned.
+        if t < 30 {
+            early += st.outputs[k] / 30.0;
         }
         if t >= ticks - 300 {
             late += st.outputs[k] / 300.0;

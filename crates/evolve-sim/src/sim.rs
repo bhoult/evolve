@@ -119,6 +119,9 @@ pub struct Creature {
     /// Where the totems drive it, as an acceleration (m/s²): toward a fight, or away in fear.
     #[serde(skip)]
     pub urge_push: Vec3,
+    /// What it holds in its mouth (see `carry`).
+    #[serde(default)]
+    pub held: Option<crate::carry::Held>,
 }
 
 impl Creature {
@@ -395,7 +398,33 @@ impl Sim {
             tries += 1;
             sim.try_spawn_random_plant(energy, &mut grid);
         }
+        sim.scatter_stones();
         sim
+    }
+
+    /// Loose stones lying about the island in patches (the makings of anything creatures build).
+    fn scatter_stones(&mut self) {
+        let total = self.params.stones;
+        let patches = total.div_ceil(10);
+        let mut placed = 0;
+        for _ in 0..patches {
+            let center = self.random_land_point(8.0);
+            for _ in 0..10 {
+                if placed >= total {
+                    return;
+                }
+                let a = self.rng.range(0.0, std::f32::consts::TAU);
+                let r = self.rng.range(0.0, 4.0);
+                let at = center + Vec3::new(a.cos() * r, 0.0, a.sin() * r);
+                if self.terrain.height_at(at.x, at.z) <= self.params.water_level {
+                    continue;
+                }
+                let shape = crate::carry::stone_shape(self.rng.range(0.0, 1.0));
+                let yaw = self.rng.range(0.0, std::f32::consts::TAU);
+                self.add_obstacle(at, shape, true, yaw);
+                placed += 1;
+            }
+        }
     }
 
     /// Rebuild state that isn't saved.
@@ -1020,6 +1049,7 @@ impl Sim {
             drowning: false,
             urge: [0.0; 3],
             urge_push: Vec3::ZERO,
+            held: None,
             last_attacker: None,
             attacked_ago: long_ago(),
             attack_flash: 0.0,
@@ -1257,6 +1287,7 @@ impl Sim {
             self.wash_away();
         }
         self.environment_forces();
+        self.carry();
         let t_forces = Instant::now();
         // The physics worlds step in parallel: rapier solves a world's articulations on one
         // thread.
@@ -1672,6 +1703,12 @@ impl Sim {
         if !self.creatures.iter().any(|c| c.dead.is_some()) {
             return;
         }
+        // What the dead held falls where they were.
+        for ci in 0..self.creatures.len() {
+            if self.creatures[ci].dead.is_some() && self.creatures[ci].held.is_some() {
+                self.drop_held(ci);
+            }
+        }
         // Credit kills first, while every killer (even one that died this step too) is still in
         // the index.
         let mut kills = Vec::new();
@@ -1927,7 +1964,7 @@ fn obstacle_collider(id: u64, shape: ObstacleShape) -> ColliderBuilder {
 }
 
 /// How far an obstacle reaches from its center, m.
-fn obstacle_radius(shape: ObstacleShape) -> f32 {
+pub(crate) fn obstacle_radius(shape: ObstacleShape) -> f32 {
     match shape {
         ObstacleShape::Box { half } => (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt(),
         ObstacleShape::Ball { radius } => radius,

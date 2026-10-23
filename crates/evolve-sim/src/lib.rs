@@ -3,6 +3,7 @@
 
 pub mod acts;
 pub mod body;
+pub mod carry;
 pub mod brain;
 pub mod commands;
 pub mod genome;

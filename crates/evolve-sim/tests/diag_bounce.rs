@@ -1031,3 +1031,45 @@ fn motor_load() {
     );
     println!("deaths: {:?}", (sim.stats.deaths_starved, sim.stats.deaths_drowned, sim.stats.deaths_other));
 }
+
+/// Where a spring's water goes: a spring in a hollow beside an earthquake crack, run for a while
+/// without rain. Prints the pond, the water in the crack and the stream between.
+#[test]
+#[ignore]
+fn spring_beside_a_crack() {
+    use evolve_sim::Command;
+    let mut p = params();
+    p.terrain_resolution = SimParams::default().terrain_resolution;
+    p.min_population = 0;
+    p.weather = false;
+    let mut sim = Sim::new(p);
+    let at = sim.random_land_point(40.0);
+    // A hollow, and a crack running past it 8 m away.
+    sim.apply(Command::Terraform { at: at.to_array(), radius: 5.0, amount: -2.5 });
+    let crack: Vec<[f32; 2]> = (-6..=6).map(|k| [at.x + k as f32 * 4.0, at.z + 8.0]).collect();
+    sim.apply(Command::Earthquake { path: crack.clone() });
+    sim.apply(Command::Spring { at: at.to_array() });
+    let t = |sim: &Sim| sim.terrain.clone();
+    for minute in 0..=10 {
+        if minute > 0 {
+            for _ in 0..(60 * TICKS_PER_SECOND) {
+                sim.step();
+            }
+        }
+        let tr = t(&sim);
+        let pond = tr.water_at(at.x, at.z);
+        let crack_water: Vec<String> = (-6..=6).map(|k| format!("{:.2}", tr.water_at(at.x + k as f32 * 4.0, at.z + 8.0))).collect();
+        let between: Vec<String> = (0..=8).map(|k| format!("{:.2}", tr.water_at(at.x, at.z + k as f32))).collect();
+        println!("min {minute:2}: pond {pond:.2} m | between {} | crack {}", between.join(" "), crack_water.join(" "));
+    }
+    let tr = t(&sim);
+    let h: Vec<String> = (0..=10).map(|k| format!("{:.1}", tr.height_at(at.x, at.z + k as f32))).collect();
+    println!("ground from the spring to the crack: {}", h.join(" "));
+    let rim: Vec<String> = (0..16)
+        .map(|k| {
+            let a = k as f32 * std::f32::consts::TAU / 16.0;
+            format!("{:.1}", tr.height_at(at.x + a.cos() * 5.5, at.z + a.sin() * 5.5))
+        })
+        .collect();
+    println!("pond rim heights: {}  (pond surface {:.1})", rim.join(" "), tr.height_at(at.x, at.z) + tr.water_at(at.x, at.z));
+}

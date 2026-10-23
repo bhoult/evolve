@@ -53,7 +53,7 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 | F | follow the selected creature (opens its brain view) |
 | C | director: the camera runs itself (any camera input takes over again) |
 | M | mute; the volume slider is in the toolbar |
-| 1-9 | tools: select and drag, plant food, meat, rock, boulder, drop creature, remove, meteor, whirlwind |
+| 1-8 | tools: select and drag, plant food, meat, rock, boulder, drop creature, remove, stones (the powers are in the Powers menu) |
 | Left click | use the tool. With Select, click a creature to inspect it, or hold and drag to carry it (scroll lifts it) |
 | Space, `.` | pause, single step |
 | + / - | speed (¼× up to Max) |
@@ -108,19 +108,20 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 **The clock** at the top of the screen, in every view, shows the day (counting from the world's
 first) and the time of day.
 
-**Powers.** The toolbar's second row also calls down acts of god on the island.
-- *Storm* brings a storm over the whole island for four minutes: it builds over half a minute
-  to a downpour and a gale with lightning, and dies away over the last 45 seconds. Click it again
-  (it shows the time left) to calm it early. Plants grow faster in it, streams swell and lakes
+**Powers.** The Powers menu on the toolbar's second row calls down acts of god on the island
+(the one in hand shows on its button).
+- *Call a storm* brings a storm over the whole island for four minutes: it builds over half a minute
+  to a downpour and a gale with lightning, and dies away over the last 45 seconds. The menu then
+  offers to calm it early (the time left also shows beside the menu). Plants grow faster in it, streams swell and lakes
   fill. A saved world keeps its storm.
-- *Meteor* (tool 8): click a spot and a meteor streaks down onto it, roaring, trailing fire and
+- *Meteor*: click a spot and a meteor streaks down onto it, roaring, trailing fire and
   smoke. It blasts out a crater 4 m across the bowl, its earth thrown up into a rim (earth is
   conserved, and the crater can't go deeper than `dig_depth`), kills whatever it lands on, hurts
   and throws everything within 16 m (up and away, harder the closer), scatters boulders, and
   burns the plants nearby. A fireball, a mushroom of smoke, a ring of dust and flying rock follow,
   the view jolts, and the crater burns for a while. Creatures thrown by it land unhurt by the
   landing itself: nothing in the world takes fall damage.
-- *Whirlwind* (tool 9): click a spot and a whirlwind touches down there. It spins up in place over
+- *Whirlwind*: click a spot and a whirlwind touches down there. It spins up in place over
   a few seconds, then wanders the island for 25 seconds, turning back from the sea and the
   world's edge. Its air circles the core at up to 22 m/s, draws inward and rises through the
   middle: every body part within 14 m is dragged toward that air, and in the core it's held up
@@ -438,6 +439,26 @@ evolution moving until the population can sustain itself.
 - *Senses:* the brain feels how full its load is.
 - *Starting out:* random creatures start with digging off and upgraded ones with it silent, so
   evolution has to find it worth the effort.
+
+**Carrying and building.** Creatures can also pick things up in their mouths and move them: the
+makings of walls, piles, caches and gardens, if evolution finds a use for them.
+- *Grip:* with its grip output above 0.2 and nothing held, a creature picks up the nearest thing
+  within reach of its mouth (`eat_reach` + 0.25 m): a loose stone or boulder it can lift (up to
+  80% of its own mass), a plant, or a piece of meat. Below 0 it lets go, setting the thing down at
+  its mouth. A stone is carried at the mouth and passes through things while carried; its weight
+  pulls down on the torso, so carrying is work.
+- *Throw:* with its throw output above 0.5 it lets go with a toss forward, up to 8 m/s (up and
+  away), stones and food alike.
+- *What lands where:* a stone or boulder falls and lies where it's dropped, so stones set down on
+  stones make piles and walls; a plant takes root again where it lands (on land), so plants can
+  be moved and gardens made; meat lies where it's dropped.
+- *Senses:* the direction and closeness of the nearest stone it could lift, and whether it's
+  holding something.
+- *Stones:* `stones` (150) loose stones, 3 to 25 kg, lie about each new world in patches. The
+  Stones tool scatters more.
+- *Starting out:* grip and throw start switched off (in random creatures and in upgraded brains
+  alike), so carrying, like digging, has to be found worth the effort. When a creature dies, what
+  it held drops where it was. The inspector shows what a creature holds.
 
 **Land and water** (`hydrology`, hydro.rs). Rain runs off the island and the island wears.
 - *Streams:* every couple of simulated seconds the island is drained toward the sea. Each point

@@ -391,7 +391,7 @@ impl Genome {
                 // output weights alone would push a good share of them over the threshold.)
                 let mut b = BrainGenes::random(rng, n_hidden);
                 let h = b.h;
-                for k in [crate::brain::output::DIG, crate::brain::output::PILE] {
+                for k in [crate::brain::output::DIG, crate::brain::output::PILE, crate::brain::output::GRIP, crate::brain::output::THROW] {
                     b.w_out.0[k * h..(k + 1) * h].fill(half::f16::ZERO);
                     b.b_out[k] = -1.0;
                 }

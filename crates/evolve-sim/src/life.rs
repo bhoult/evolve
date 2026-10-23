@@ -25,6 +25,9 @@ struct SenseCtx<'a> {
     torso: Vec<Vec3>,
     plants: Grid,
     meat: Grid,
+    /// Loose stones and boulders (and their positions and masses), for the stone sense.
+    stones: Grid,
+    stone_at: Vec<(Vec3, f32)>,
     creatures: Grid,
     calls: Vec<Call>,
 }
@@ -132,8 +135,26 @@ impl Sim {
             let size = self.terrain.size;
             let mut creatures = Grid::new(size, GRID_CELL);
             creatures.rebuild(torso.iter().copied());
+            let taken: Vec<u64> = self
+                .creatures
+                .iter()
+                .filter_map(|c| match c.held {
+                    Some(crate::carry::Held::Obstacle { id, .. }) => Some(id),
+                    _ => None,
+                })
+                .collect();
+            let stone_at: Vec<(Vec3, f32)> = self
+                .obstacles
+                .iter()
+                .filter(|o| o.dynamic && !taken.contains(&o.id))
+                .filter_map(|o| self.shards[o.shard].world.bodies.get(o.body).map(|b| (b.translation(), b.mass())))
+                .collect();
+            let mut stones = Grid::new(size, GRID_CELL);
+            stones.rebuild(stone_at.iter().map(|s| s.0));
             let cx = SenseCtx {
                 sim: self,
+                stones,
+                stone_at,
                 plants: food_grid(size, &self.plants),
                 meat: food_grid(size, &self.meat),
                 creatures,
@@ -229,6 +250,7 @@ impl Sim {
     }
 
     pub(crate) fn interact(&mut self, bdt: f32) {
+        self.grip();
         self.trample(bdt);
         self.eat(bdt);
         self.fight();
@@ -912,6 +934,12 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
     if let Some((k, _)) = cx.meat.nearest(pos, r, |k| sim.meat[k as usize].pos, |_| true) {
         put_dir(&mut x, MEAT, sim.meat[k as usize].pos);
     }
+    // The nearest stone (or boulder) light enough to lift.
+    let can_lift = crate::carry::LIFT * c.mass;
+    if let Some((k, _)) = cx.stones.nearest(pos, r, |k| cx.stone_at[k as usize].0, |k| cx.stone_at[k as usize].1 <= can_lift) {
+        put_dir(&mut x, STONE, cx.stone_at[k as usize].0);
+    }
+    x[HOLDING] = if c.held.is_some() { 1.0 } else { 0.0 };
     let mut mate: Option<(usize, f32)> = None;
     cx.creatures.for_each_near(pos, r, |k| {
         let k = k as usize;

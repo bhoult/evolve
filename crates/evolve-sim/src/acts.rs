@@ -232,7 +232,9 @@ impl Sim {
                     away += off.normalize_or(Vec3::X) * f;
                 }
             }
-            let mut push = away.normalize_or_zero() * (6.0 * urge[2]);
+            // Strong enough to drive even a body that can't move itself off over flat ground
+            // (more than its friction holds it with).
+            let mut push = away.normalize_or_zero() * (12.0 * urge[2]);
             if urge[1] > 0.0 {
                 // The nearest other creature within reach, to go at.
                 let near = torso
@@ -241,7 +243,7 @@ impl Sim {
                     .filter(|&(j, q)| j != i && q.distance(p) < 12.0)
                     .min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)));
                 if let Some((_, q)) = near {
-                    push += Vec3::new(q.x - p.x, 0.0, q.z - p.z).normalize_or_zero() * (3.0 * urge[1]);
+                    push += Vec3::new(q.x - p.x, 0.0, q.z - p.z).normalize_or_zero() * (10.0 * urge[1]);
                 }
             }
             if urge[0] > 0.0 {

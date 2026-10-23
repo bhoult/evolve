@@ -89,6 +89,8 @@ params! {
     "World" {
         /// Random seed for terrain and fertility.
         seed: u64 = 1, [0, 1_000_000], NewWorld;
+        /// Loose stones lying about a new world in patches, for creatures to carry (and build with).
+        stones: u32 = 150, [0, 2000], NewWorld;
         /// Width and depth of the square world, ocean included, in meters.
         world_size: f32 = 220.0, [60, 800], NewWorld;
         /// Height samples along each side of the terrain grid.
