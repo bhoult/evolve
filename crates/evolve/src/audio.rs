@@ -83,6 +83,8 @@ pub enum Sfx {
     Whoosh,
     /// A meteor's impact: a crack, a deep thump and a long rumble.
     Explosion,
+    /// An earthquake: a deep, shuddering rumble with the ground cracking in it.
+    Rumble,
 }
 
 impl Sfx {
@@ -104,6 +106,7 @@ impl Sfx {
             Sfx::Ascend => 0.776,
             Sfx::Whoosh => 0.372,
             Sfx::Explosion => 0.966,
+            Sfx::Rumble => 1.084,
         }
     }
 }
@@ -205,6 +208,7 @@ impl Voice {
             Sfx::Ascend => 2.2,
             Sfx::Whoosh => 1.9,
             Sfx::Explosion => 5.0,
+            Sfx::Rumble => 6.5,
         }
     }
 
@@ -353,6 +357,21 @@ impl Voice {
                 let thump = tone(&mut self.phase, 55.0 - 25.0 * (t / 0.5).min(1.0)) * 1.5 * (-t * 3.0).exp();
                 let roar = self.lp.run(n.next(), 250.0 + 900.0 * (-t * 2.0).exp(), rate) * 6.0;
                 crack + thump + roar * (1.0 - (-t * 60.0).exp()) * (-t * 0.9).exp()
+            }
+            Sfx::Rumble => {
+                let len = self.length();
+                let env = (t / 0.3).min(1.0) * ((len - t) / 2.0).clamp(0.0, 1.0);
+                let shudder = 0.6 + 0.4 * (t * 9.0).sin() * (t * 3.1 + self.seed).sin();
+                let body = self.lp.run(n.next(), 110.0, rate) * 9.0 * shudder;
+                // Cracks: sharp bursts at uneven moments.
+                let slot = (t / 0.37).floor();
+                let u = t - slot * 0.37 - 0.1 * ((slot * 5.3 + self.seed * 11.0).sin() + 1.0);
+                let crack = if (0.0..0.06).contains(&u) {
+                    (n.next() - self.lp2.run(n.next(), 1500.0, rate)) * (-u * 60.0).exp() * 0.8
+                } else {
+                    0.0
+                };
+                (body + crack) * env
             }
             Sfx::Impact => {
                 // A short low knock with a little grit on top; `pitch` drops for heavy parts.
@@ -870,6 +889,7 @@ fn feed_audio(
             HighlightKind::Blessing => (Sfx::Blessing, 1.0, 0.5, 1.0),
             HighlightKind::Ascension => (Sfx::Ascend, 1.0, 0.5, 1.0),
             HighlightKind::Meteor => (Sfx::Explosion, 1.0, 0.3, 1.0),
+            HighlightKind::Landfall => (Sfx::Explosion, 0.8, 0.3, 1.0),
             // A smite's sound is its thunder, which the lightning sends.
             HighlightKind::Smite => continue,
         };
@@ -937,6 +957,7 @@ mod tests {
             Sfx::Ascend,
             Sfx::Whoosh,
             Sfx::Explosion,
+            Sfx::Rumble,
         ];
         let out = render([1.0; 4], &all, 4.0);
         assert!(out.iter().all(|x| x.is_finite() && x.abs() <= 1.0));
@@ -946,7 +967,7 @@ mod tests {
 
     #[test]
     fn each_sound_makes_a_sound_and_muting_silences() {
-        for sfx in [Sfx::Bite, Sfx::Kill, Sfx::Birth, Sfx::Record, Sfx::Splash, Sfx::Bubbles, Sfx::Thunder { near: true }, Sfx::Impact, Sfx::Call, Sfx::Blessing, Sfx::Ascend, Sfx::Whoosh, Sfx::Explosion] {
+        for sfx in [Sfx::Bite, Sfx::Kill, Sfx::Birth, Sfx::Record, Sfx::Splash, Sfx::Bubbles, Sfx::Thunder { near: true }, Sfx::Impact, Sfx::Call, Sfx::Blessing, Sfx::Ascend, Sfx::Whoosh, Sfx::Explosion, Sfx::Rumble] {
             let out = render([1.0, 0.0, 0.0, 0.0], &[sfx], 1.5);
             let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
             assert!(peak > 0.05, "{sfx:?} is too quiet: peak {peak}");
@@ -1047,6 +1068,7 @@ mod mix {
             (Sfx::Ascend, -20.0),
             (Sfx::Whoosh, -18.0),
             (Sfx::Explosion, -10.0),
+            (Sfx::Rumble, -13.0),
         ];
         for (sfx, target) in events {
             let e = SoundEvent { sfx, gain: 1.0, pan: 0.0, pitch: 1.0, voice: [0.5; 4] };

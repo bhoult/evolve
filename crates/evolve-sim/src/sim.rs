@@ -1333,6 +1333,12 @@ impl Sim {
                     let m = b.mass();
                     b.add_force(dv * m / DT, true);
                 }
+                // An earthquake shakes every part (the same for a whole creature).
+                let shake = self.acts.shaking(b.translation().x, b.translation().z, self.time, (c.id % 97) as f32 * 0.37);
+                if shake != Vec3::ZERO {
+                    let m = b.mass();
+                    b.add_force(shake * m, true);
+                }
                 // A whirlwind drags each part toward its air (over about half a second), and
                 // holds up some of its weight in the core, so it lifts heavy bodies too.
                 for w in &self.acts.whirlwinds {

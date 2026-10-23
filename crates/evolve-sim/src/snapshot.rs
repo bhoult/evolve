@@ -76,6 +76,8 @@ pub enum HighlightKind {
     Ascension,
     /// A meteor struck here; `strength` is how far its blast reached, m.
     Meteor,
+    /// A chunk of land fell from the sky here; `strength` is its radius, m.
+    Landfall,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -176,6 +178,8 @@ pub struct Snapshot {
     pub storm_left: f32,
     /// Whirlwinds: where each is (x, z), how strong (0..1), and its seed.
     pub whirlwinds: Vec<([f32; 2], f32, u32)>,
+    /// Whether the ground is shaking (an earthquake), 0..1 at the camera's reach.
+    pub quaking: bool,
     /// Which day it is, counting from 1.
     pub day: u64,
     pub grabbing: bool,
@@ -346,6 +350,7 @@ impl Sim {
             selected,
             storm_left: self.acts.storm_left(self.time),
             whirlwinds: self.acts.whirlwinds.iter().map(|w| ([w.x, w.z], w.strength(self.time), w.seed)).collect(),
+            quaking: self.acts.quake.is_some(),
             day: crate::weather::day_number(&self.params, self.time),
             grabbing: self.grab.is_some(),
             pool_size: self.pool.entries.len(),

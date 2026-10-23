@@ -480,8 +480,8 @@ fn toolbar(
                 }
             });
         });
-        ui.horizontal(|ui| {
-            for t in Tool::ALL {
+        ui.horizontal_wrapped(|ui| {
+            for t in Tool::ALL.into_iter().filter(|t| !t.is_power()) {
                 if ui
                     .selectable_label(tools.tool == t, t.label())
                     .on_hover_text(t.hint())
@@ -491,6 +491,16 @@ fn toolbar(
                 }
             }
             ui.separator();
+            ui.label(egui::RichText::new("Powers").strong());
+            for t in Tool::ALL.into_iter().filter(|t| t.is_power()) {
+                if ui
+                    .selectable_label(tools.tool == t, t.label())
+                    .on_hover_text(t.hint())
+                    .clicked()
+                {
+                    tools.tool = t;
+                }
+            }
             let storm = if snap.storm_left > 0.0 {
                 let s = snap.storm_left as u32;
                 format!("Calm the storm {}:{:02}", s / 60, s % 60)
@@ -506,7 +516,7 @@ fn toolbar(
             }
             ui.separator();
             match tools.tool {
-                Tool::Plant => {
+                Tool::Plant | Tool::Raise | Tool::Lower => {
                     ui.add(egui::Slider::new(&mut tools.brush, 0.5..=15.0).text("brush m"));
                 }
                 Tool::Rock | Tool::Boulder => {

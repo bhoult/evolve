@@ -128,6 +128,20 @@ first) and the time of day.
   flung out (the lift fades between 6 and 18 m up). It tears up the plants and meat in its path,
   roars as it nears the camera, and is drawn as a funnel of dust with debris and leaves circling
   low and a cloud churned up at its foot. A saved world keeps its whirlwinds.
+- *Raise land / Lower land*: hold and sweep (the brush slider sets how wide) to lift or sink the
+  land about 2 m a second at the brush's middle. Out of the sea, raised land is new land; sunk
+  below it, the sea comes in. This is the world remade, so creatures dig relative to the new
+  ground.
+- *Spring*: click to make an eternal spring. It pours out a stream as big as a hillside of 3,000
+  m² gives in steady rain, whatever the weather, which runs downhill to the sea or fills the
+  hollow it reaches (about 0.35 m³ a second, a pond within minutes) and spills on from there.
+  Click a spring to stop it. Springs bubble and froth where they rise, and saves keep them.
+- *Earthquake*: click a spot and the land splits across your view through it: a jagged crack of
+  raw earth up to 3 m deep opens, the ground on one side heaves up nearly a meter, dust bursts
+  from it, and for six seconds everything within 70 m shakes (and so does the view).
+- *Land from the sky*: click a spot and a clod of earth topped with grass tumbles down onto it,
+  trailing dust. A hill 9 m across rises where it lands, standing out of the sea if it fell into
+  it, so it adds to the island. It crushes what it lands on and throws what's near.
 
 **Miracles.** When the hand of god (you) touches a creature, it shows.
 - *Feed* is a blessing: a shaft of golden light comes down from the sky onto the creature, which

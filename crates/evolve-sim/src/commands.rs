@@ -26,6 +26,14 @@ pub enum Command {
     Meteor { at: [f32; 3] },
     /// A whirlwind touches down here.
     Whirlwind { at: [f32; 3] },
+    /// Raise the land here by up to `amount` m (lower it if negative), less toward `radius`.
+    Terraform { at: [f32; 3], radius: f32, amount: f32 },
+    /// Make an eternal spring here, or stop the one there.
+    Spring { at: [f32; 3] },
+    /// Split the land along a jagged line of (x, z) points, and shake it.
+    Earthquake { path: Vec<[f32; 2]> },
+    /// A chunk of land falls from the sky here.
+    Landfall { at: [f32; 3] },
     RemoveCreature(u64),
     KillCreature(u64),
     FeedCreature(u64),
@@ -96,6 +104,10 @@ impl Sim {
             }
             Command::Meteor { at } => self.meteor(Vec3::from(at)),
             Command::Whirlwind { at } => self.whirlwind(Vec3::from(at)),
+            Command::Terraform { at, radius, amount } => self.terraform(Vec3::from(at), radius, amount),
+            Command::Spring { at } => self.toggle_spring(Vec3::from(at)),
+            Command::Earthquake { path } => self.earthquake(&path),
+            Command::Landfall { at } => self.landfall(Vec3::from(at)),
             Command::CalmStorm => {
                 self.acts.calm_storm(self.time);
                 self.log("The storm is calmed");

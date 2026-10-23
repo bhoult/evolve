@@ -24,6 +24,12 @@ const FILM: f32 = 0.02;
 const MAX_STREAM_DEPTH: f32 = 0.8;
 /// Recent rain keeps streams running for a while after it stops, at this share of the rain.
 const BASE_FLOW: f32 = 0.35;
+/// An eternal spring's stream: as much as runs off this many m² of hillside in steady rain,
+/// whatever the weather.
+pub const SPRING_FLOW: f32 = 3000.0;
+/// What a spring pours into the hollow it runs into, m³/s (about ten times what it would gather
+/// from that much rain, so a spring makes a pond within minutes).
+const SPRING_FILL: f32 = 0.35;
 /// Soil wets in a few minutes of rain and dries over half an hour.
 const WETTING_TIME: f32 = 120.0;
 const DRYING_TIME: f32 = 1800.0;
@@ -127,6 +133,11 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
     // steady rain.
     let fall = rain.max(BASE_FLOW * soak) * p.runoff * t.cell() * t.cell();
     let mut flow: Vec<f32> = (0..count).map(|k| if t.heights[k] > wl { fall } else { 0.0 }).collect();
+    for &k in &t.springs {
+        if let Some(f) = flow.get_mut(k as usize) {
+            *f += SPRING_FLOW;
+        }
+    }
     for &k in d.order.iter().rev() {
         let r = d.receiver[k as usize];
         if r != NONE {
@@ -267,6 +278,13 @@ fn fill_lakes(t: &mut Terrain, p: &SimParams, d: &Drainage, fall: f32, dt: f32) 
             let v = fall * rate * dt;
             volume[to as usize] += v as f64;
             budget.rained += v;
+        }
+    }
+    for &k in &t.springs {
+        if let Some(&to) = down.get(k as usize)
+            && to != NONE
+        {
+            volume[to as usize] += (SPRING_FILL * dt) as f64;
         }
     }
 

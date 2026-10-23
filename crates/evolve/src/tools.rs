@@ -28,10 +28,15 @@ pub enum Tool {
     Remove,
     Meteor,
     Whirlwind,
+    Raise,
+    Lower,
+    Spring,
+    Quake,
+    Landfall,
 }
 
 impl Tool {
-    pub const ALL: [Tool; 9] = [
+    pub const ALL: [Tool; 14] = [
         Tool::Select,
         Tool::Plant,
         Tool::Meat,
@@ -41,7 +46,17 @@ impl Tool {
         Tool::Remove,
         Tool::Meteor,
         Tool::Whirlwind,
+        Tool::Raise,
+        Tool::Lower,
+        Tool::Spring,
+        Tool::Quake,
+        Tool::Landfall,
     ];
+
+    /// The acts of god, shown apart from the everyday tools.
+    pub fn is_power(self) -> bool {
+        matches!(self, Tool::Meteor | Tool::Whirlwind | Tool::Raise | Tool::Lower | Tool::Spring | Tool::Quake | Tool::Landfall)
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -54,6 +69,11 @@ impl Tool {
             Tool::Remove => "Remove",
             Tool::Meteor => "Meteor",
             Tool::Whirlwind => "Whirlwind",
+            Tool::Raise => "Raise land",
+            Tool::Lower => "Lower land",
+            Tool::Spring => "Spring",
+            Tool::Quake => "Earthquake",
+            Tool::Landfall => "Land from the sky",
         }
     }
 
@@ -68,6 +88,11 @@ impl Tool {
             Tool::Remove => "Click a creature, plant, meat or obstacle to remove it.",
             Tool::Meteor => "Click to call a meteor down there: a crater, a blast that throws and hurts what's near and kills what it lands on, and fire.",
             Tool::Whirlwind => "Click to set a whirlwind down there: for 25 seconds it wanders the island, lifting and flinging creatures and tearing up plants.",
+            Tool::Raise => "Hold and sweep to raise the land (the brush sets how wide). Out of the sea, it makes new land.",
+            Tool::Lower => "Hold and sweep to lower the land (the brush sets how wide). Below the sea, it lets the sea in.",
+            Tool::Spring => "Click to make an eternal spring there: water wells up forever, runs downhill and fills the hollows it reaches. Click a spring to stop it.",
+            Tool::Quake => "Click to split the land with an earthquake there: a crack opens across your view, one side heaves up, and everything nearby shakes.",
+            Tool::Landfall => "Click to drop a chunk of land from the sky there: a hill rises where it lands (out of the sea, new land), crushing what's under it.",
         }
     }
 }
@@ -202,7 +227,7 @@ fn use_tool(
         return;
     }
     let pressed = just_pressed;
-    let painting = tools.tool == Tool::Plant && held;
+    let painting = matches!(tools.tool, Tool::Plant | Tool::Raise | Tool::Lower) && held;
     if !pressed && !painting {
         return;
     }
@@ -250,12 +275,21 @@ fn use_tool(
             return;
         }
         tools.paint_timer = 0.08;
-        let count = (tools.brush * 0.6).ceil().max(1.0) as u32;
-        link.cmd(Command::SpawnPlants {
-            center: point.to_array(),
-            radius: tools.brush,
-            count,
-        });
+        match tools.tool {
+            Tool::Raise | Tool::Lower => link.cmd(Command::Terraform {
+                at: point.to_array(),
+                radius: tools.brush,
+                amount: if tools.tool == Tool::Raise { 0.15 } else { -0.15 },
+            }),
+            _ => {
+                let count = (tools.brush * 0.6).ceil().max(1.0) as u32;
+                link.cmd(Command::SpawnPlants {
+                    center: point.to_array(),
+                    radius: tools.brush,
+                    count,
+                });
+            }
+        }
         return;
     }
 
@@ -335,6 +369,8 @@ fn use_tool(
         (Tool::Remove, Hit::Obstacle(id)) => link.cmd(Command::RemoveObstacle(id)),
         (Tool::Meteor, _) => tools.summon = Some((tools.tool, point)),
         (Tool::Whirlwind, _) => link.cmd(Command::Whirlwind { at: point.to_array() }),
+        (Tool::Spring, _) => link.cmd(Command::Spring { at: point.to_array() }),
+        (Tool::Quake | Tool::Landfall, _) => tools.summon = Some((tools.tool, point)),
         _ => {}
     }
 }

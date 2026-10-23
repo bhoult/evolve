@@ -19,6 +19,9 @@ pub struct Acts {
     pub storm: Option<(f64, f64)>,
     #[serde(default)]
     pub whirlwinds: Vec<Whirlwind>,
+    /// An earthquake shaking the ground: its center (x, z) and the sim times it began and ends.
+    #[serde(default)]
+    pub quake: Option<([f32; 2], f64, f64)>,
     /// Throws waiting for the next step: a change of velocity for every part of a creature
     /// (a multibody keeps no velocity set on a part directly, so it goes in as a force).
     #[serde(skip)]
@@ -71,11 +74,142 @@ impl Whirlwind {
     }
 }
 
+/// How far an earthquake shakes the ground, m, and how long, s.
+pub const QUAKE_REACH: f32 = 70.0;
+const QUAKE_TIME: f64 = 6.0;
+/// A chunk of land fallen from the sky: its radius and height, m.
+pub const LANDFALL_RADIUS: f32 = 9.0;
+const LANDFALL_HEIGHT: f32 = 4.0;
+
 /// A meteor's crater radius, and how far its blast reaches, m.
 pub const CRATER: f32 = 4.0;
 pub const BLAST: f32 = 16.0;
 
 impl Sim {
+    /// Raises the land around `at` by up to `amount` m (lowers it if negative), less toward
+    /// `radius`.
+    pub fn terraform(&mut self, at: Vec3, radius: f32, amount: f32) {
+        let r = radius.max(0.5);
+        self.terrain.lift(at.x, at.z, r, true, |dx, dz| {
+            let f = (1.0 - (dx * dx + dz * dz) / (r * r)).max(0.0);
+            amount * f * f
+        });
+        self.settle_terrain();
+    }
+
+    /// Makes an eternal spring at `at`, or stops the one there.
+    pub fn toggle_spring(&mut self, at: Vec3) {
+        let t = &self.terrain;
+        let (n, size) = (t.res, t.size);
+        let pos = |k: u32| {
+            let (i, j) = (k as usize / n, k as usize % n);
+            ((j as f32 / (n - 1) as f32 - 0.5) * size, (i as f32 / (n - 1) as f32 - 0.5) * size)
+        };
+        let near = t.springs.iter().position(|&k| {
+            let (x, z) = pos(k);
+            (x - at.x).hypot(z - at.z) < 4.0
+        });
+        match near {
+            Some(i) => {
+                self.terrain.springs.swap_remove(i);
+                self.log("A spring runs dry");
+            }
+            None if t.contains(at.x, at.z, 1.0) => {
+                let k = t.nearest_point(at.x, at.z) as u32;
+                self.terrain.springs.push(k);
+                self.log("A spring wells up");
+            }
+            None => {}
+        }
+    }
+
+    /// An earthquake splits the land along `path` (a jagged line of (x, z) points): a crack
+    /// opens along it, the ground on one side heaves up, and everything near shakes for a while.
+    pub fn earthquake(&mut self, path: &[[f32; 2]]) {
+        if path.len() < 2 {
+            return;
+        }
+        let pts: Vec<(f32, f32)> = path.iter().map(|p| (p[0], p[1])).collect();
+        // Distance to the line, and which side of it.
+        let near = |x: f32, z: f32| {
+            let mut best = (f32::MAX, 0.0f32);
+            for w in pts.windows(2) {
+                let ((ax, az), (bx, bz)) = (w[0], w[1]);
+                let (ex, ez) = (bx - ax, bz - az);
+                let len2 = (ex * ex + ez * ez).max(1e-6);
+                let t = (((x - ax) * ex + (z - az) * ez) / len2).clamp(0.0, 1.0);
+                let (px, pz) = (ax + ex * t, az + ez * t);
+                let d = (x - px).hypot(z - pz);
+                if d < best.0 {
+                    best = (d, (ex * (z - az) - ez * (x - ax)).signum());
+                }
+            }
+            best
+        };
+        let (mut x0, mut z0, mut x1, mut z1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &(x, z) in &pts {
+            (x0, z0, x1, z1) = (x0.min(x), z0.min(z), x1.max(x), z1.max(z));
+        }
+        let (cx, cz) = ((x0 + x1) * 0.5, (z0 + z1) * 0.5);
+        let reach = 0.5 * (x1 - x0).hypot(z1 - z0) + 8.0;
+        // One side heaves up (the land remade), and the crack is torn open (raw earth).
+        self.terrain.lift(cx, cz, reach, true, |dx, dz| {
+            let (d, side) = near(cx + dx, cz + dz);
+            if side > 0.0 && d < 8.0 { 0.9 * (1.0 - d / 8.0) } else { 0.0 }
+        });
+        self.terrain.lift(cx, cz, reach, false, |dx, dz| {
+            let (d, _) = near(cx + dx, cz + dz);
+            if d < 3.2 { -3.0 * (1.0 - d / 3.2).powf(1.5) } else { 0.0 }
+        });
+        self.settled_at = f64::NEG_INFINITY;
+        self.settle_terrain();
+        self.acts.quake = Some(([cx, cz], self.time, self.time + QUAKE_TIME));
+        self.log("An earthquake splits the land");
+    }
+
+    /// A chunk of land falls from the sky onto `at`: a mound rises there (out of the sea, it
+    /// makes new land), crushing what it lands on and throwing what's near.
+    pub fn landfall(&mut self, at: Vec3) {
+        if !self.terrain.contains(at.x, at.z, 2.0) {
+            return;
+        }
+        let r = LANDFALL_RADIUS;
+        // Out at sea, enough to stand clear of the water.
+        let base = self.terrain.height_at(at.x, at.z);
+        let lift = LANDFALL_HEIGHT.max(self.params.water_level + 2.5 - base);
+        self.terrain.lift(at.x, at.z, r, true, |dx, dz| {
+            let f = (1.0 - (dx * dx + dz * dz) / (r * r)).max(0.0);
+            lift * f.powf(1.5)
+        });
+        self.settled_at = f64::NEG_INFINITY;
+        self.settle_terrain();
+        let center = Vec3::new(at.x, self.terrain.height_at(at.x, at.z), at.z);
+        let mut dead = Vec::new();
+        let mut kicks = Vec::new();
+        for c in &mut self.creatures {
+            let Some(pos) = self.shards[c.shard].world.bodies.get(c.parts[0].body).map(|b| b.translation()) else {
+                continue;
+            };
+            let d = (pos.x - at.x).hypot(pos.z - at.z);
+            if d < r * 0.6 {
+                dead.push(c.id);
+            } else if d < r * 2.0 {
+                let f = 1.0 - d / (r * 2.0);
+                c.health -= 60.0 * f * f;
+                c.pain = 1.0;
+                c.attacked_ago = 0.0;
+                let away = Vec3::new(pos.x - at.x, 0.0, pos.z - at.z).normalize_or(Vec3::X);
+                kicks.push((c.id, away * (10.0 * f) + Vec3::Y * (6.0 * f)));
+            }
+        }
+        for id in dead {
+            self.kill(id, DeathCause::Killed);
+        }
+        self.acts.kicks.extend(kicks);
+        self.highlight_with(HighlightKind::Landfall, 0, None, center, r);
+        self.log("Land falls from the sky");
+    }
+
     /// A whirlwind touches down at `at` and wanders off.
     pub fn whirlwind(&mut self, at: Vec3) {
         if !self.terrain.contains(at.x, at.z, 2.0) {
@@ -239,5 +373,19 @@ impl Acts {
             self.storm = None;
         }
         self.whirlwinds.retain(|w| time < w.end);
+        if self.quake.is_some_and(|(_, _, end)| time >= end) {
+            self.quake = None;
+        }
+    }
+
+    /// How hard the ground shakes at (x, z), as an acceleration (m/s²) for something at `phase`.
+    pub fn shaking(&self, x: f32, z: f32, time: f64, phase: f32) -> Vec3 {
+        let Some(([cx, cz], start, end)) = self.quake else {
+            return Vec3::ZERO;
+        };
+        let s = ((time - start) / 0.5).min((end - time) / 2.0).clamp(0.0, 1.0) as f32;
+        let near = (1.0 - (x - cx).hypot(z - cz) / QUAKE_REACH).clamp(0.0, 1.0);
+        let t = time as f32 + phase;
+        Vec3::new((t * 13.0).sin(), 0.35 * (t * 17.0).sin(), (t * 11.0 + 1.3).cos()) * (8.0 * s * near)
     }
 }

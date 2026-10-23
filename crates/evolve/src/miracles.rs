@@ -42,6 +42,8 @@ enum Kind {
     Ascension,
     /// A meteor's impact (`size` is how far its blast reached).
     Impact,
+    /// A chunk of land landing (`size` is its radius).
+    Landfall,
 }
 
 impl Kind {
@@ -51,6 +53,7 @@ impl Kind {
             Kind::Smite => 6.0,
             Kind::Ascension => 3.5,
             Kind::Impact => 10.0,
+            Kind::Landfall => 4.0,
         }
     }
 }
@@ -78,12 +81,22 @@ fn funnel(height: f32) -> f32 {
 /// Seconds a meteor takes to come down.
 const FALL: f32 = 1.8;
 
-/// A meteor on its way down.
+/// Seconds a chunk of land takes to come down.
+const LAND_FALL: f32 = 2.4;
+
+/// A meteor, or a chunk of land (with its mesh: earth and a grassy top), on its way down.
 struct Flight {
     from: Vec3,
     to: Vec3,
     t0: f32,
     light: Entity,
+    chunk: Option<[Entity; 2]>,
+}
+
+impl Flight {
+    fn length(&self) -> f32 {
+        if self.chunk.is_some() { LAND_FALL } else { FALL }
+    }
 }
 
 struct Miracle {
@@ -129,6 +142,10 @@ struct Miracles {
     rng: u64,
     mesh: Handle<Mesh>,
     smoke_mesh: Handle<Mesh>,
+    /// A chunk of land: earth below, grass on top.
+    chunk: [(Handle<Mesh>, Handle<StandardMaterial>); 2],
+    /// Bubbles owed to the springs, carried between frames.
+    spring_owed: f32,
 }
 
 impl Miracles {
@@ -248,7 +265,19 @@ fn setup(
         NotShadowReceiver,
         SmokeMesh,
     ));
+    let chunk = [
+        (
+            meshes.add(Sphere::new(1.0).mesh().ico(2).expect("a small icosphere")),
+            materials.add(StandardMaterial { base_color: Color::srgb(0.36, 0.27, 0.18), perceptual_roughness: 1.0, ..default() }),
+        ),
+        (
+            meshes.add(Cylinder::new(1.0, 1.0)),
+            materials.add(StandardMaterial { base_color: Color::srgb(0.3, 0.5, 0.2), perceptual_roughness: 1.0, ..default() }),
+        ),
+    ];
     commands.insert_resource(Miracles {
+        chunk,
+        spring_owed: 0.0,
         epoch: u64::MAX,
         last_seq: 0,
         miracles: Vec::new(),
@@ -275,9 +304,83 @@ fn watch(
     mut tools: ResMut<ToolState>,
     mut cam: ResMut<OrbitCam>,
     eye: Single<&Transform, CameraView>,
+    link: Res<SimLink>,
 ) {
     let snap = &*snap.0;
     let st = &mut *st;
+    // An earthquake: the crack runs across the view through where it was called, jagged.
+    if let Some((Tool::Quake, at)) = tools.summon {
+        tools.summon = None;
+        let fwd = eye.forward().as_vec3();
+        let across = Vec3::new(-fwd.z, 0.0, fwd.x).normalize_or(Vec3::X);
+        let along = Vec3::new(across.z, 0.0, -across.x);
+        let tilt = Quat::from_rotation_y(st.range(-0.4, 0.4));
+        let (across, along) = (tilt * across, tilt * along);
+        let mut path = Vec::new();
+        for k in -6..=6 {
+            let p = at + across * (k as f32 * 4.5) + along * if k == 0 { 0.0 } else { st.range(-2.2, 2.2) };
+            path.push([p.x, p.z]);
+        }
+        link.cmd(evolve_sim::Command::Earthquake { path: path.clone() });
+        sounds.write(PlaySound { sfx: Sfx::Rumble, at, gain: 1.0, floor: 0.4 });
+        let d = eye.translation.distance(at);
+        cam.shake = cam.shake.max(2.0 * (1.0 - d / 250.0).clamp(0.0, 1.0));
+        // Dust bursting out of the crack, and earth thrown up along it.
+        for w in path.windows(2) {
+            let (a, b) = (Vec3::new(w[0][0], 0.0, w[0][1]), Vec3::new(w[1][0], 0.0, w[1][1]));
+            for _ in 0..14 {
+                let p = a.lerp(b, st.rand());
+                let ground = snap.terrain.height_at(p.x, p.z);
+                let life = st.range(2.0, 4.5);
+                let size = st.range(0.8, 1.6);
+                let vel = Vec3::new(st.range(-0.8, 0.8), st.range(1.0, 4.0), st.range(-0.8, 0.8));
+                st.puff(Spark {
+                    pos: Vec3::new(p.x, ground + 0.2, p.z),
+                    vel,
+                    lift: 0.3,
+                    drag: 0.4,
+                    age: 0.0,
+                    life,
+                    size: [size, size * 3.0],
+                    color: [Vec4::new(0.5, 0.44, 0.36, 0.55), Vec4::new(0.55, 0.5, 0.43, 0.0)],
+                });
+            }
+            for _ in 0..6 {
+                let p = a.lerp(b, st.rand());
+                let ground = snap.terrain.height_at(p.x, p.z);
+                let dir = st.direction(0.5);
+                let speed = st.range(3.0, 7.0);
+                let life = st.range(0.8, 1.6);
+                let size = st.range(0.1, 0.25);
+                st.puff(Spark {
+                    pos: Vec3::new(p.x, ground + 0.2, p.z),
+                    vel: dir * speed,
+                    lift: -9.8,
+                    drag: 0.9,
+                    age: 0.0,
+                    life,
+                    size: [size, size],
+                    color: [Vec4::new(0.24, 0.19, 0.14, 1.0), Vec4::new(0.24, 0.19, 0.14, 0.8)],
+                });
+            }
+        }
+    }
+    // A chunk of land: it falls from high above, tumbling, straight down onto the spot.
+    if let Some((Tool::Landfall, to)) = tools.summon {
+        tools.summon = None;
+        let from = to + Vec3::new(st.range(-30.0, 30.0), 380.0, st.range(-30.0, 30.0));
+        let [(earth_mesh, earth_mat), (grass_mesh, grass_mat)] = st.chunk.clone();
+        let r = evolve_sim::acts::LANDFALL_RADIUS;
+        let earth = commands
+            .spawn((Mesh3d(earth_mesh), MeshMaterial3d(earth_mat), Transform::from_translation(from).with_scale(Vec3::new(r, r * 0.45, r))))
+            .id();
+        let grass = commands
+            .spawn((Mesh3d(grass_mesh), MeshMaterial3d(grass_mat), Transform::from_translation(from).with_scale(Vec3::new(r * 0.92, 0.6, r * 0.92))))
+            .id();
+        let light = commands.spawn((PointLight { intensity: 0.0, ..default() }, Transform::from_translation(from))).id();
+        st.flights.push(Flight { from, to, t0: time.elapsed_secs(), light, chunk: Some([earth, grass]) });
+        sounds.write(PlaySound { sfx: Sfx::Whoosh, at: to, gain: 0.8, floor: 0.3 });
+    }
     // A meteor called down: it comes in from beyond where it will land, as seen from the camera,
     // so it streaks down across the sky in view.
     if let Some((Tool::Meteor, to)) = tools.summon.take() {
@@ -290,7 +393,7 @@ fn watch(
                 Transform::from_translation(from),
             ))
             .id();
-        st.flights.push(Flight { from, to, t0: time.elapsed_secs(), light });
+        st.flights.push(Flight { from, to, t0: time.elapsed_secs(), light, chunk: None });
         sounds.write(PlaySound { sfx: Sfx::Whoosh, at: to, gain: 1.0, floor: 0.35 });
     }
     if snap.world_epoch != st.epoch {
@@ -309,13 +412,14 @@ fn watch(
             HighlightKind::Smite => Kind::Smite,
             HighlightKind::Ascension => Kind::Ascension,
             HighlightKind::Meteor => Kind::Impact,
+            HighlightKind::Landfall => Kind::Landfall,
             _ => continue,
         };
         let at = Vec3::from_array(h.pos);
         if kind == Kind::Smite {
             lightning.write(CallLightning { at });
         }
-        if kind == Kind::Impact {
+        if matches!(kind, Kind::Impact | Kind::Landfall) {
             // The ground jolts the eye, less the farther it is.
             let d = eye.translation.distance(at);
             cam.shake = cam.shake.max(2.5 * (1.0 - d / 300.0).clamp(0.0, 1.0));
@@ -348,6 +452,25 @@ fn scripted(
     let Some(id) = snap.0.selected.as_ref().map(|c| c.id) else {
         return;
     };
+    let near = |dx: f32| {
+        snap.0.creatures.iter().find(|c| c.id == id).and_then(|c| c.parts.first()).map(|p| {
+            let at = Vec3::from_array(p.pos) + Vec3::new(dx, 0.0, 0.0);
+            Vec3::new(at.x, snap.0.terrain.height_at(at.x, at.z), at.z)
+        })
+    };
+    match kind.as_str() {
+        "quake" => tools.summon = near(5.0).map(|at| (Tool::Quake, at)),
+        "land" => tools.summon = near(14.0).map(|at| (Tool::Landfall, at)),
+        "spring" => {
+            if let Some(at) = near(4.0) {
+                link.cmd(evolve_sim::Command::Spring { at: at.to_array() });
+            }
+        }
+        _ => {}
+    }
+    if matches!(kind.as_str(), "quake" | "land" | "spring") {
+        return;
+    }
     if kind == "whirl" {
         if let Some(c) = snap.0.creatures.iter().find(|c| c.id == id)
             && let Some(p) = c.parts.first()
@@ -389,6 +512,7 @@ fn envelope(age: f32, rise: f32, fade: f32, length: f32) -> f32 {
 }
 
 /// Moves the miracles with their creatures, gives off sparks, ages the sparks and sets the lights.
+#[allow(clippy::too_many_arguments)]
 fn animate(
     mut commands: Commands,
     snap: Res<Snap>,
@@ -396,7 +520,9 @@ fn animate(
     link: Res<SimLink>,
     mut st: ResMut<Miracles>,
     mut lights: Query<(&mut PointLight, &mut Transform)>,
+    mut chunks: Query<&mut Transform, Without<PointLight>>,
     grading: Single<&ColorGrading, With<MainCamera>>,
+    mut cam: ResMut<OrbitCam>,
 ) {
     let snap = &*snap.0;
     let st = &mut *st;
@@ -405,14 +531,52 @@ fn animate(
     // Meteors coming down, trailing fire and smoke; on arrival the sim does the rest.
     let mut flights = std::mem::take(&mut st.flights);
     flights.retain(|f| {
-        let u = ((now - f.t0) / FALL).clamp(0.0, 1.0);
+        let u = ((now - f.t0) / f.length()).clamp(0.0, 1.0);
         if u >= 1.0 {
-            link.cmd(evolve_sim::Command::Meteor { at: f.to.to_array() });
+            match f.chunk {
+                Some(chunk) => {
+                    link.cmd(evolve_sim::Command::Landfall { at: f.to.to_array() });
+                    for e in chunk {
+                        commands.entity(e).despawn();
+                    }
+                }
+                None => link.cmd(evolve_sim::Command::Meteor { at: f.to.to_array() }),
+            }
             commands.entity(f.light).despawn();
             return false;
         }
         let pos = f.from.lerp(f.to, u.powf(1.3));
         let back = (f.from - f.to).normalize();
+        if let Some(chunk) = f.chunk {
+            // A tumbling clod of earth trailing dust.
+            let r = evolve_sim::acts::LANDFALL_RADIUS;
+            let spin = Quat::from_rotation_y(u * 2.0) * Quat::from_rotation_x((u * 7.0).sin() * 0.15);
+            if let Ok(mut tf) = chunks.get_mut(chunk[0]) {
+                tf.translation = pos;
+                tf.rotation = spin;
+            }
+            if let Ok(mut tf) = chunks.get_mut(chunk[1]) {
+                tf.translation = pos + spin * Vec3::Y * (r * 0.4);
+                tf.rotation = spin;
+            }
+            for _ in 0..(90.0 * dt).ceil() as usize {
+                let off = Vec3::new(st.range(-1.0, 1.0), st.range(-0.3, 0.3), st.range(-1.0, 1.0)) * r;
+                let life = st.range(1.5, 3.0);
+                let size = st.range(1.0, 2.0);
+                let behind = st.range(2.0, 8.0);
+                st.puff(Spark {
+                    pos: pos + off + back * behind,
+                    vel: Vec3::ZERO,
+                    lift: 0.2,
+                    drag: 0.5,
+                    age: 0.0,
+                    life,
+                    size: [size, size * 3.0],
+                    color: [Vec4::new(0.45, 0.38, 0.3, 0.6), Vec4::new(0.5, 0.45, 0.38, 0.0)],
+                });
+            }
+            return true;
+        }
         for _ in 0..(400.0 * dt) as usize {
             let jitter = Vec3::new(st.range(-1.0, 1.0), st.range(-1.0, 1.0), st.range(-1.0, 1.0));
             let life = st.range(0.25, 0.6);
@@ -586,6 +750,47 @@ fn animate(
                 }
                 (Color::srgb(0.85, 0.9, 1.0), 450_000.0 * e)
             }
+            Kind::Landfall => {
+                if age < dt * 1.5 {
+                    // A ring of dust racing out from under it, and earth flung up.
+                    for _ in 0..220 {
+                        let a = st.range(0.0, std::f32::consts::TAU);
+                        let out = Vec3::new(a.cos(), 0.0, a.sin());
+                        let speed = st.range(0.8, 1.6) * s;
+                        let life = st.range(2.0, 3.5);
+                        let size = st.range(1.2, 2.0);
+                        let rise = st.range(0.0, 2.0);
+                        st.puff(Spark {
+                            pos: at + out * s * 0.9 - Vec3::Y * 2.0,
+                            vel: out * speed + Vec3::Y * rise,
+                            lift: 0.2,
+                            drag: 0.15,
+                            age: 0.0,
+                            life,
+                            size: [size, size * 3.5],
+                            color: [Vec4::new(0.5, 0.44, 0.35, 0.6), Vec4::new(0.55, 0.5, 0.43, 0.0)],
+                        });
+                    }
+                    for _ in 0..120 {
+                        let dir = st.direction(0.4);
+                        let speed = st.range(5.0, 14.0);
+                        let life = st.range(1.0, 2.2);
+                        let size = st.range(0.15, 0.35);
+                        let pos = st.around(at, s * 0.8);
+                        st.puff(Spark {
+                            pos,
+                            vel: dir * speed,
+                            lift: -9.8,
+                            drag: 0.9,
+                            age: 0.0,
+                            life,
+                            size: [size, size],
+                            color: [Vec4::new(0.26, 0.2, 0.14, 1.0), Vec4::new(0.26, 0.2, 0.14, 0.8)],
+                        });
+                    }
+                }
+                (Color::WHITE, 0.0)
+            }
             Kind::Impact => {
                 let (r, crater) = (s, evolve_sim::acts::CRATER);
                 if age < dt * 1.5 {
@@ -730,6 +935,39 @@ fn animate(
     }
     st.smoke.retain(|p| p.age < p.life);
 
+    // While the ground shakes, so does the view.
+    if snap.quaking {
+        cam.shake = cam.shake.max(0.35);
+    }
+    // Springs bubble where they rise.
+    let t = &snap.terrain;
+    st.spring_owed += 45.0 * t.springs.len() as f32 * dt;
+    let bubbles = st.spring_owed.floor();
+    st.spring_owed -= bubbles;
+    for b in 0..bubbles as usize {
+        let Some(&k) = t.springs.get(b % t.springs.len().max(1)) else {
+            break;
+        };
+        let (i, j) = (k as usize / t.res, k as usize % t.res);
+        let at = |v: usize| (v as f32 / (t.res - 1) as f32 - 0.5) * t.size;
+        let (x, z) = (at(j), at(i));
+        let surface = t.height_at(x, z) + t.water_at(x, z);
+        let froth = st.rand() < 0.3;
+        let pos = st.around(Vec3::new(x, surface + 0.05, z), if froth { 1.0 } else { 0.6 });
+        let vel = if froth { Vec3::ZERO } else { Vec3::new(st.range(-0.5, 0.5), st.range(1.5, 3.0), st.range(-0.5, 0.5)) };
+        let life = st.range(0.6, 1.2);
+        let (size, alpha) = if froth { ([0.4, 0.7], 0.55) } else { ([0.18, 0.1], 0.95) };
+        st.puff(Spark {
+            pos,
+            vel,
+            lift: if froth { 0.0 } else { -9.8 },
+            drag: 0.9,
+            age: 0.0,
+            life,
+            size,
+            color: [Vec4::new(0.9, 0.95, 1.0, alpha), Vec4::new(0.85, 0.92, 1.0, 0.0)],
+        });
+    }
     // Whirlwinds: their funnels, debris and the dust at their feet.
     for &([x, z], s, seed) in &snap.whirlwinds {
         if s <= 0.0 {
@@ -849,7 +1087,7 @@ fn draw(
             }
         }
     }
-    let empty = st.miracles.is_empty() && st.sparks.is_empty() && st.flights.is_empty();
+    let empty = st.miracles.is_empty() && st.sparks.is_empty() && st.flights.iter().all(|f| f.chunk.is_some());
     let want = if empty { Visibility::Hidden } else { Visibility::Inherited };
     if *vis != want {
         *vis = want;
@@ -863,7 +1101,7 @@ fn draw(
     let mut buf = Buf { origin: cam_pos, right, up, ..default() };
     buf.grading = Some(grading.global.clone());
     // Each meteor's blazing head.
-    for f in &st.flights {
+    for f in st.flights.iter().filter(|f| f.chunk.is_none()) {
         let u = ((now - f.t0) / FALL).clamp(0.0, 1.0);
         let pos = f.from.lerp(f.to, u.powf(1.3));
         buf.quad(pos, 2.5, Vec4::new(8.0, 7.0, 5.0, 1.0));
@@ -886,6 +1124,7 @@ fn draw(
                 let burn = (1.0 - age / (m.kind.length() - 0.5)).clamp(0.0, 1.0);
                 (0.0, burn * 0.6, Vec3::new(2.5, 0.9, 0.2), 0.0)
             }
+            Kind::Landfall => (0.0, 0.0, Vec3::ZERO, 0.0),
             // The flash of the impact, a moment wide.
             Kind::Impact => {
                 buf.quad(m.at + Vec3::Y * 2.0, 10.0, Vec4::new(9.0, 7.5, 5.0, 0.7 * (1.0 - age / 0.25).max(0.0)));

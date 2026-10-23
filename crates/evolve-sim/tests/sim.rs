@@ -693,3 +693,56 @@ fn a_whirlwind_lifts_creatures_tears_up_plants_and_dies_away() {
     }
     assert!(sim.acts.whirlwinds.is_empty(), "and dies away");
 }
+
+#[test]
+fn the_land_can_be_raised_lowered_split_and_added_to_and_springs_run() {
+    use evolve_sim::Command;
+    let mut p = quiet_params();
+    p.weather = false;
+    p.terrain_resolution = SimParams::default().terrain_resolution;
+    let mut sim = Sim::new(p);
+    let at = sim.random_land_point(30.0);
+    let h = |sim: &Sim, x: f32, z: f32| sim.terrain.height_at(x, z);
+    // Raised, then lowered back.
+    let h0 = h(&sim, at.x, at.z);
+    sim.apply(Command::Terraform { at: at.to_array(), radius: 6.0, amount: 2.0 });
+    let h1 = h(&sim, at.x, at.z);
+    assert!((h1 - h0 - 2.0).abs() < 0.4, "raised by about 2 m: {h0} -> {h1}");
+    sim.apply(Command::Terraform { at: at.to_array(), radius: 6.0, amount: -2.0 });
+    assert!((h(&sim, at.x, at.z) - h0).abs() < 0.1, "and lowered back");
+
+    // A spring makes a stream, and stops when told.
+    sim.apply(Command::Spring { at: at.to_array() });
+    assert_eq!(sim.terrain.springs.len(), 1);
+    for _ in 0..(10 * evolve_sim::sim::TICKS_PER_SECOND) {
+        sim.step();
+    }
+    let wet = sim.terrain.water_at(at.x, at.z);
+    assert!(wet > 0.2, "water runs from the spring: {wet} m");
+    sim.apply(Command::Spring { at: (at + Vec3::new(1.0, 0.0, 0.0)).to_array() });
+    assert!(sim.terrain.springs.is_empty(), "clicking it again stops it");
+
+    // An earthquake splits the land along its line and shakes, then calms.
+    let line = [[at.x - 15.0, at.z], [at.x - 5.0, at.z + 1.0], [at.x + 5.0, at.z - 1.0], [at.x + 15.0, at.z]];
+    let before = h(&sim, at.x, at.z);
+    sim.apply(Command::Earthquake { path: line.to_vec() });
+    assert!(h(&sim, at.x, at.z) < before - 1.0, "a crack opens: {before} -> {}", h(&sim, at.x, at.z));
+    assert!(sim.acts.quake.is_some());
+    for _ in 0..(7 * evolve_sim::sim::TICKS_PER_SECOND) {
+        sim.step();
+    }
+    assert!(sim.acts.quake.is_none(), "the shaking stops");
+
+    // Land fallen into the sea stands out of it.
+    let wl = sim.params.water_level;
+    let sea = (0..400)
+        .map(|k| {
+            let a = k as f32 * 0.37;
+            let r = 20.0 + (k as f32 * 0.21) % (sim.terrain.half() - 30.0);
+            Vec3::new(a.cos() * r, 0.0, a.sin() * r)
+        })
+        .find(|p| sim.terrain.height_at(p.x, p.z) < wl - 1.0 && sim.terrain.contains(p.x, p.z, 15.0))
+        .expect("some sea");
+    sim.apply(Command::Landfall { at: sea.to_array() });
+    assert!(h(&sim, sea.x, sea.z) > wl + 1.0, "new land out of the sea: {}", h(&sim, sea.x, sea.z));
+}

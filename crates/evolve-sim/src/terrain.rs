@@ -43,6 +43,9 @@ pub struct Terrain {
     /// How wet the soil is, 0 (dry) to 1 (soaked).
     #[serde(default)]
     pub moisture: Vec<f32>,
+    /// Eternal springs, by grid point: each pours out water forever (see `hydro`).
+    #[serde(default)]
+    pub springs: Vec<u32>,
     /// Grid rows and columns changed since the last `take_dirty` (i0, i1, j0, j1, inclusive).
     #[serde(skip)]
     pub dirty: Option<(usize, usize, usize, usize)>,
@@ -64,6 +67,7 @@ impl Default for Terrain {
             water: vec![0.0; 4],
             pooled: vec![0.0; 4],
             moisture: vec![0.0; 4],
+            springs: Vec::new(),
             dirty: None,
             version: 0,
         }
@@ -118,6 +122,7 @@ impl Terrain {
             water: vec![0.0; n],
             pooled: vec![0.0; n],
             moisture: vec![0.0; n],
+            springs: Vec::new(),
             version,
             dirty: None,
         }
@@ -206,6 +211,45 @@ impl Terrain {
             self.mark_dirty(i, i + 1, j, j + 1);
         }
         moved
+    }
+
+    /// Raises the ground around (x, z) by `profile(dx, dz)` m at each grid point within `reach`
+    /// (negative lowers it). With `remake`, the world itself is reshaped: the ground "as the
+    /// world made it" moves with it, so it looks undisturbed and creatures dig relative to the
+    /// new land. Without, it's torn-up earth (bare soil, like what creatures dig). Returns the
+    /// volume added, m³.
+    pub fn lift(&mut self, x: f32, z: f32, reach: f32, remake: bool, profile: impl Fn(f32, f32) -> f32) -> f32 {
+        self.ensure_layers();
+        let (n, cell) = (self.res, self.cell());
+        let col = |v: f32| ((v / self.size + 0.5) * (n - 1) as f32).round() as isize;
+        let span = (reach / cell).ceil() as isize;
+        let (ci, cj) = (col(z), col(x));
+        let (i0, i1) = ((ci - span).max(0) as usize, ((ci + span) as usize).min(n - 1));
+        let (j0, j1) = ((cj - span).max(0) as usize, ((cj + span) as usize).min(n - 1));
+        let at = |k: usize| (k as f32 / (n - 1) as f32 - 0.5) * self.size;
+        let mut added = 0.0;
+        for i in i0..=i1 {
+            for j in j0..=j1 {
+                let (dx, dz) = (at(j) - x, at(i) - z);
+                if dx.hypot(dz) > reach {
+                    continue;
+                }
+                let dh = profile(dx, dz);
+                if dh == 0.0 {
+                    continue;
+                }
+                let k = i * n + j;
+                let h = (self.heights[k] + dh).clamp(-60.0, 150.0);
+                let dh = h - self.heights[k];
+                self.heights[k] = h;
+                if remake {
+                    self.ground[k] += dh;
+                }
+                added += dh * cell * cell;
+            }
+        }
+        self.mark_dirty(i0, i1, j0, j1);
+        added
     }
 
     /// How far creatures have moved the ground at a grid point, m (positive: piled).
