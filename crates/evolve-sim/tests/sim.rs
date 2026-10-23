@@ -436,6 +436,34 @@ fn zoo_survives_damage_and_a_second_process() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The zoo can be cut down to its best few (the pinned stay), and single creatures deleted; both
+/// go to the trash, and the zoo stays that way when reopened.
+#[test]
+fn the_zoo_can_be_cut_down_to_its_best_and_creatures_deleted() {
+    use evolve_sim::zoo::Zoo;
+    let dir = std::env::temp_dir().join(format!("evolve-zoo-keep-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let p = SimParams::default();
+    let mut rng = Rng::new(11);
+    let mut zoo = Zoo::open(dir.clone());
+    for k in 0..6 {
+        // The first is pinned and the weakest.
+        zoo.add(&Genome::random(&mut rng, &p), k as f32, 1, "test", k == 0, 100).unwrap();
+    }
+    assert_eq!(zoo.keep_best(2).unwrap(), 3, "five unpinned, two kept");
+    let mut scores: Vec<f32> = zoo.entries.iter().map(|e| e.score).collect();
+    scores.sort_by(f32::total_cmp);
+    assert_eq!(scores, [0.0, 4.0, 5.0], "the best two, and the pinned one");
+    assert_eq!(std::fs::read_dir(dir.join("trash")).unwrap().count(), 3, "the rest are in the trash");
+    let best = zoo.entries.iter().find(|e| e.score == 5.0).unwrap().id;
+    zoo.remove(best).unwrap();
+    assert!(zoo.get(best).is_none());
+    drop(zoo);
+    let zoo = Zoo::open(dir.clone());
+    assert_eq!(zoo.entries.len(), 2, "and it stays that way");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The runner wiring: drop zoo creatures into this and a background world, and add one by hand.
 #[test]
 fn runner_drops_zoo_creatures_into_worlds() {

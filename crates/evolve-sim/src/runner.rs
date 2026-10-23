@@ -35,6 +35,8 @@ pub enum Control {
     ZooDrop { id: u64, target: ZooTarget, pos: Option<[f32; 3]>, count: u32 },
     ZooRemove(u64),
     ZooPin(u64, bool),
+    /// Keep only the best n zoo creatures (and the pinned ones).
+    ZooKeepBest(usize),
     Quit,
 }
 
@@ -273,7 +275,21 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 }
                 Ok(Control::ZooRemove(id)) => {
                     if let Ok(mut z) = zoo.lock() {
-                        z.remove(id);
+                        let name = z.get(id).map(|e| e.name.clone()).unwrap_or_default();
+                        match z.remove(id) {
+                            Ok(()) => sim.log(format!("Zoo: {name} deleted (its genome is in the zoo's trash folder)")),
+                            Err(e) => sim.log(format!("Zoo: {e}")),
+                        }
+                    }
+                }
+                Ok(Control::ZooKeepBest(n)) => {
+                    if let Ok(mut z) = zoo.lock() {
+                        match z.keep_best(n) {
+                            Ok(gone) => sim.log(format!(
+                                "Zoo: kept the best {n} and the pinned, {gone} deleted (their genomes are in the zoo's trash folder)"
+                            )),
+                            Err(e) => sim.log(format!("Zoo: {e}")),
+                        }
                     }
                 }
                 Ok(Control::ZooPin(id, pinned)) => {

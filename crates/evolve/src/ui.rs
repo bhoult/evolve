@@ -60,6 +60,9 @@ pub struct UiState {
     zoo_count: u32,
     zoo_sort_newest: bool,
     zoo_selected: Option<u64>,
+    /// Compacting the zoo: how many of the best to keep, and whether it's waiting to be confirmed.
+    zoo_keep: u32,
+    confirm_compact: bool,
     /// Brain view: shown on request, and on its own while following a creature (unless closed
     /// for that creature).
     show_brain: bool,
@@ -154,7 +157,7 @@ fn start_sketch_loader() -> Option<SketchLoader> {
 }
 
 /// Zoo table column widths, fixed so the header lines up with the rows scrolling under it.
-const ZOO_COLUMNS: [f32; 9] = [90.0, 150.0, 48.0, 56.0, 58.0, 44.0, 46.0, 50.0, 96.0];
+const ZOO_COLUMNS: [f32; 9] = [90.0, 150.0, 48.0, 56.0, 58.0, 44.0, 46.0, 50.0, 112.0];
 /// Height of a zoo table row (the body sketch's).
 const ZOO_ROW: f32 = 46.0;
 
@@ -211,6 +214,8 @@ impl Default for UiState {
             zoo_count: 1,
             zoo_sort_newest: false,
             zoo_selected: None,
+            zoo_keep: 10,
+            confirm_compact: false,
             show_brain: false,
             brain_closed_for: None,
             brain_tab: BrainTab::Network,
@@ -1314,7 +1319,47 @@ fn zoo_window(
                 ui.separator();
                 ui.selectable_value(&mut st.zoo_sort_newest, false, "best");
                 ui.selectable_value(&mut st.zoo_sort_newest, true, "newest");
+                ui.separator();
+                ui.label("keep the best");
+                ui.add(egui::DragValue::new(&mut st.zoo_keep).range(1..=500));
+                if ui
+                    .button("Compact")
+                    .on_hover_text("Delete all but the best (pinned ones always stay); asks first")
+                    .clicked()
+                {
+                    st.confirm_compact = true;
+                }
             });
+            if st.confirm_compact {
+                // The same order the zoo prunes in: the best by today's scoring, then the rest.
+                let unpinned = snap.zoo.iter().filter(|e| !e.pinned).count();
+                let pinned = snap.zoo.len() - unpinned;
+                let gone = unpinned.saturating_sub(st.zoo_keep as usize);
+                ui.horizontal(|ui| {
+                    if gone == 0 {
+                        ui.label(format!("Nothing to delete: {unpinned} unpinned creatures, keeping {}.", st.zoo_keep));
+                        if ui.button("OK").clicked() {
+                            st.confirm_compact = false;
+                        }
+                        return;
+                    }
+                    ui.colored_label(
+                        egui::Color32::from_rgb(255, 110, 90),
+                        format!(
+                            "Delete {gone} of {} creatures, keeping the best {} and the {pinned} pinned? Their genomes go to the zoo's trash folder.",
+                            snap.zoo.len(),
+                            st.zoo_keep
+                        ),
+                    );
+                    if ui.button(format!("Delete {gone}")).clicked() {
+                        link.0.send(Control::ZooKeepBest(st.zoo_keep as usize));
+                        st.confirm_compact = false;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        st.confirm_compact = false;
+                    }
+                });
+            }
             ui.separator();
             if snap.zoo.is_empty() {
                 ui.label("The zoo is empty. Worlds add their best creature periodically, or use Add to zoo in a creature's inspector.");
@@ -1412,7 +1457,7 @@ fn zoo_window(
                                         {
                                             link.0.send(Control::ZooPin(e.id, !e.pinned));
                                         }
-                                        if ui.small_button("delete").clicked() {
+                                        if ui.small_button("delete").on_hover_text("Its genome goes to the zoo's trash folder").clicked() {
                                             link.0.send(Control::ZooRemove(e.id));
                                         }
                                     }
@@ -1427,6 +1472,22 @@ fn zoo_window(
                         return;
                     };
                     ui.heading(&e.name);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .button(if e.pinned { "Unpin" } else { "Pin" })
+                            .on_hover_text("Pinned creatures are never pruned")
+                            .clicked()
+                        {
+                            link.0.send(Control::ZooPin(e.id, !e.pinned));
+                        }
+                        if ui
+                            .button("Delete from the zoo")
+                            .on_hover_text("Its genome goes to the zoo's trash folder")
+                            .clicked()
+                        {
+                            link.0.send(Control::ZooRemove(e.id));
+                        }
+                    });
                     match &sel_sketch {
                         Some(sk) => {
                             pv.want = Some((e.id, sk.clone(), e.color));

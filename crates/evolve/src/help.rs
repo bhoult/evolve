@@ -817,6 +817,7 @@ fn worlds(ui: &mut egui::Ui, p: &SimParams) {
         ),
     );
     bullet(ui, "From the Zoo window you can drop copies into this or any world, or place them where you click. Add to zoo in an inspector keeps one by hand (pinned).");
+    bullet(ui, "Delete from the zoo takes the selected creature out; Compact keeps only the best few (10 unless you change it) and the pinned ones, after asking. What goes is moved to the zoo's trash folder.");
     bullet(ui, "Scores earned under older rules are marked * and go first when the zoo is full.");
     sub(ui, "Saves");
     para(ui, "A save holds the whole world, physics included, so it resumes mid-stride. F5 and F9 quick save and load; Save / Load lists every saved world.");

@@ -218,16 +218,30 @@ impl Zoo {
         self.entries.iter().find(|e| e.id == id)
     }
 
-    pub fn remove(&mut self, id: u64) {
-        if self.writable().is_err() {
-            return;
-        }
+    /// Takes a creature out of the zoo (its genome goes to the trash).
+    pub fn remove(&mut self, id: u64) -> Result<(), String> {
+        self.writable()?;
         if let Some(i) = self.entries.iter().position(|e| e.id == id) {
             self.entries.remove(i);
-            self.trash(id);
+            self.trash([id]);
             self.version += 1;
-            let _ = self.save_index();
+            self.save_index()?;
         }
+        Ok(())
+    }
+
+    /// Keeps the `n` best creatures and every pinned one, moving the rest to the trash (those
+    /// scored the old way go first, then the weakest). Returns how many went.
+    pub fn keep_best(&mut self, n: usize) -> Result<usize, String> {
+        self.writable()?;
+        let before = self.entries.len();
+        self.prune(n);
+        let gone = before - self.entries.len();
+        if gone > 0 {
+            self.version += 1;
+            self.save_index()?;
+        }
+        Ok(gone)
     }
 
     pub fn set_pinned(&mut self, id: u64, pinned: bool) {
@@ -244,6 +258,7 @@ impl Zoo {
     /// Drops unpinned creatures beyond `max` entries: those scored the old way first, then the
     /// weakest.
     fn prune(&mut self, max: usize) {
+        let mut gone = Vec::new();
         while self.entries.iter().filter(|e| !e.pinned).count() > max.max(1) {
             let Some(i) = self
                 .entries
@@ -255,9 +270,9 @@ impl Zoo {
             else {
                 break;
             };
-            let e = self.entries.remove(i);
-            self.trash(e.id);
+            gone.push(self.entries.remove(i).id);
         }
+        self.trash(gone);
     }
 
     /// Whether this process may change the zoo.
@@ -273,13 +288,19 @@ impl Zoo {
         }
     }
 
-    /// Moves a creature's genome into `trash/`, keeping only the newest `TRASH_KEEP` there.
-    fn trash(&self, id: u64) {
+    /// Moves creatures' genomes into `trash/`, keeping only the newest `TRASH_KEEP` there.
+    fn trash(&self, ids: impl IntoIterator<Item = u64>) {
         let trash = self.dir.join("trash");
-        if std::fs::create_dir_all(&trash).is_err()
-            || std::fs::rename(genome_path(&self.dir, id), genome_path(&trash, id)).is_err()
-        {
-            let _ = std::fs::remove_file(genome_path(&self.dir, id));
+        let made = std::fs::create_dir_all(&trash).is_ok();
+        let mut moved = false;
+        for id in ids {
+            if made && std::fs::rename(genome_path(&self.dir, id), genome_path(&trash, id)).is_ok() {
+                moved = true;
+            } else {
+                let _ = std::fs::remove_file(genome_path(&self.dir, id));
+            }
+        }
+        if !moved {
             return;
         }
         let mut old: Vec<(std::time::SystemTime, PathBuf)> = std::fs::read_dir(&trash)

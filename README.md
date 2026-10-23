@@ -231,7 +231,11 @@ seed a world (until there are some, it starts all random): those that won under 
 can still drop any of them by hand. Zoo scores worked out under older rules are marked with a *
 and listed after newer ones. When the zoo is full (500), those go
 first, then the weakest; pinned ones never.
-- Pruned and removed creatures go to `zoo/trash` (the newest 500 are kept there), not deleted.
+- **Delete from the zoo** (beside the selected creature, or *delete* on its row) takes one out.
+  **Keep the best N** and **Compact** cut the zoo down to its N best (10 unless you change it)
+  plus every pinned one, in the same order pruning goes, after asking.
+- Pruned, deleted and compacted-away creatures go to `zoo/trash` (the newest 500 are kept
+  there), not deleted.
 - Only one evolve at a time can change the zoo. A second one (another window, or
   `evolve-headless` with `EVOLVE_ZOO_DIR` pointing at the real zoo) can read it but stores nothing.
 - If `index.json` can't be read, it is renamed `index.json.bad-<time>` and the zoo is rebuilt
