@@ -489,6 +489,8 @@ pub fn spawn_body(
         };
         let mid = 0.5 * (js.range[0] + js.range[1]);
         let force = p.motor_torque_per_kg * js.strength * mass;
+        let inertia = subtree_inertia(plan, k, (root * spec.rest * js.frame2).translation, root, p.body_density);
+        let (stiffness, damping) = servo(p, force, inertia);
         // One free angle per joint: a hinge's x, or a swivel's y then z (see `JointRef::second`).
         let hinge = |free: JointAxis, f1: Pose, f2: Pose| {
             let locked = JointAxesMask::LOCKED_SPHERICAL_AXES
@@ -502,7 +504,8 @@ pub fn spawn_body(
                 .local_frame2(f2)
                 .contacts_enabled(false)
                 .limits(free, js.range)
-                .motor_position(free, mid, p.motor_stiffness, p.motor_damping)
+                .motor_model(free, MotorModel::ForceBased)
+                .motor_position(free, mid, stiffness, damping)
                 .motor_max_force(free, force)
                 .build()
         };
@@ -531,12 +534,23 @@ pub fn spawn_body(
             slot: js.slot,
             range: js.range,
             strength: js.strength,
-            inertia: subtree_inertia(plan, k, (root * spec.rest * js.frame2).translation, root, p.body_density),
+            inertia,
             second,
             knuckle,
         });
     }
     (parts, joints)
+}
+
+/// A joint motor's spring and damper. The motors are servos with a torque limit: rapier's
+/// default (acceleration-based) spring scales with the limb's own inertia, so a light leg planted
+/// on the ground could push with only a sliver of its strength however strong it was. This one
+/// pushes with its full `max_force` once the joint is `motor_reach` off target, and is damped for
+/// the limb it swings (`inertia`, about the joint).
+pub fn servo(p: &SimParams, max_force: f32, inertia: f32) -> (f32, f32) {
+    let stiffness = max_force / p.motor_reach.max(1e-3);
+    let damping = 2.0 * p.motor_damping_ratio * (stiffness * inertia.max(1e-4)).sqrt();
+    (stiffness, damping)
 }
 
 fn parts_rest(plan: &[PartSpec], k: usize) -> Pose {
@@ -601,9 +615,9 @@ pub fn axis_joint_mut<'a>(world: &'a mut PhysicsWorld, j: &JointRef, d: usize) -
     Some(&mut mb.link_mut(link)?.joint.data)
 }
 
-/// Mechanical work a joint's muscles do in `dt`, J: the torque each motor applies (what it
-/// takes to give the limb beyond it the acceleration the motor asks for, up to the motor's
-/// strength) times how fast the joint turns. Rapier doesn't report a multibody's motor impulses.
+/// Mechanical work a joint's muscles do in `dt`, J: the torque each motor applies (its spring and
+/// damper's pull, up to the motor's strength) times how fast the joint turns. Rapier doesn't
+/// report a multibody's motor impulses.
 pub fn muscle_work(world: &PhysicsWorld, parts: &[PartRef], j: &JointRef, dt: f32) -> f32 {
     let Some((angle, rate)) = joint_state(world, parts, j) else {
         return 0.0;
@@ -615,7 +629,13 @@ pub fn muscle_work(world: &PhysicsWorld, parts: &[PartRef], j: &JointRef, dt: f3
         .map(|(axis, d, data)| {
             let m = &data.motors[axis as usize];
             let ask = m.stiffness * (m.target_pos - angle[d]) + m.damping * (m.target_vel - rate[d]);
-            (inertia * ask.abs()).min(m.max_force) * rate[d].abs() * dt
+            // An acceleration-based motor (a joint from an older save, until its first brain
+            // tick) asks for an acceleration of the limb rather than a torque.
+            let torque = match m.model {
+                MotorModel::ForceBased => ask.abs(),
+                MotorModel::AccelerationBased => inertia * ask.abs(),
+            };
+            torque.min(m.max_force) * rate[d].abs() * dt
         })
         .sum()
 }

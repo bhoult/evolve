@@ -292,7 +292,7 @@ fn multibody_check() {
                 let force = if motors { p.motor_torque_per_kg * js.strength * mass } else { 0.0 };
                 let mut b = GenericJointBuilder::new(mask).local_frame1(js.frame1).local_frame2(js.frame2).contacts_enabled(false);
                 for &axis in axes {
-                    b = b.limits(axis, js.range).motor_position(axis, mid, p.motor_stiffness, p.motor_damping).motor_max_force(axis, force);
+                    b = b.limits(axis, js.range).motor_position(axis, mid, 200.0, 20.0).motor_max_force(axis, force);
                 }
                 if multi && js.kind == JointKind::Swivel {
                     b = b.limits(JointAxis::AngX, [-0.02, 0.02]);
@@ -310,11 +310,11 @@ fn multibody_check() {
                             let target = range[0] + (range[1] - range[0]) * rng.f32();
                             match h {
                                 Ok(h) => {
-                                    w.impulse_joints.get_mut(*h, true).unwrap().data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                                    w.impulse_joints.get_mut(*h, true).unwrap().data.set_motor_position(axis, target, 200.0, 20.0);
                                 }
                                 Err(h) => {
                                     let (mb, link) = w.multibody_joints.get_mut(*h).unwrap();
-                                    mb.link_mut(link).unwrap().joint.data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                                    mb.link_mut(link).unwrap().joint.data.set_motor_position(axis, target, 200.0, 20.0);
                                 }
                             }
                         }
@@ -412,7 +412,7 @@ fn motor_tracking() {
                 .local_frame2(js.frame2)
                 .contacts_enabled(false)
                 .limits(JointAxis::AngX, js.range)
-                .motor_position(JointAxis::AngX, mid, p.motor_stiffness, p.motor_damping)
+                .motor_position(JointAxis::AngX, mid, 200.0, 20.0)
                 .motor_max_force(JointAxis::AngX, force);
             let h = if multi {
                 Err(w.multibody_joints.insert(bodies[parent], bodies[k], b.build(), true).unwrap())
@@ -428,11 +428,11 @@ fn motor_tracking() {
                 let target = if high { range[1] } else { range[0] };
                 match h {
                     Ok(h) => {
-                        w.impulse_joints.get_mut(*h, true).unwrap().data.set_motor_position(JointAxis::AngX, target, p.motor_stiffness, p.motor_damping);
+                        w.impulse_joints.get_mut(*h, true).unwrap().data.set_motor_position(JointAxis::AngX, target, 200.0, 20.0);
                     }
                     Err(h) => {
                         let (mb, link) = w.multibody_joints.get_mut(*h).unwrap();
-                        mb.link_mut(link).unwrap().joint.data.set_motor_position(JointAxis::AngX, target, p.motor_stiffness, p.motor_damping);
+                        mb.link_mut(link).unwrap().joint.data.set_motor_position(JointAxis::AngX, target, 200.0, 20.0);
                     }
                 }
             }
@@ -782,7 +782,7 @@ fn swivel_sensitivity() {
                 let phase = (t as f32 * 0.07 + n as f32 * 1.3 + dd as f32).sin();
                 let target = 0.5 * (j.range[0] + j.range[1]) + 0.8 * phase * 0.5 * (j.range[1] - j.range[0]);
                 if let Some(data) = body::axis_joint_mut(w, j, dd) {
-                    data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                    data.set_motor_position(axis, target, 200.0, 20.0);
                 }
             }
         }
@@ -857,4 +857,177 @@ fn touching_groups() {
     let mut s: Vec<usize> = sizes.into_values().collect();
     s.sort_unstable_by(|a, b| b.cmp(a));
     println!("{n} creatures at t={:.0}s: {} groups, largest {:?}", sim.time, s.len(), &s[..s.len().min(8)]);
+}
+
+/// What limits a creature pushing on the ground: each body is held with every joint at one end
+/// of its range, then the other, and the torso's height above the ground is compared, under a
+/// few motor settings (and one near-rigid reference that shows what the legs could do).
+#[test]
+#[ignore]
+fn push_ups() {
+    use evolve_sim::brain::{N_MOTORS, output};
+    use evolve_sim::genome::Genome;
+    use evolve_sim::rng::Rng;
+    use half::f16;
+    fn base(seed: u64) -> Genome {
+        let mut g = Genome::random(&mut Rng::new(seed), &SimParams::default());
+        g.spine.segments = 0;
+        for l in &mut g.limbs {
+            l.present = false;
+        }
+        g
+    }
+    fn legs(seed: u64, spine: u8, segments: u8, length: f32) -> Genome {
+        let mut g = base(seed);
+        g.spine.segments = spine;
+        for (i, front) in [true, false].into_iter().enumerate() {
+            let l = &mut g.limbs[i];
+            l.present = true;
+            l.parent = 0;
+            l.segment = if front { 0 } else { spine };
+            l.attach = [0.0, -0.5, 1.0];
+            l.bend = [0.0, -0.8, 0.0];
+            l.mirror = true;
+            l.segments = segments;
+            l.length = length;
+            l.strength = 1.0;
+            l.swivel_root = false;
+            l.swivel_knees = false;
+            l.curl = 0.5;
+        }
+        g
+    }
+    fn hold(mut g: Genome, sign: f32) -> Genome {
+        let h = g.brain.h;
+        for k in output::JOINTS..output::JOINTS + N_MOTORS {
+            g.brain.w_out.0[k * h..(k + 1) * h].fill(f16::ZERO);
+            g.brain.b_out[k] = 5.0 * sign;
+        }
+        g
+    }
+    let bodies = [("4 legs, 2 segments", legs(11, 1, 2, 0.5)), ("4 legs, 3 segments", legs(12, 2, 3, 0.45)), ("4 short stiff legs", legs(13, 0, 1, 0.35))];
+    // (label, N·m per kg, reach, damping ratio)
+    let configs: [(&str, f32, f32, f32); 5] = [
+        ("servos, 6 N·m/kg", 6.0, 0.2, 1.0),
+        ("servos, 3 N·m/kg", 3.0, 0.2, 1.0),
+        ("servos, 12 N·m/kg", 12.0, 0.2, 1.0),
+        ("servos, reach 0.5", 6.0, 0.5, 1.0),
+        ("near-rigid reference", 1000.0, 0.02, 1.0),
+    ];
+    for (name, g) in &bodies {
+        println!("{name}:");
+        for (label, torque, k, c) in configs {
+            let mut heights = [0.0f32; 2];
+            for (s, sign) in [-1.0f32, 1.0].into_iter().enumerate() {
+                let mut p = params();
+                p.exploration = 0.0;
+                p.motor_torque_per_kg = torque;
+                p.motor_reach = k;
+                p.motor_damping_ratio = c;
+                p.thirst_time = 0.0;
+                let mut sim = Sim::new(p);
+                let at = sim.random_land_point(30.0);
+                let id = sim.spawn_creature(hold(g.clone(), sign), at, 0.2, f32::MAX, 0, None);
+                let (mut sum, mut n) = (0.0, 0);
+                for step in 0..(5 * TICKS_PER_SECOND) {
+                    sim.step();
+                    if step >= 4 * TICKS_PER_SECOND {
+                        let c = sim.creature(id).unwrap();
+                        let t = sim.torso_of(c).unwrap().translation();
+                        sum += t.y - sim.terrain.height_at(t.x, t.z);
+                        n += 1;
+                    }
+                }
+                heights[s] = sum / n as f32;
+            }
+            let mass = sim_mass(g);
+            println!(
+                "  {label:28} torso {:.2} m / {:.2} m above ground (lift {:+.2} m), {:.0} kg",
+                heights[0],
+                heights[1],
+                (heights[1] - heights[0]).abs(),
+                mass
+            );
+        }
+    }
+    fn sim_mass(g: &Genome) -> f32 {
+        evolve_sim::body::plan_mass(&evolve_sim::body::body_plan(g), SimParams::default().body_density)
+    }
+}
+
+/// How hard muscles work in a world of random creatures: how often a motor is at its strength
+/// limit, muscle power, breath, and how fast bodies and parts move (flinging shows as part speeds
+/// far above torso speeds).
+#[test]
+#[ignore]
+fn motor_load() {
+    use evolve_sim::body;
+    let mut p = params();
+    p.min_population = 40;
+    p.rain_from_pool = 0.0;
+    p.thirst_time = 0.0;
+    let mut sim = Sim::new(p);
+    for _ in 0..(10 * TICKS_PER_SECOND) {
+        sim.step();
+    }
+    let (mut axes, mut saturated) = (0u64, 0u64);
+    let (mut breathless, mut samples) = (0u64, 0u64);
+    let mut exertion = Vec::new();
+    let mut torso_speed = Vec::new();
+    let mut part_speed = Vec::new();
+    for step in 0..(60 * TICKS_PER_SECOND) {
+        sim.step();
+        if step % 6 != 0 {
+            continue;
+        }
+        for c in &sim.creatures {
+            let w = sim.world_of(c);
+            for j in &c.joints {
+                let Some((angle, rate)) = body::joint_state(w, &c.parts, j) else { continue };
+                for &(axis, d) in j.axes() {
+                    let Some(data) = body::axis_joint(w, j, d) else { continue };
+                    let m = &data.motors[axis as usize];
+                    let ask = m.stiffness * (m.target_pos - angle[d]) + m.damping * (m.target_vel - rate[d]);
+                    axes += 1;
+                    if ask.abs() >= m.max_force * 0.98 {
+                        saturated += 1;
+                    }
+                }
+            }
+            samples += 1;
+            if c.oxygen < 0.3 {
+                breathless += 1;
+            }
+            exertion.push(c.exertion);
+            if let Some(t) = sim.torso_of(c) {
+                let v = t.linvel();
+                torso_speed.push((v.x * v.x + v.z * v.z).sqrt());
+            }
+            for q in &c.parts {
+                if let Some(b) = w.bodies.get(q.body) {
+                    part_speed.push(b.linvel().length());
+                }
+            }
+        }
+    }
+    let pct = |v: &mut Vec<f32>, q: f32| {
+        v.sort_by(f32::total_cmp);
+        v.get(((v.len() as f32 * q) as usize).min(v.len().saturating_sub(1))).copied().unwrap_or(0.0)
+    };
+    println!(
+        "motors at their limit {:.1}% of the time; out of breath {:.1}%; muscle power median {:.1} W/kg, 95th {:.1}",
+        100.0 * saturated as f64 / axes.max(1) as f64,
+        100.0 * breathless as f64 / samples.max(1) as f64,
+        pct(&mut exertion, 0.5),
+        pct(&mut exertion, 0.95)
+    );
+    println!(
+        "torso speed median {:.2} m/s, 95th {:.2}; part speed median {:.2}, 95th {:.2}, 99.9th {:.2}",
+        pct(&mut torso_speed, 0.5),
+        pct(&mut torso_speed, 0.95),
+        pct(&mut part_speed, 0.5),
+        pct(&mut part_speed, 0.95),
+        pct(&mut part_speed, 0.999)
+    );
+    println!("deaths: {:?}", (sim.stats.deaths_starved, sim.stats.deaths_drowned, sim.stats.deaths_other));
 }

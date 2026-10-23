@@ -283,13 +283,23 @@ weakly, so what the brain already does carries over.
     tentacles were no dearer than hinges. Now ordinary movement costs little and a creature
     thrashing at 80 W per kg pays about twice its resting metabolism.
   - *Starving:* a creature with no energy starves.
-- *Strength:* a joint's motor can deliver up to `motor_torque_per_kg` (6) N·m per kg of body,
-  times the limb's strength gene, so a few legs can lift their body but not fling it.
+- *Strength:* each joint's motor is a servo. It holds the angle the brain asks for against any
+  load up to its strength, `motor_torque_per_kg` (6) N·m per kg of body times the limb's strength
+  gene, and pushes with all of it once the joint is forced `motor_reach` (0.2 rad) off target.
+  - *Why servos:* until 2026-10-23 the motors were rapier's default kind, whose spring scales with
+    the inertia of the limb it swings. A light leg planted on the ground could push with only a
+    sliver of its strength, however strong, so creatures flapped their limbs without moving
+    themselves, and raising the strength did nothing (doubling it on 2026-10-22 changed nothing:
+    the limit was never reached). With servos, random creatures move their bodies 2.4 times as
+    fast (median 0.24 m/s against 0.10), with no faster limb tips (no flinging).
 - *Breath:* muscles burn oxygen in proportion to their power per kg (`exertion_oxygen`), and a
   creature breathes it back in while its head is above water (`breath_rate`, scaled by the lung
   gene). Hard work can outpace breathing. Below 30% breath its muscles weaken, so a sprinter must
   pace itself. Underwater it holds its breath (`breath_time`), and drowns when that runs out.
-  Measured on an evolved world, creatures on land are short of breath about 6% of the time.
+  Pushing for real costs real oxygen: with servos, random creatures (which flail as hard as they
+  can) were out of breath 58% of the time, so `exertion_oxygen` went from 0.006 to 0.004 (47%).
+  Evolved creatures pace themselves; before servos one evolved world was short of breath 6% of
+  the time.
 - *Thirst:* a full creature runs dry in `thirst_time` (6 simulated minutes) and then loses health.
   Putting its mouth in water refills it in about two seconds, and rain helps a little. Any water
   will do.

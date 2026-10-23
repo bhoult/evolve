@@ -209,6 +209,7 @@ impl Sim {
                 // Out of breath, muscles weaken (to a quarter at worst).
                 let breath = (c.oxygen / 0.3).clamp(0.25, 1.0);
                 let force = p.motor_torque_per_kg * j.strength * c.mass * breath;
+                let (stiffness, damping) = body::servo(p, force, j.inertia);
                 // The angle the joint aims for moves at most this far per brain tick, so a limb
                 // swings rather than snapping between whatever the brain asks from tick to tick.
                 let len = c.plan.get(j.child).map_or(0.5, |s| s.shape.length()).max(0.05);
@@ -218,7 +219,8 @@ impl Sim {
                         let want = mid + c.output(output::JOINTS + j.slot + d) * half;
                         let was = data.motors[axis as usize].target_pos;
                         let target = was + (want - was).clamp(-step, step);
-                        data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                        data.set_motor_model(axis, MotorModel::ForceBased);
+                        data.set_motor_position(axis, target, stiffness, damping);
                         data.set_motor_max_force(axis, force);
                     }
                 }

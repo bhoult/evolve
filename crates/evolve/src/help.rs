@@ -251,8 +251,9 @@ fn bodies(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Each joint has a motor that drives it toward the angle the brain asks for, with up to {} N·m per kg of body (motor_torque_per_kg) times the limb's strength gene: enough for a few legs to lift the body, not to fling it.",
-            num(p.motor_torque_per_kg)
+            "Each joint has a motor that works like a servo: it holds the angle the brain asks for against any load, up to {} N·m per kg of body (motor_torque_per_kg) times the limb's strength gene, and pushes with all of it once the joint is forced {} rad off (motor_reach). So a leg on the ground can lift and push the whole body.",
+            num(p.motor_torque_per_kg),
+            num(p.motor_reach)
         ),
     );
     bullet(

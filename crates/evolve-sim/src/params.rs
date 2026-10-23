@@ -157,10 +157,13 @@ params! {
         physics_shards: u32 = 12, [1, 32], Live;
     }
     "Motors" {
-        /// Spring stiffness of the joint motors chasing the brain's target angles.
-        motor_stiffness: f32 = 200.0, [0, 2000], Live;
-        /// Damping of the joint motors.
-        motor_damping: f32 = 20.0, [0, 500], Live;
+        /// How far a joint can be pushed off the angle its brain asks for before its motor
+        /// pushes back with full strength, radians. The motors are servos: they hold the angle
+        /// against whatever load (a limb on the ground lifting the body) up to their strength.
+        motor_reach: f32 = 0.2, [0.02, 2], Live;
+        /// Damping of the joint motors, as a fraction of critical damping for the limb they
+        /// swing: 1 settles on the target without overshooting, less springs past it.
+        motor_damping_ratio: f32 = 1.0, [0, 5], Live;
         /// Maximum motor torque per kg of creature mass (scaled by each limb's strength gene).
         motor_torque_per_kg: f32 = 6.0, [0, 30], Live;
         /// Fastest a joint can swing, rad/s, for a limb segment half a meter long; longer
@@ -381,7 +384,7 @@ params! {
         /// short of breath is weak until it recovers.
         breath_rate: f32 = 0.25, [0.01, 5], Live;
         /// Oxygen used per second for each watt of muscle power per kg of body.
-        exertion_oxygen: f32 = 0.006, [0, 2], Live;
+        exertion_oxygen: f32 = 0.004, [0, 2], Live;
         /// Health lost per second while out of breath underwater.
         drowning_damage: f32 = 5.0, [0, 100], Live;
     }

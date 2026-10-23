@@ -622,7 +622,8 @@ fn a_body_moved_to_another_world_carries_on_exactly() {
                     let phase = (t as f32 * 0.07 + n as f32 * 1.3 + d as f32).sin();
                     let target = 0.5 * (j.range[0] + j.range[1]) + 0.8 * phase * 0.5 * (j.range[1] - j.range[0]);
                     if let Some(data) = body::axis_joint_mut(w, j, d) {
-                        data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                        let (k, c) = body::servo(&p, data.motors[axis as usize].max_force, j.inertia);
+                        data.set_motor_position(axis, target, k, c);
                     }
                 }
             }
