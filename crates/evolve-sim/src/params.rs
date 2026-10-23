@@ -256,7 +256,8 @@ params! {
         bite_rate: f32 = 10.0, [0, 200], Live;
         /// How far beyond its mouth a creature can reach food, m.
         eat_reach: f32 = 0.6, [0, 5], Live;
-        /// Meat energy left per kg of a dead creature.
+        /// Energy in each kg of body: what parents pay to grow a child's body, and what a
+        /// carcass leaves as meat (plus half the energy it still held).
         meat_per_mass: f32 = 0.8, [0, 10], Live;
         /// Fraction of meat energy lost per second to rot.
         meat_decay: f32 = 0.01, [0, 0.5], Live;

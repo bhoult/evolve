@@ -12,6 +12,7 @@ use crate::brain::{self, Learning, N_IN, N_MEMORY, input, output};
 use crate::gpu::BatchItem;
 use crate::genome::Genome;
 use crate::grid::Grid;
+use crate::params::SimParams;
 use crate::math::{Quat, Vec3, heading_frame};
 use crate::sim::{Creature, Food, Sim, TICKS_PER_SECOND};
 
@@ -471,9 +472,11 @@ impl Sim {
                     }
                     let o = &self.creatures[k];
                     let gap = (torso[k] - torso[i]).length() - ri - o.radius();
+                    // A child's body comes out like its parents', give or take a mutation.
                     if gap <= p.mate_range
                         && o.willing_partner(&p)
                         && ci.genome.distance(&o.genome) < p.species_threshold
+                        && birth_cost(&p, &[ci.energy, o.energy], 0.5 * (ci.mass + o.mass)).is_some()
                     {
                         found = Some(k);
                     }
@@ -483,7 +486,10 @@ impl Sim {
                 busy[i] = true;
                 busy[k] = true;
                 pairs.push((i, k));
-            } else if p.asexual && ci.ready_to_mate(&p, p.asexual_energy_fraction) {
+            } else if p.asexual
+                && ci.ready_to_mate(&p, p.asexual_energy_fraction)
+                && birth_cost(&p, &[ci.energy], ci.mass).is_some()
+            {
                 busy[i] = true;
                 pairs.push((i, i));
             }
@@ -501,16 +507,6 @@ impl Sim {
         for (i, k) in pairs {
             if self.creatures.len() as u32 >= p.max_population {
                 break;
-            }
-            // A child needs a real start in life: specks of creatures that can only spare a
-            // crumb can't breed (they once took over by breeding where they landed).
-            let share = if i == k { (p.child_energy_share * 1.5).min(0.9) } else { p.child_energy_share };
-            let mut gift = self.creatures[i].energy * share;
-            if k != i {
-                gift += self.creatures[k].energy * share;
-            }
-            if gift < p.min_child_energy {
-                continue;
             }
             self.reproduce(i, k, torso[i], &learned);
         }
@@ -550,19 +546,18 @@ impl Sim {
         };
         genome.mutate(&mut self.rng, &p);
         let parents: &[usize] = if i == k { &[i] } else { &[i, k] };
-        // Going it alone costs more.
-        let share = if i == k {
-            (p.child_energy_share * 1.5).min(0.9)
-        } else {
-            p.child_energy_share
+        // Priced by the body it actually got (a mutation can make it a little bigger).
+        let mass = body::plan_mass(&body::body_plan(&genome), p.body_density);
+        let held: Vec<f32> = parents.iter().map(|&j| self.creatures[j].energy).collect();
+        let Some((body, gifts)) = birth_cost(&p, &held, mass) else {
+            return;
         };
         let mut energy = 0.0;
-        for &j in parents {
+        for (&j, gift) in parents.iter().zip(gifts) {
             let c = &mut self.creatures[j];
-            let e = c.energy * share;
-            c.energy -= e;
-            energy += e;
-            c.life.invested += e;
+            c.energy -= body + gift;
+            energy += gift;
+            c.life.invested += gift;
             c.mate_cooldown = p.mate_cooldown;
             c.mate_drive = 0.0;
             c.mate_flash = 0.6;
@@ -737,6 +732,26 @@ impl Sim {
         }
         self.pool.age(0.998);
     }
+}
+
+/// What a child costs its parents (one, or two who split it): first its body, at the meat it
+/// will be worth when it dies, so no round of breeding and dying makes energy from nothing; then
+/// a share of what each has left, handed over as the child's energy. Returns each parent's part
+/// of the body and its gift, or None if they can't pay for the body and still give the child a
+/// real start in life (specks that could only spare a crumb once took over by breeding where they
+/// landed).
+fn birth_cost(p: &SimParams, energies: &[f32], child_mass: f32) -> Option<(f32, [f32; 2])> {
+    // Going it alone costs more.
+    let share = if energies.len() == 1 { (p.child_energy_share * 1.5).min(0.9) } else { p.child_energy_share };
+    let body = p.meat_per_mass * child_mass / energies.len() as f32;
+    let mut gifts = [0.0; 2];
+    for (g, &e) in gifts.iter_mut().zip(energies) {
+        if e < body {
+            return None;
+        }
+        *g = (e - body) * share;
+    }
+    (gifts.iter().sum::<f32>() >= p.min_child_energy).then_some((body, gifts))
 }
 
 /// Exploration: each joint axis the body has wanders a little around what the brain asks for,

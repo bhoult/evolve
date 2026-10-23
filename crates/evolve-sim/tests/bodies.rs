@@ -437,6 +437,79 @@ fn specks_too_small_to_feed_a_child_cannot_breed() {
 }
 
 #[test]
+fn a_child_killed_at_birth_leaves_no_more_meat_than_it_cost() {
+    use evolve_sim::math::Vec3;
+    let mut p = quiet_params();
+    p.maturity_age = 0.0;
+    p.plant_max_count = 0;
+    p.plant_spawn_rate = 0.0;
+    let mut sim = Sim::new(p);
+    let g = always(legged(), output::MATE);
+    let at = sim.random_land_point(20.0);
+    sim.spawn_creature(g.clone(), at, 0.3, f32::MAX, 0, None);
+    sim.spawn_creature(g, at + Vec3::new(1.5, 0.0, 0.0), 0.3, f32::MAX, 0, None);
+    let parents: Vec<u64> = sim.creatures.iter().map(|c| c.id).collect();
+    let held = |sim: &Sim| -> f32 { parents.iter().filter_map(|&id| sim.creature(id)).map(|c| c.energy).sum() };
+    let mut spent = 0.0;
+    for _ in 0..600 {
+        let before = held(&sim);
+        sim.step();
+        if sim.creatures.len() > 2 {
+            spent = before - held(&sim);
+            break;
+        }
+    }
+    assert_eq!(sim.creatures.len(), 3, "the pair should breed");
+    let child = sim.creatures.iter_mut().find(|c| !parents.contains(&c.id)).unwrap();
+    child.dead = Some(evolve_sim::sim::DeathCause::Killed);
+    let meat_before: f32 = sim.meat.iter().map(|m| m.energy).sum();
+    sim.step();
+    let meat: f32 = sim.meat.iter().map(|m| m.energy).sum::<f32>() - meat_before;
+    assert!(meat > 0.0, "a carcass leaves meat");
+    assert!(meat <= spent + 0.1, "the carcass left {meat} of meat, but its parents only spent {spent} on it");
+}
+
+/// Meat-eaters that do nothing but breed, bite and eat, in a world with no plants and no rain:
+/// with energy conserved they die out, since every birth and death loses some.
+#[test]
+fn meat_eaters_cannot_live_on_their_own_dead() {
+    use evolve_sim::math::Vec3;
+    let mut p = quiet_params();
+    p.plant_max_count = 0;
+    p.plant_spawn_rate = 0.0;
+    p.maturity_age = 2.0;
+    p.mate_cooldown = 3.0;
+    p.lifespan = 40.0;
+    p.max_population = 40;
+    let mut sim = Sim::new(p);
+    let mut g = base(7);
+    g.traits.diet = 1.0;
+    let g = always(always(always(g, output::MATE), output::EAT), output::ATTACK);
+    let at = sim.random_land_point(20.0);
+    for k in 0..12 {
+        let a = k as f32 * std::f32::consts::TAU / 12.0;
+        sim.spawn_creature(g.clone(), at + Vec3::new(a.cos(), 0.0, a.sin()) * 2.0, 0.3, f32::MAX, 0, None);
+    }
+    let mut births = 0;
+    for s in 0..400 {
+        for _ in 0..60 {
+            sim.step();
+        }
+        births = sim.stats.births;
+        if s % 40 == 0 {
+            let held: f32 = sim.creatures.iter().map(|c| c.energy).sum();
+            let meat: f32 = sim.meat.iter().map(|m| m.energy).sum();
+            eprintln!("{s:4}s alive {:3} births {births:4} energy {held:7.1} meat {meat:7.1}", sim.creatures.len());
+        }
+        if sim.creatures.is_empty() {
+            break;
+        }
+    }
+    assert!(births > 0, "they should breed at first");
+    assert!(sim.creatures.is_empty(), "{} still alive after 400 s with nothing to eat but each other ({births} births)", sim.creatures.len());
+}
+
+#[test]
 fn moving_earth_is_conserved_and_limited() {
     use evolve_sim::terrain::Terrain;
     let mut t = Terrain::generate(&quiet_params(), 1);

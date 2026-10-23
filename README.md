@@ -286,9 +286,13 @@ weakly, so what the brain already does carries over.
 
 **Breeding.** A mature, willing creature with enough energy that is near a genetically close
 (`species_threshold`), willing partner produces a child. The partner only needs half the energy
-bar. The genomes cross over, then mutate, and
-each parent gives the child part of its energy. Genetic distance splits the population into
-species that can't interbreed. Breeding alone is an optional parameter.
+bar. The genomes cross over, then mutate. The parents pay for the child's body, at the meat it
+will be worth when it dies (`meat_per_mass` per kg, split between them), then each gives it part
+of what it has left as its energy. Pairs that can't pay for the body and still give the child
+`min_child_energy` don't breed. Without this, crowds of meat-eaters once lived on their own
+dead: every birth was a free body and every death left meat, so they gathered in heaps and bred
+without ever leaving. Genetic distance splits the population into species that can't
+interbreed. Breeding alone is an optional parameter.
 
 **Combat.** A creature that touches another with its torso (its head; the eyes show which end)
 and wants to attack bites it. Damage depends on the size ratio and the target's armor. Biting
