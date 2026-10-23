@@ -93,7 +93,8 @@ struct Flight {
     from: Vec3,
     to: Vec3,
     t0: f32,
-    light: Entity,
+    /// A meteor's glow (a chunk of land has none).
+    light: Option<Entity>,
     chunk: Option<[Entity; 2]>,
 }
 
@@ -114,7 +115,10 @@ struct Miracle {
     t0: f32,
     /// Sparks owed to the emitters (fractions carried over between frames).
     owed: [f32; 3],
-    light: Entity,
+    /// Whether its opening burst has gone off.
+    burst: bool,
+    /// Its light (a landfall gives none).
+    light: Option<Entity>,
 }
 
 struct Spark {
@@ -178,6 +182,40 @@ impl Miracles {
 
     fn range(&mut self, a: f32, b: f32) -> f32 {
         a + (b - a) * self.rand()
+    }
+
+    /// How many to give off this frame at `rate` a second: on average the rate, whatever the
+    /// frame rate.
+    fn count(&mut self, rate: f32, dt: f32) -> usize {
+        (rate * dt + self.rand()).floor() as usize
+    }
+
+    /// Drops everything under way (the world was replaced): the totems and the wave go too, and
+    /// come back from the new world's snapshot if it has them.
+    fn clear(&mut self, commands: &mut Commands) {
+        for f in self.flights.drain(..) {
+            for e in f.light.into_iter().chain(f.chunk.into_iter().flatten()) {
+                commands.entity(e).despawn();
+            }
+        }
+        for m in self.miracles.drain(..) {
+            if let Some(e) = m.light {
+                commands.entity(e).despawn();
+            }
+        }
+        for (_, _, ents) in self.totems.drain(..) {
+            for e in ents {
+                commands.entity(e).despawn();
+            }
+        }
+        if let Some(e) = self.wave.take() {
+            commands.entity(e).despawn();
+        }
+        self.sparks.clear();
+        self.smoke.clear();
+        self.swirls.clear();
+        self.swirl_owed.clear();
+        self.spring_owed = 0.0;
     }
 
     /// A random point in a disc of radius `r` around `at`.
@@ -400,6 +438,13 @@ fn watch(
 ) {
     let snap = &*snap.0;
     let st = &mut *st;
+    // A new world (or one loaded): what was under way in the old one is gone.
+    let fresh = snap.world_epoch != st.epoch;
+    if fresh {
+        st.epoch = snap.world_epoch;
+        st.last_seq = snap.highlights.last().map(|h| h.seq).unwrap_or(0);
+        st.clear(&mut commands);
+    }
     // An earthquake: the crack runs across the view through where it was called, jagged.
     if let Some((Tool::Quake, at)) = tools.summon {
         tools.summon = None;
@@ -476,8 +521,7 @@ fn watch(
         let grass = commands
             .spawn((Mesh3d(grass_mesh), MeshMaterial3d(grass_mat), Transform::from_translation(from).with_scale(Vec3::new(r * 0.92, 0.6, r * 0.92))))
             .id();
-        let light = commands.spawn((PointLight { intensity: 0.0, ..default() }, Transform::from_translation(from))).id();
-        st.flights.push(Flight { from, to, t0: time.elapsed_secs(), light, chunk: Some([earth, grass]) });
+        st.flights.push(Flight { from, to, t0: time.elapsed_secs(), light: None, chunk: Some([earth, grass]) });
         sounds.write(PlaySound { sfx: Sfx::Whoosh, at: to, gain: 0.8, floor: 0.3 });
     }
     // A meteor called down: it comes in from beyond where it will land, as seen from the camera,
@@ -492,12 +536,10 @@ fn watch(
                 Transform::from_translation(from),
             ))
             .id();
-        st.flights.push(Flight { from, to, t0: time.elapsed_secs(), light, chunk: None });
+        st.flights.push(Flight { from, to, t0: time.elapsed_secs(), light: Some(light), chunk: None });
         sounds.write(PlaySound { sfx: Sfx::Whoosh, at: to, gain: 1.0, floor: 0.35 });
     }
-    if snap.world_epoch != st.epoch {
-        st.epoch = snap.world_epoch;
-        st.last_seq = snap.highlights.last().map(|h| h.seq).unwrap_or(0);
+    if fresh {
         return;
     }
     let now = time.elapsed_secs();
@@ -524,13 +566,15 @@ fn watch(
             let d = eye.translation.distance(at);
             cam.shake = cam.shake.max(2.5 * (1.0 - d / 300.0).clamp(0.0, 1.0));
         }
-        let light = commands
-            .spawn((
-                PointLight { intensity: 0.0, range: if kind == Kind::Impact { 120.0 } else { 30.0 }, shadows_enabled: false, ..default() },
-                Transform::from_translation(at + Vec3::Y),
-            ))
-            .id();
-        st.miracles.push(Miracle { kind, subject: h.subject, at, size: h.strength.max(0.3), t0: now, owed: [0.0; 3], light });
+        let light = (kind != Kind::Landfall).then(|| {
+            commands
+                .spawn((
+                    PointLight { intensity: 0.0, range: if kind == Kind::Impact { 120.0 } else { 30.0 }, shadows_enabled: false, ..default() },
+                    Transform::from_translation(at + Vec3::Y),
+                ))
+                .id()
+        });
+        st.miracles.push(Miracle { kind, subject: h.subject, at, size: h.strength.max(0.3), t0: now, owed: [0.0; 3], burst: false, light });
     }
 }
 
@@ -658,7 +702,9 @@ fn animate(
                 }
                 None => link.cmd(evolve_sim::Command::Meteor { at: f.to.to_array() }),
             }
-            commands.entity(f.light).despawn();
+            if let Some(e) = f.light {
+                commands.entity(e).despawn();
+            }
             return false;
         }
         let pos = f.from.lerp(f.to, u.powf(1.3));
@@ -675,8 +721,8 @@ fn animate(
                 tf.translation = pos + spin * Vec3::Y * (r * 0.4);
                 tf.rotation = spin;
             }
-            for _ in 0..(90.0 * dt).ceil() as usize {
-                let off = Vec3::new(st.range(-1.0, 1.0), st.range(-0.3, 0.3), st.range(-1.0, 1.0)) * r;
+            for _ in 0..st.count(90.0, dt) {
+                let off =Vec3::new(st.range(-1.0, 1.0), st.range(-0.3, 0.3), st.range(-1.0, 1.0)) * r;
                 let life = st.range(1.5, 3.0);
                 let size = st.range(1.0, 2.0);
                 let behind = st.range(2.0, 8.0);
@@ -693,7 +739,7 @@ fn animate(
             }
             return true;
         }
-        for _ in 0..(400.0 * dt) as usize {
+        for _ in 0..st.count(400.0, dt) {
             let jitter = Vec3::new(st.range(-1.0, 1.0), st.range(-1.0, 1.0), st.range(-1.0, 1.0));
             let life = st.range(0.25, 0.6);
             let size = st.range(0.6, 1.4);
@@ -709,7 +755,7 @@ fn animate(
                 color: [Vec4::new(8.0, 5.0, 2.0, 1.0), Vec4::new(3.0, 0.6, 0.08, 0.0)],
             });
         }
-        for _ in 0..(120.0 * dt) as usize {
+        for _ in 0..st.count(120.0, dt) {
             let jitter = Vec3::new(st.range(-1.0, 1.0), st.range(-0.5, 1.0), st.range(-1.0, 1.0));
             let life = st.range(2.0, 4.0);
             let size = st.range(0.8, 1.6);
@@ -725,7 +771,7 @@ fn animate(
                 color: [Vec4::new(0.25, 0.23, 0.22, 0.7), Vec4::new(0.5, 0.48, 0.46, 0.0)],
             });
         }
-        if let Ok((mut light, mut tf)) = lights.get_mut(f.light) {
+        if let Some(Ok((mut light, mut tf))) = f.light.map(|e| lights.get_mut(e)) {
             light.intensity = 4.0e6 * u;
             tf.translation = pos;
         }
@@ -736,9 +782,13 @@ fn animate(
     miracles.retain_mut(|m| {
         let age = now - m.t0;
         if age > m.kind.length() {
-            commands.entity(m.light).despawn();
+            if let Some(e) = m.light {
+                commands.entity(e).despawn();
+            }
             return false;
         }
+        // The burst that opens it, once.
+        let first = !std::mem::replace(&mut m.burst, true);
         // A blessing stays with its creature.
         if let Some(c) = snap.creatures.iter().find(|c| c.id == m.subject)
             && let Some(p) = c.parts.first()
@@ -791,7 +841,7 @@ fn animate(
             }
             Kind::Smite => {
                 // Sparks thrown out by the strike, then fire and embers where it fell.
-                if age < dt * 1.5 {
+                if first {
                     for _ in 0..90 {
                         let dir = Vec3::new(st.range(-1.0, 1.0), st.range(0.2, 1.0), st.range(-1.0, 1.0)).normalize_or(Vec3::Y);
                         let speed = st.range(3.0, 11.0);
@@ -845,7 +895,7 @@ fn animate(
             }
             Kind::Ascension => {
                 let e = envelope(age, 0.15, 2.2, m.kind.length());
-                if age < dt * 1.5 {
+                if first {
                     for _ in 0..160 {
                         let rise = st.range(-s, s);
                         let pos = st.around(at + Vec3::Y * rise, s * 1.1);
@@ -889,7 +939,7 @@ fn animate(
                 (Color::srgb(1.0, 0.85, 0.5), 500_000.0 * e)
             }
             Kind::Landfall => {
-                if age < dt * 1.5 {
+                if first {
                     // A ring of dust racing out from under it, and earth flung up.
                     for _ in 0..220 {
                         let a = st.range(0.0, std::f32::consts::TAU);
@@ -931,7 +981,7 @@ fn animate(
             }
             Kind::Impact => {
                 let (r, crater) = (s, evolve_sim::acts::CRATER);
-                if age < dt * 1.5 {
+                if first {
                     // The fireball.
                     for _ in 0..260 {
                         let dir = st.direction(-0.1);
@@ -1043,7 +1093,7 @@ fn animate(
                 (Color::srgb(1.0, 0.55, 0.2), flash + 1.5e6 * burn.sqrt() * flicker)
             }
         };
-        if let Ok((mut light, mut tf)) = lights.get_mut(m.light) {
+        if let Some(Ok((mut light, mut tf))) = m.light.map(|e| lights.get_mut(e)) {
             let c = ungrade(Vec3::from_array(light_color.to_linear().to_f32_array_no_alpha()), &grading.global);
             light.color = Color::linear_rgb(c.x, c.y, c.z);
             light.intensity = light_power;
@@ -1074,19 +1124,33 @@ fn animate(
     st.smoke.retain(|p| p.age < p.life);
 
     // Totems: put up and taken down with the world's, each glowing, with what it stirs drifting
-    // round its head and its reach marked faintly on the ground.
-    st.totems.retain(|&(pos, kind, ents)| {
-        let standing = snap.totems.iter().any(|&(p, k)| k == kind && Vec3::from_array(p).distance(pos) < 0.5);
-        if !standing {
-            for e in ents {
+    // round its head and its reach marked faintly on the ground. (Matched by where they stand,
+    // so one stays put while the ground under it is raised or lowered.)
+    let flat = |a: Vec3, b: Vec3| (a.x - b.x).hypot(a.z - b.z) < 0.5;
+    st.totems.retain_mut(|(pos, kind, ents)| {
+        let Some(&(p, _)) = snap.totems.iter().find(|&&(p, k)| k == *kind && flat(Vec3::from_array(p), *pos)) else {
+            for &e in ents.iter() {
                 commands.entity(e).despawn();
             }
+            return false;
+        };
+        let rise = p[1] - pos.y;
+        if rise.abs() > 0.01 {
+            pos.y = p[1];
+            for &e in &ents[..2] {
+                if let Ok(mut tf) = chunks.get_mut(e) {
+                    tf.translation.y += rise;
+                }
+            }
+            if let Ok((_, mut tf)) = lights.get_mut(ents[2]) {
+                tf.translation.y += rise;
+            }
         }
-        standing
+        true
     });
     for &(p, kind) in &snap.totems {
         let pos = Vec3::from_array(p);
-        if st.totems.iter().any(|&(q, k, _)| k == kind && q.distance(pos) < 0.5) {
+        if st.totems.iter().any(|&(q, k, _)| k == kind && flat(q, pos)) {
             continue;
         }
         let (pole, head, wood, heads) = st.totem_look.clone();
@@ -1107,7 +1171,7 @@ fn animate(
     for (pos, kind) in totems {
         let c = totem_color(kind);
         let head = pos + Vec3::Y * 4.4;
-        for _ in 0..(20.0 * dt).ceil() as usize {
+        for _ in 0..st.count(20.0, dt) {
             let a = st.range(0.0, std::f32::consts::TAU);
             let ring = Vec3::new(a.cos(), 0.0, a.sin()) * evolve_sim::acts::TOTEM_REACH;
             let ground = snap.terrain.height_at(pos.x + ring.x, pos.z + ring.z);
@@ -1122,7 +1186,7 @@ fn animate(
                 color: [(c * 2.0).extend(0.5), (c * 2.0).extend(0.0)],
             });
         }
-        for _ in 0..(14.0 * dt).ceil() as usize {
+        for _ in 0..st.count(14.0, dt) {
             let around = st.around(head, 1.2);
             let life = st.range(1.5, 2.5);
             match kind {
@@ -1162,16 +1226,21 @@ fn animate(
             let origin = way * front + Vec3::Y * snap.params.water_level;
             let rotation = Quat::from_rotation_arc(Vec3::Z, way);
             let scale = Vec3::new(1.0, (height / evolve_sim::acts::TSUNAMI_HEIGHT).max(0.01), 1.0);
-            let e = *st.wave.get_or_insert_with(|| {
-                let (mesh, material) = st.wave_look.clone();
-                commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::default(), NotShadowCaster)).id()
-            });
-            if let Ok(mut tf) = chunks.get_mut(e) {
-                *tf = Transform { translation: origin, rotation, scale };
+            let place = Transform { translation: origin, rotation, scale };
+            match st.wave {
+                Some(e) => {
+                    if let Ok(mut tf) = chunks.get_mut(e) {
+                        *tf = place;
+                    }
+                }
+                None => {
+                    let (mesh, material) = st.wave_look.clone();
+                    st.wave = Some(commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), place, NotShadowCaster)).id());
+                }
             }
             let along = Vec3::new(-way.z, 0.0, way.x);
             let half = snap.terrain.half();
-            for _ in 0..(400.0 * dt).ceil() as usize {
+            for _ in 0..st.count(400.0, dt) {
                 let x = st.range(-half * 1.4, half * 1.4);
                 let p = origin + along * x;
                 if p.x.abs() > half || p.z.abs() > half {
@@ -1207,13 +1276,14 @@ fn animate(
     if snap.quaking {
         cam.shake = cam.shake.max(0.35);
     }
-    // Springs bubble where they rise.
+    // Springs bubble where they rise (past a dozen, they share the bubbles, each at random).
     let t = &snap.terrain;
-    st.spring_owed += 45.0 * t.springs.len() as f32 * dt;
+    let n = t.springs.len();
+    st.spring_owed += 45.0 * n.min(12) as f32 * dt;
     let bubbles = st.spring_owed.floor();
     st.spring_owed -= bubbles;
-    for b in 0..bubbles as usize {
-        let Some(&k) = t.springs.get(b % t.springs.len().max(1)) else {
+    for _ in 0..bubbles as usize {
+        let Some(&k) = t.springs.get((st.rand() * n as f32) as usize) else {
             break;
         };
         let (i, j) = (k as usize / t.res, k as usize % t.res);
@@ -1266,10 +1336,12 @@ fn animate(
                 size,
                 color,
             };
-            st.swirls.push(swirl);
+            if st.swirls.len() < MAX_SPARKS {
+                st.swirls.push(swirl);
+            }
         }
         // Dust kicked up round its foot.
-        for _ in 0..(40.0 * s * dt).ceil() as usize {
+        for _ in 0..st.count(40.0 * s, dt) {
             let a = st.range(0.0, std::f32::consts::TAU);
             let r = st.range(2.0, 6.0);
             let out = Vec3::new(a.cos(), 0.0, a.sin());

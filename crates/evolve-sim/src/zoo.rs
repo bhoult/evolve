@@ -401,6 +401,7 @@ pub fn seed_world(zoo: &SharedZoo, sim: &mut crate::Sim) {
         Err(_) => return,
     };
     if ids.is_empty() {
+        sim.log("Nothing in the zoo from this version yet to seed the world with");
         return;
     }
     let mut placed = 0;

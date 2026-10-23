@@ -16,7 +16,7 @@ use crate::params::SimParams;
 use crate::math::{Quat, Vec3, heading_frame};
 use crate::sim::{Creature, Food, Sim, TICKS_PER_SECOND};
 
-const GRID_CELL: f32 = 5.0;
+pub(crate) const GRID_CELL: f32 = 5.0;
 /// Seconds between position samples for the distance-travelled tally.
 const DISTANCE_WINDOW: u64 = 5;
 
@@ -29,6 +29,11 @@ struct SenseCtx<'a> {
     stones: Grid,
     stone_at: Vec<(Vec3, f32)>,
     creatures: Grid,
+    /// How far any creature's body reaches from its torso, m.
+    creature_reach: f32,
+    /// Every obstacle, and how far the biggest reaches from its center, m.
+    obstacles: Grid,
+    obstacle_reach: f32,
     calls: Vec<Call>,
 }
 
@@ -46,7 +51,7 @@ pub(crate) fn call_loudness(c: &Creature) -> f32 {
     ((c.output(output::CALL) - 0.2) / 0.8).max(0.0)
 }
 
-fn food_grid(size: f32, food: &[Food]) -> Grid {
+pub(crate) fn food_grid(size: f32, food: &[Food]) -> Grid {
     let mut g = Grid::new(size, GRID_CELL);
     g.rebuild(food.iter().map(|f| f.pos));
     g
@@ -135,7 +140,20 @@ impl Sim {
             let size = self.terrain.size;
             let mut creatures = Grid::new(size, GRID_CELL);
             creatures.rebuild(torso.iter().copied());
-            let taken: Vec<u64> = self
+            let creature_reach = self
+                .creatures
+                .iter()
+                .zip(&torso)
+                .map(|(c, &at)| {
+                    let world = &self.shards[c.shard].world;
+                    c.parts
+                        .iter()
+                        .zip(&c.plan)
+                        .filter_map(|(q, spec)| Some(world.bodies.get(q.body)?.translation().distance(at) + spec.shape.bounding_radius()))
+                        .fold(0.0f32, f32::max)
+                })
+                .fold(0.0f32, f32::max);
+            let taken: std::collections::HashSet<u64> = self
                 .creatures
                 .iter()
                 .filter_map(|c| match c.held {
@@ -143,6 +161,14 @@ impl Sim {
                     _ => None,
                 })
                 .collect();
+            let obstacle_at: Vec<Vec3> = self
+                .obstacles
+                .iter()
+                .map(|o| self.shards[o.shard].world.bodies.get(o.body).map_or(Vec3::ZERO, |b| b.translation()))
+                .collect();
+            let mut obstacles = Grid::new(size, GRID_CELL);
+            obstacles.rebuild(obstacle_at.iter().copied());
+            let obstacle_reach = self.obstacles.iter().map(|o| crate::sim::obstacle_radius(o.shape)).fold(0.0f32, f32::max);
             let stone_at: Vec<(Vec3, f32)> = self
                 .obstacles
                 .iter()
@@ -158,6 +184,9 @@ impl Sim {
                 plants: food_grid(size, &self.plants),
                 meat: food_grid(size, &self.meat),
                 creatures,
+                creature_reach,
+                obstacles,
+                obstacle_reach,
                 torso,
                 calls,
             };
@@ -337,11 +366,38 @@ impl Sim {
                 f.pos.y = self.terrain.height_at(f.pos.x, f.pos.z);
             }
         }
+        // Ground can rise by meters at once (land raised, or thrown up by a quake or a meteor):
+        // a stone it buried is set back on top, and so is a creature, by as much as its most
+        // buried part needs.
+        let terrain = &self.terrain;
         for o in self.obstacles.iter().filter(|o| o.dynamic) {
             if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body)
                 && inside(b.translation())
             {
+                let t = b.translation();
+                let ground = terrain.height_at(t.x, t.z);
+                if t.y < ground {
+                    b.set_translation(Vec3::new(t.x, ground + crate::sim::obstacle_lift(o.shape), t.z), true);
+                    b.set_linvel(Vec3::ZERO, true);
+                }
                 b.wake_up(true);
+            }
+        }
+        for ci in 0..self.creatures.len() {
+            let c = &self.creatures[ci];
+            let world = &self.shards[c.shard].world;
+            let buried = c
+                .parts
+                .iter()
+                .zip(&c.plan)
+                .filter_map(|(q, spec)| {
+                    let t = world.bodies.get(q.body)?.translation();
+                    let ground = self.terrain.height_at(t.x, t.z);
+                    (inside(t) && t.y < ground).then(|| ground + spec.shape.bounding_radius() - t.y)
+                })
+                .fold(0.0f32, f32::max);
+            if buried > 0.0 {
+                self.translate_creature(ci, Vec3::Y * buried);
             }
         }
     }
@@ -574,6 +630,12 @@ impl Sim {
         let mass = body::plan_mass(&body::body_plan(&genome), p.body_density);
         let held: Vec<f32> = parents.iter().map(|&j| self.creatures[j].energy).collect();
         let Some((body, gifts)) = birth_cost(&p, &held, mass) else {
+            // The child came out too big to pay for: they wait a moment before trying again
+            // (each try costs a crossover and a read of what they learned).
+            for &j in parents {
+                let c = &mut self.creatures[j];
+                c.mate_cooldown = c.mate_cooldown.max(1.0);
+            }
             return;
         };
         let mut energy = 0.0;
@@ -972,12 +1034,18 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
         x[OTHER_AGGRO] = o.output(output::ATTACK).max(0.0);
     }
 
-    // Eyes see into every physics world; the ground and walls, the same in each, are looked
-    // for in the first only.
+    // Eyes see into every physics world with anything in their range (worlds hold things from
+    // all over); the ground and walls, the same in each, are looked for in the first only.
+    let mut worlds = 1u64;
+    cx.creatures.for_each_near(pos, p.ray_length + cx.creature_reach, |k| worlds |= 1 << sim.creatures[k as usize].shard);
+    cx.obstacles.for_each_near(pos, p.ray_length + cx.obstacle_reach, |k| worlds |= 1 << sim.obstacles[k as usize].shard);
     let own = c.id;
     let origin = pos + Vec3::Y * 0.05;
     let mut nearest = [f32::MAX; 3];
     for (s, shard) in sim.shards.iter().enumerate() {
+        if worlds & (1 << s) == 0 {
+            continue;
+        }
         let not_self = move |_h: ColliderHandle, col: &Collider| match Tag::decode(col.user_data) {
             Tag::Terrain | Tag::Wall => s == 0,
             t => t.creature_id() != Some(own),

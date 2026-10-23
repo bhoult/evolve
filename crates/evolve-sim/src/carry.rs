@@ -48,6 +48,7 @@ impl Sim {
     /// Each brain tick: a creature with its grip on and nothing in its mouth picks up what's
     /// there; with its grip off it lets go, and throwing tosses what it holds.
     pub(crate) fn grip(&mut self) {
+        let mut reaching = Vec::new();
         for ci in 0..self.creatures.len() {
             let c = &self.creatures[ci];
             if c.dead.is_some() {
@@ -57,21 +58,23 @@ impl Sim {
             match c.held {
                 Some(_) if throw > 0.5 => self.let_go(ci, TOSS * (throw - 0.5) / 0.5),
                 Some(_) if grip < 0.0 => self.let_go(ci, 0.0),
-                None if grip > 0.2 => self.pick_up(ci),
+                None if grip > 0.2 => reaching.push(ci),
                 _ => {}
             }
         }
+        if !reaching.is_empty() {
+            self.pick_up(&reaching);
+        }
     }
 
-    /// Picks up the nearest thing within reach of the mouth that it can lift.
-    fn pick_up(&mut self, ci: usize) {
-        let Some((mouth, _, _)) = self.mouth(ci) else {
-            return;
-        };
-        let c = &self.creatures[ci];
+    /// Each of `reaching` picks up the nearest thing within reach of its mouth that it can lift
+    /// (and nobody else took first), found through grids built once for all of them.
+    fn pick_up(&mut self, reaching: &[usize]) {
+        use crate::grid::Grid;
+        use crate::life::{GRID_CELL, food_grid};
+        let size = self.terrain.size;
         let reach = self.params.eat_reach + GRASP;
-        let can_lift = LIFT * c.mass;
-        let taken: Vec<u64> = self
+        let held: std::collections::HashSet<u64> = self
             .creatures
             .iter()
             .filter_map(|o| match o.held {
@@ -79,54 +82,71 @@ impl Sim {
                 _ => None,
             })
             .collect();
-        enum Pick {
-            Obstacle(usize, f32),
-            Plant(usize),
-            Meat(usize),
-        }
-        let mut best: Option<(f32, Pick)> = None;
-        let mut consider = |d: f32, pick: Pick| {
-            if d < reach && best.as_ref().is_none_or(|(b, _)| d < *b) {
-                best = Some((d, pick));
-            }
-        };
-        for (oi, o) in self.obstacles.iter().enumerate() {
-            if !o.dynamic || taken.contains(&o.id) {
-                continue;
-            }
-            let Some(b) = self.shards[o.shard].world.bodies.get(o.body) else {
+        // Loose stones and boulders: (index, center, mass, how far they reach).
+        let loose: Vec<(usize, Vec3, f32, f32)> = self
+            .obstacles
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.dynamic && !held.contains(&o.id))
+            .filter_map(|(oi, o)| {
+                let b = self.shards[o.shard].world.bodies.get(o.body)?;
+                Some((oi, b.translation(), b.mass(), 0.7 * crate::sim::obstacle_radius(o.shape)))
+            })
+            .collect();
+        let mut stones = Grid::new(size, GRID_CELL);
+        stones.rebuild(loose.iter().map(|s| s.1));
+        let (plants, meat) = (food_grid(size, &self.plants), food_grid(size, &self.meat));
+        // What's been taken this tick, so two creatures can't pick up the same thing.
+        let (mut took_stone, mut took_plant, mut took_meat) = (Vec::new(), Vec::new(), Vec::new());
+        for &ci in reaching {
+            let Some((mouth, _, _)) = self.mouth(ci) else {
                 continue;
             };
-            let mass = b.mass();
-            if mass > can_lift {
-                continue;
-            }
-            let d = (b.translation().distance(mouth) - 0.7 * crate::sim::obstacle_radius(o.shape)).max(0.0);
-            consider(d, Pick::Obstacle(oi, mass));
-        }
-        let ground_d = |p: Vec3| {
-            let flat = Vec3::new(p.x - mouth.x, 0.0, p.z - mouth.z).length();
-            if (p.y - mouth.y).abs() > 1.2 { f32::MAX } else { (flat - 0.3).max(0.0) }
-        };
-        for (k, f) in self.plants.iter().enumerate() {
-            consider(ground_d(f.pos), Pick::Plant(k));
-        }
-        for (k, f) in self.meat.iter().enumerate() {
-            consider(ground_d(f.pos), Pick::Meat(k));
-        }
-        let Some((_, pick)) = best else {
-            return;
-        };
-        let held = match pick {
-            Pick::Obstacle(oi, mass) => {
+            let can_lift = LIFT * self.creatures[ci].mass;
+            // (Distances to a stone's surface; to food, how far it is along the ground.)
+            let stone = stones.nearest(
+                mouth,
+                reach + 1.5,
+                |k| loose[k as usize].1,
+                |k| {
+                    let (_, at, mass, r) = loose[k as usize];
+                    mass <= can_lift && !took_stone.contains(&k) && at.distance(mouth) - r < reach
+                },
+            );
+            let on_ground = |p: Vec3| (p.y - mouth.y).abs() <= 1.2;
+            let plant = plants.nearest(mouth, reach + 0.3, |k| self.plants[k as usize].pos, |k| {
+                !took_plant.contains(&k) && on_ground(self.plants[k as usize].pos)
+            });
+            let food = meat.nearest(mouth, reach + 0.3, |k| self.meat[k as usize].pos, |k| {
+                !took_meat.contains(&k) && on_ground(self.meat[k as usize].pos)
+            });
+            let d = |o: Option<(u32, f32)>| o.map_or(f32::MAX, |(_, d)| d);
+            let held = if d(stone) <= d(plant).min(d(food)) && let Some((k, _)) = stone {
+                took_stone.push(k);
+                let (oi, _, mass, _) = loose[k as usize];
                 let o = &self.obstacles[oi];
                 hold_body(&mut self.shards[o.shard].world, o.body);
                 Held::Obstacle { id: o.id, mass }
-            }
-            Pick::Plant(k) => Held::Plant(self.plants.swap_remove(k).energy),
-            Pick::Meat(k) => Held::Meat(self.meat.swap_remove(k).energy),
-        };
-        self.creatures[ci].held = Some(held);
+            } else if d(plant) <= d(food) && let Some((k, _)) = plant {
+                took_plant.push(k);
+                Held::Plant(self.plants[k as usize].energy)
+            } else if let Some((k, _)) = food {
+                took_meat.push(k);
+                Held::Meat(self.meat[k as usize].energy)
+            } else {
+                continue;
+            };
+            self.creatures[ci].held = Some(held);
+        }
+        // Food taken out of the world, last first so the indices stay good.
+        took_plant.sort_unstable();
+        for k in took_plant.into_iter().rev() {
+            self.plants.swap_remove(k as usize);
+        }
+        took_meat.sort_unstable();
+        for k in took_meat.into_iter().rev() {
+            self.meat.swap_remove(k as usize);
+        }
     }
 
     /// Lets go of what it holds, tossing it forward at `toss` m/s (0: setting it down).
@@ -134,7 +154,11 @@ impl Sim {
         let Some(held) = self.creatures[ci].held.take() else {
             return;
         };
-        let (mouth, fwd, vel) = self.mouth(ci).unwrap_or((self.creatures[ci].last_pos, Vec3::X, Vec3::ZERO));
+        // (A body that blew up, its motion gone to NaN, lets go where it was last seen.)
+        let (mouth, fwd, vel) = self
+            .mouth(ci)
+            .filter(|(m, f, v)| m.is_finite() && f.is_finite() && v.is_finite())
+            .unwrap_or((self.creatures[ci].last_pos, Vec3::X, Vec3::ZERO));
         match held {
             Held::Obstacle { id, .. } => {
                 if let Some(o) = self.obstacles.iter().find(|o| o.id == id) {
@@ -207,14 +231,15 @@ fn hold_body(world: &mut PhysicsWorld, body: RigidBodyHandle) {
     let Some(b) = world.bodies.get_mut(body) else {
         return;
     };
-    if b.body_type() != RigidBodyType::KinematicPositionBased {
-        b.set_body_type(RigidBodyType::KinematicPositionBased, true);
+    // Already held (its colliders are made sensors along with it, and a body rebuilt in
+    // another world comes back dynamic).
+    if b.body_type() == RigidBodyType::KinematicPositionBased {
+        return;
     }
+    b.set_body_type(RigidBodyType::KinematicPositionBased, true);
     let colliders: Vec<ColliderHandle> = b.colliders().to_vec();
     for h in colliders {
-        if let Some(col) = world.colliders.get_mut(h)
-            && !col.is_sensor()
-        {
+        if let Some(col) = world.colliders.get_mut(h) {
             col.set_sensor(true);
         }
     }

@@ -155,7 +155,7 @@ first) and the time of day.
 - *Totem*: pick love, war or fear beside the tools, then click to raise one (click a totem to take
   it down). It sways every creature within 16 m (fully over the inner half), overriding its own
   leanings:
-  - *Love*: the mating drive fills, the wait between matings shrinks to nothing, the urge to mate
+  - *Love*: the mating drive fills, the wait between matings shrinks to a second or two, the urge to mate
     is turned on, and caution about being fed enough is forgotten. Each child still has to be
     paid for, so love can't make energy from nothing.
   - *War*: the urge to bite is turned on, and each is drawn toward the nearest other creature.
@@ -305,7 +305,7 @@ of them and costs about as much as resting metabolism, so a big brain has to pay
 On 2026-10-22 every brain was doubled. Genomes from before that (in the zoo, the gene pool or an
 older save) double their neurons once as they come into a world; the new neurons are wired in
 weakly, so what the brain already does carries over.
-- *Senses (128):*
+- *Senses (132):*
   - the rhythm, energy, health, oxygen, thirst and age;
   - a mating drive: an urge that builds while the creature is mature, past its cooldown and fed
     enough to breed (over `mate_drive_time`, faster with a high libido gene), fades when it goes
@@ -317,10 +317,12 @@ weakly, so what the brain already does carries over.
   - the direction and closeness of the nearest plant, meat, open water and creature;
   - how related that creature is, its size and aggression;
   - the direction of the nearest potential mate (mature and close enough genetically);
+  - the direction and closeness of the nearest loose stone it could lift, and whether it holds
+    something in its mouth;
   - three obstacle rays, pain, how submerged it is, and three memory values;
   - every joint angle (82 channels, most of them unused by any one body).
-- *Actions (92):* a target angle for every joint axis (82 channels), eat, attack, mate, call
-  (and its pitch), dig, pile, and memory.
+- *Actions (94):* a target angle for every joint axis (82 channels), eat, attack, mate, call
+  (and its pitch), dig, pile, grip, throw, and memory.
 - *Voices:* every creature has a voice of its own, set by four genes: natural pitch, timbre (how
   inharmonic and bright), rasp and warble. Kin sound alike.
   - *Calling:* a creature calls when its brain says so, louder or softer and pitched up or down.

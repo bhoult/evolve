@@ -51,12 +51,9 @@ fn main() {
         }
     }
 
-    let mut sim = match &load_from {
-        Some(p) => save::load(p).unwrap_or_else(|e| die(&e)),
-        None => Sim::new(SimParams::default()),
-    };
-    if !sets.is_empty() {
-        let mut params = sim.params.clone();
+    // The settings go in before a new world is made, so those that shape it (the terrain, how
+    // many stones) count too.
+    let with_sets = |mut params: SimParams| {
         for (k, v) in &sets {
             let mut hit = false;
             params.visit(&mut |info, r| {
@@ -75,12 +72,17 @@ fn main() {
                 die(&format!("no param named {k}"));
             }
         }
-        let regen = params.world_shape_differs(&sim.params);
-        sim.set_params(params);
-        if regen && load_from.is_none() {
-            sim = Sim::new(sim.params.clone());
+        params
+    };
+    let mut sim = match &load_from {
+        Some(p) => {
+            let mut sim = save::load(p).unwrap_or_else(|e| die(&e));
+            let params = with_sets(sim.params.clone());
+            sim.set_params(params);
+            sim
         }
-    }
+        None => Sim::new(with_sets(SimParams::default())),
+    };
 
     if let Some(n) = islands {
         run_islands(sim, n, wall, report, save_to);
@@ -143,6 +145,17 @@ fn main() {
         "# physics: forces {:.2} ms, slowest world {:.2} ms, all worlds {:.2} ms",
         sim.perf.forces_ms, sim.perf.shard_slowest_ms, sim.perf.shard_total_ms
     );
+    // Loose stones and boulders: how many are still moving (or never settled), and how many
+    // ended up under the ground.
+    let (mut awake, mut buried) = (0, 0);
+    for o in sim.obstacles.iter().filter(|o| o.dynamic) {
+        if let Some(b) = sim.shards[o.shard].world.bodies.get(o.body) {
+            awake += usize::from(!b.is_sleeping());
+            let t = b.translation();
+            buried += usize::from(t.y < sim.terrain.height_at(t.x, t.z) - 0.05);
+        }
+    }
+    println!("# obstacles: {} loose, {awake} awake, {buried} under the ground", sim.obstacles.iter().filter(|o| o.dynamic).count());
     println!(
         "done: {:.0} sim-seconds in {:.1}s. deaths: starved {} killed {} old {} drowned {} thirst {} other {}",
         sim.time,

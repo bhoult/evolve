@@ -407,6 +407,7 @@ impl BrainGenes {
     /// - 121 inputs, 88 outputs: before the mating drive.
     /// - 122 inputs, 88 outputs: before calls and hearing.
     /// - 127 inputs, 90 outputs: before digging.
+    /// - 128 inputs, 92 outputs: before carrying (the stone and holding senses, grip and throw).
     pub fn upgrade_io(&mut self, rng: &mut Rng) -> bool {
         let h = self.h;
         let (n_in, n_out) = (self.w_in.0.len() / h.max(1), self.b_out.len());

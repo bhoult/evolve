@@ -57,10 +57,11 @@ impl Whirlwind {
         ((time - self.start) / 3.0).min((self.end - time) / 4.0).clamp(0.0, 1.0) as f32
     }
 
-    /// The air's velocity at `p` (m/s), `ground` the ground's height below it: round the core,
+    /// The air's velocity at `p` (m/s), `ground` giving the ground's height below it (asked only
+    /// within its reach): round the core,
     /// in toward it, and up through it (the lift fading out between 6 and 18 m up, so what it
     /// catches whirls round at a few meters and is flung out, not carried off into the sky).
-    pub fn wind_at(&self, p: Vec3, ground: f32, time: f64) -> Vec3 {
+    pub fn wind_at(&self, p: Vec3, ground: impl FnOnce() -> f32, time: f64) -> Vec3 {
         let s = self.strength(time);
         let off = Vec3::new(p.x - self.x, 0.0, p.z - self.z);
         let r = off.length();
@@ -72,7 +73,7 @@ impl Whirlwind {
         let spin = 22.0 * s * if r < WHIRL_CORE { r / WHIRL_CORE } else { WHIRL_CORE / r };
         // Fades out toward the edge of its reach so nothing jolts as it passes.
         let edge = ((WHIRL_REACH - r) / 4.0).clamp(0.0, 1.0);
-        let height = ((18.0 - (p.y - ground)) / 12.0).clamp(0.0, 1.0);
+        let height = ((18.0 - (p.y - ground())) / 12.0).clamp(0.0, 1.0);
         let up = 18.0 * s * (-(r / (1.5 * WHIRL_CORE)).powi(2)).exp() * height;
         (round * spin - out * (0.35 * spin)) * edge + Vec3::Y * up
     }
@@ -223,6 +224,12 @@ impl Sim {
         }
         let torso = self.torso_positions();
         let totems = &self.acts.totems;
+        // Where everyone is, for those a totem of war sends at the nearest.
+        let everyone = totems.iter().any(|t| t.kind == TotemKind::War).then(|| {
+            let mut grid = crate::grid::Grid::new(self.terrain.size, crate::life::GRID_CELL);
+            grid.rebuild(torso.iter().copied());
+            grid
+        });
         for (i, c) in self.creatures.iter_mut().enumerate() {
             let p = torso[i];
             let mut urge = [0.0f32; 3];
@@ -241,18 +248,15 @@ impl Sim {
             let mut push = away.normalize_or_zero() * (12.0 * urge[2]);
             if urge[1] > 0.0 {
                 // The nearest other creature within reach, to go at.
-                let near = torso
-                    .iter()
-                    .enumerate()
-                    .filter(|&(j, q)| j != i && q.distance(p) < 12.0)
-                    .min_by(|a, b| a.1.distance(p).total_cmp(&b.1.distance(p)));
-                if let Some((_, q)) = near {
+                if let Some((j, _)) = everyone.as_ref().and_then(|g| g.nearest(p, 12.0, |j| torso[j as usize], |j| j as usize != i)) {
+                    let q = torso[j as usize];
                     push += Vec3::new(q.x - p.x, 0.0, q.z - p.z).normalize_or_zero() * (10.0 * urge[1]);
                 }
             }
             if urge[0] > 0.0 {
                 c.mate_drive = c.mate_drive.max(urge[0]);
-                c.mate_cooldown = c.mate_cooldown.min(3.0 * (1.0 - urge[0]));
+                // (Cut, not gone: a pair still rests a moment between children.)
+                c.mate_cooldown = c.mate_cooldown.min(1.5 + 1.5 * (1.0 - urge[0]));
             }
             if urge[2] > 0.0 {
                 c.pain = c.pain.max(urge[2]);
@@ -375,6 +379,7 @@ impl Sim {
                 c.health -= 60.0 * f * f;
                 c.pain = 1.0;
                 c.attacked_ago = 0.0;
+                c.last_attacker = None;
                 let away = Vec3::new(pos.x - at.x, 0.0, pos.z - at.z).normalize_or(Vec3::X);
                 kicks.push((c.id, away * (10.0 * f) + Vec3::Y * (6.0 * f)));
             }
@@ -406,7 +411,9 @@ impl Sim {
         }
         let (time, wl) = (self.time, self.params.water_level);
         for w in &mut self.acts.whirlwinds {
-            let wobble = ((time as f32) * 0.7 + w.seed as f32 * 1e-3).sin() * 0.8 + ((time as f32) * 0.23 + w.seed as f32).sin() * 0.5;
+            // (Timed from its start, which keeps the precision an f32 loses on long runs.)
+            let (t, a, b) = ((time - w.start) as f32, (w.seed % 6283) as f32 * 1e-3, (w.seed / 6283 % 6283) as f32 * 1e-3);
+            let wobble = (t * 0.7 + a).sin() * 0.8 + (t * 0.23 + b).sin() * 0.5;
             w.heading += wobble * dt;
             let ahead = (w.x + w.heading.cos() * 8.0, w.z + w.heading.sin() * 8.0);
             if !self.terrain.contains(ahead.0, ahead.1, 10.0) || self.terrain.height_at(ahead.0, ahead.1) < wl + 0.3 {
@@ -481,6 +488,7 @@ impl Sim {
                 c.health -= 120.0 * f * f;
                 c.pain = 1.0;
                 c.attacked_ago = 0.0;
+                c.last_attacker = None;
                 let away = Vec3::new(pos.x - x0, 0.0, pos.z - z0).normalize_or(Vec3::X);
                 kicks.push((c.id, away * (16.0 * f) + Vec3::Y * (9.0 * f)));
             }
@@ -574,7 +582,7 @@ impl Acts {
         };
         let s = ((time - start) / 0.5).min((end - time) / 2.0).clamp(0.0, 1.0) as f32;
         let near = (1.0 - (x - cx).hypot(z - cz) / QUAKE_REACH).clamp(0.0, 1.0);
-        let t = time as f32 + phase;
+        let t = (time - start) as f32 + phase;
         Vec3::new((t * 13.0).sin(), 0.35 * (t * 17.0).sin(), (t * 11.0 + 1.3).cos()) * (8.0 * s * near)
     }
 }

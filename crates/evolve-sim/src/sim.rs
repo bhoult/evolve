@@ -746,7 +746,7 @@ impl Sim {
         }
     }
 
-    fn translate_creature(&mut self, ci: usize, delta: Vec3) {
+    pub(crate) fn translate_creature(&mut self, ci: usize, delta: Vec3) {
         let c = &self.creatures[ci];
         let world = &mut self.shards[c.shard].world;
         for part in &c.parts {
@@ -838,6 +838,10 @@ impl Sim {
                 let mut load = vec![0usize; self.shards.len()];
                 for c in &self.creatures {
                     load[c.shard] += c.parts.len();
+                }
+                // (Obstacles too: a new world's stones are laid out before anything lives.)
+                for o in &self.obstacles {
+                    load[o.shard] += 1;
                 }
                 (0..load.len()).min_by_key(|&s| load[s]).unwrap_or(0)
             }
@@ -1346,7 +1350,10 @@ impl Sim {
         // Air drag, 1/2 rho Cd v^2 per m^2 facing the wind (rho 1.2, Cd 1).
         let wind_push = 0.6 * p.wind_force * DT;
         let mut splashes = Vec::new();
-        let kicks: HashMap<u64, Vec3> = self.acts.kicks.drain(..).collect();
+        let mut kicks: HashMap<u64, Vec3> = HashMap::new();
+        for (id, dv) in self.acts.kicks.drain(..) {
+            *kicks.entry(id).or_default() += dv;
+        }
         // Everything here is a force for this step only. (Forces, not impulses: a creature's
         // parts form a multibody, which keeps no velocity set on a part directly.)
         for o in &self.obstacles {
@@ -1356,7 +1363,7 @@ impl Sim {
                 if b.is_dynamic() {
                     for w in &self.acts.whirlwinds {
                         let pos = b.translation();
-                        let air = w.wind_at(pos, self.terrain.height_at(pos.x, pos.z), self.time);
+                        let air = w.wind_at(pos, || self.terrain.height_at(pos.x, pos.z), self.time);
                         if air != Vec3::ZERO {
                             let pull = ((air - b.linvel()) / 0.6).clamp_length_max(40.0);
                             let m = b.mass();
@@ -1394,7 +1401,7 @@ impl Sim {
                 // holds up some of its weight in the core, so it lifts heavy bodies too.
                 for w in &self.acts.whirlwinds {
                     let pos = b.translation();
-                    let air = w.wind_at(pos, self.terrain.height_at(pos.x, pos.z), self.time);
+                    let air = w.wind_at(pos, || self.terrain.height_at(pos.x, pos.z), self.time);
                     if air != Vec3::ZERO {
                         let m = b.mass();
                         let pull = ((air - b.linvel()) / 0.6).clamp_length_max(40.0);

@@ -318,7 +318,7 @@ fn brains(ui: &mut egui::Ui, p: &SimParams) {
             num(p.brain_energy_cost)
         ),
     );
-    sub(ui, "Senses (128)");
+    sub(ui, &format!("Senses ({})", evolve_sim::brain::N_IN));
     bullet(ui, "Its own state: energy, health, breath, thirst, age, an internal rhythm, its posture and speed, every joint angle, how much earth it carries, pain, how deep in water it is.");
     bullet(
         ui,
@@ -328,14 +328,15 @@ fn brains(ui: &mut egui::Ui, p: &SimParams) {
         ),
     );
     bullet(ui, "About that creature: how related it is, its size and how aggressive it is.");
+    bullet(ui, "The nearest loose stone it could lift (direction and closeness), and whether it holds something in its mouth.");
     bullet(
         ui,
         format!("Three obstacle rays {} m long (ray_length), ahead and to each side.", num(p.ray_length)),
     );
     bullet(ui, "The mating drive, the loudest call it hears (direction, loudness, pitch, and whether it sounds like kin), and three memory values it writes itself.");
-    sub(ui, "Actions (92)");
+    sub(ui, &format!("Actions ({})", evolve_sim::brain::N_OUT));
     bullet(ui, "A target angle for every joint axis.");
-    bullet(ui, "Eat, attack, mate, call (and its pitch), dig, pile earth, and the three memory values.");
+    bullet(ui, "Eat, attack, mate, call (and its pitch), dig, pile earth, grip (pick up or let go), throw, and the three memory values.");
     bullet(ui, "The aggression, libido and appetite genes add a built-in leaning to attack, mate and eat.");
 }
 

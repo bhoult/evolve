@@ -184,6 +184,25 @@ fn cursor_ray(cursor: Option<Vec2>, camera: (&Camera, &GlobalTransform)) -> Opti
     camera.0.viewport_to_world(camera.1, cursor?).ok()
 }
 
+/// Where the nearest totem stands whose pole (up to its head) the ray passes within a meter of.
+fn totem_on_ray(ray: Ray3d, totems: &[([f32; 3], evolve_sim::acts::TotemKind)]) -> Option<Vec3> {
+    let (o, d) = (ray.origin, *ray.direction);
+    totems
+        .iter()
+        .filter_map(|&(p, _)| {
+            let base = Vec3::from_array(p);
+            // The closest points of the ray and the pole: how high up the pole, then how far along the ray.
+            let w = o - base;
+            let level = (1.0 - d.y * d.y).max(1e-6);
+            let up = ((w.y - d.y * d.dot(w)) / level).clamp(0.0, 4.8);
+            let along = (d.y * up - d.dot(w)).max(0.0);
+            let miss = (o + d * along).distance(base + Vec3::Y * up);
+            (miss < 1.0).then_some((along, base))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, base)| base)
+}
+
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn use_tool(
     window: Single<&Window, With<PrimaryWindow>>,
@@ -403,7 +422,11 @@ fn use_tool(
         (Tool::Spring, _) => link.cmd(Command::Spring { at: point.to_array() }),
         (Tool::Manna, _) => link.cmd(Command::Manna { at: point.to_array() }),
         (Tool::Tsunami, _) => tools.summon = Some((tools.tool, point)),
-        (Tool::Totem, _) => link.cmd(Command::Totem { at: point.to_array(), kind: tools.totem }),
+        (Tool::Totem, _) => {
+            // The ray passes through a totem to the ground behind it: a click on one takes it down.
+            let at = totem_on_ray(ray, &snap.0.totems).unwrap_or(point);
+            link.cmd(Command::Totem { at: at.to_array(), kind: tools.totem })
+        }
         (Tool::Quake | Tool::Landfall, _) => tools.summon = Some((tools.tool, point)),
         _ => {}
     }
