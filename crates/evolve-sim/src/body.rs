@@ -647,6 +647,91 @@ pub fn joint_state(world: &PhysicsWorld, parts: &[PartRef], j: &JointRef) -> Opt
     })
 }
 
+/// Moves a creature's body from one physics world to another just as it is: where it stands,
+/// its joint angles, its motors' settings and every velocity. (Rapier builds a multibody's joints
+/// at their rest angles, so the angles are put back as displacements.)
+#[allow(clippy::too_many_arguments)]
+pub fn transplant(
+    from: &mut PhysicsWorld,
+    to: &mut PhysicsWorld,
+    plan: &[PartSpec],
+    parts: &[PartRef],
+    joints: &[JointRef],
+    id: u64,
+    mass: f32,
+    p: &SimParams,
+) -> Option<(Vec<PartRef>, Vec<JointRef>)> {
+    let root = from.bodies.get(parts.first()?.body)?;
+    let (root_pose, root_vel) = (*root.position(), (root.linvel(), root.angvel()));
+    let angles: Vec<[f32; 2]> = joints.iter().map(|j| joint_state(from, parts, j).map_or([0.0; 2], |(a, _)| a)).collect();
+    let motors: Vec<[Option<GenericJoint>; 2]> =
+        joints.iter().map(|j| [axis_joint(from, j, 0).copied(), axis_joint(from, j, 1).copied()]).collect();
+    let velocities: Option<Vec<f32>> = multibody(from, parts).map(|mb| mb.generalized_velocity().iter().copied().collect());
+    // Each body's own velocity too: rapier only refreshes a link's from the joint velocities
+    // during a step, and the first step needs them right.
+    let body_vel = |w: &PhysicsWorld, h: RigidBodyHandle| w.bodies.get(h).map(|b| (b.linvel(), b.angvel()));
+    let part_vels: Vec<_> = parts.iter().map(|q| body_vel(from, q.body)).collect();
+    let knuckle_vels: Vec<_> = joints.iter().map(|j| j.knuckle.and_then(|k| body_vel(from, k))).collect();
+    remove_body(from, parts, joints);
+
+    let (new_parts, new_joints) = spawn_body(to, plan, root_pose * plan[0].rest.inverse(), id, mass, p);
+    // The whole joint, motors and limits with their impulses from the last step (the solver
+    // starts each step from them).
+    for (j, m) in new_joints.iter().zip(&motors) {
+        for (d, data) in m.iter().enumerate() {
+            if let (Some(data), Some(new)) = (data, axis_joint_mut(to, j, d)) {
+                *new = *data;
+            }
+        }
+    }
+    let Some(link) = to.multibody_joints.rigid_body_link(new_parts[0].body).copied() else {
+        if let Some(b) = to.bodies.get_mut(new_parts[0].body) {
+            b.set_linvel(root_vel.0, true);
+            b.set_angvel(root_vel.1, true);
+        }
+        return Some((new_parts, new_joints));
+    };
+    // Each joint's angle at its place among the multibody's coordinates.
+    let slots: Vec<(usize, f32)> = new_joints
+        .iter()
+        .zip(&angles)
+        .flat_map(|(j, a)| {
+            let handles = [Some(j.handle), j.second];
+            (0..j.kind.axes()).filter_map(move |d| Some((handles[d]?, a[d])))
+        })
+        .filter_map(|(h, angle)| {
+            let (mb, l) = to.multibody_joints.get(h)?;
+            Some((mb.link(l)?.assembly_id(), angle))
+        })
+        .collect();
+    let mb = to.multibody_joints.get_multibody_mut(link.multibody)?;
+    let mut disp = vec![0.0; mb.ndofs()];
+    for (at, angle) in slots {
+        disp[at] = angle;
+    }
+    mb.apply_displacements(&disp);
+    mb.forward_kinematics(&to.bodies, true);
+    mb.update_rigid_bodies(&mut to.bodies, true);
+    if let Some(v) = velocities.filter(|v| v.len() == mb.ndofs()) {
+        mb.generalized_velocity_mut().copy_from_slice(&v);
+    }
+    let set = |w: &mut PhysicsWorld, h: RigidBodyHandle, v: Option<(Vec3, Vec3)>| {
+        if let (Some(b), Some((lin, ang))) = (w.bodies.get_mut(h), v) {
+            b.set_linvel(lin, true);
+            b.set_angvel(ang, true);
+        }
+    };
+    for (q, v) in new_parts.iter().zip(part_vels) {
+        set(to, q.body, v);
+    }
+    for (j, v) in new_joints.iter().zip(knuckle_vels) {
+        if let Some(k) = j.knuckle {
+            set(to, k, v);
+        }
+    }
+    Some((new_parts, new_joints))
+}
+
 pub fn remove_body(world: &mut PhysicsWorld, parts: &[PartRef], joints: &[JointRef]) {
     for p in parts {
         world.remove_body(p.body);

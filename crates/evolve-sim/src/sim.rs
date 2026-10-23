@@ -621,7 +621,7 @@ impl Sim {
             && let Some(mb) = self.world.multibody_joints.get_multibody_mut(link.multibody)
         {
             mb.forward_kinematics(&self.world.bodies, true);
-            mb.update_rigid_bodies(&mut self.world.bodies, false);
+            mb.update_rigid_bodies(&mut self.world.bodies, true);
             mb.generalized_velocity_mut().fill(0.0);
         }
         self.creatures[ci].last_pos += delta;

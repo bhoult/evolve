@@ -516,3 +516,77 @@ fn many_jointed_bodies_never_gain_energy_on_their_own() {
         assert!(peak <= start * 1.05, "{name} gained energy: {start} J -> {peak} J");
     }
 }
+
+/// A body moved mid-stride into another physics world carries on as its twin that stayed:
+/// same pose, joint angles and velocities at the move, and for a body that isn't chaotic, the
+/// same motion after. (The world is split into several physics worlds solved in parallel, and
+/// creatures move between them as they meet. A tentacle swinging against its limits is chaotic:
+/// a millionth of a radian puts it centimeters off a second later, moved or not.)
+#[test]
+fn a_body_moved_to_another_world_carries_on_exactly() {
+    use rapier3d::prelude::PhysicsWorld;
+    let p = quiet_params();
+    for (name, g, chaotic) in [("legged", legged(), false), ("tentacled", tentacled(), true)] {
+        let plan = body::body_plan(&g);
+        let mass = body::plan_mass(&plan, p.body_density);
+        let make = || {
+            let mut w = PhysicsWorld::new();
+            w.integration_parameters.num_solver_iterations = p.solver_iterations as usize;
+            w.integration_parameters.num_internal_pgs_iterations = p.solver_passes as usize;
+            w
+        };
+        let root = evolve_sim::math::Pose::from_parts(
+            evolve_sim::math::Vec3::new(0.0, 100.0, 0.0),
+            evolve_sim::math::Quat::from_rotation_y(0.7),
+        );
+        let (mut a, mut b) = (make(), make());
+        let (pa, ja) = body::spawn_body(&mut a, &plan, root, 1, mass, &p);
+        let (mut pb, mut jb) = body::spawn_body(&mut b, &plan, root, 1, mass, &p);
+        let drive = |w: &mut PhysicsWorld, joints: &[body::JointRef], t: usize| {
+            for (n, j) in joints.iter().enumerate() {
+                for &(axis, d) in j.axes() {
+                    let phase = (t as f32 * 0.07 + n as f32 * 1.3 + d as f32).sin();
+                    let target = 0.5 * (j.range[0] + j.range[1]) + 0.8 * phase * 0.5 * (j.range[1] - j.range[0]);
+                    if let Some(data) = body::axis_joint_mut(w, j, d) {
+                        data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                    }
+                }
+            }
+        };
+        for t in 0..30 {
+            drive(&mut a, &ja, t);
+            drive(&mut b, &jb, t);
+            a.step();
+            b.step();
+        }
+        let mut c = make();
+        (pb, jb) = body::transplant(&mut b, &mut c, &plan, &pb, &jb, 1, mass, &p).expect("moved");
+        assert_eq!(b.bodies.len(), 0, "nothing is left behind");
+        let apart = |a: &PhysicsWorld, c: &PhysicsWorld| {
+            let mut worst = 0.0f32;
+            for (x, y) in pa.iter().zip(&pb) {
+                let (x, y) = (a.bodies.get(x.body).unwrap(), c.bodies.get(y.body).unwrap());
+                worst = worst.max((x.translation() - y.translation()).length());
+                worst = worst.max((x.linvel() - y.linvel()).length() / 10.0);
+                worst = worst.max((x.angvel() - y.angvel()).length() / 10.0);
+            }
+            worst
+        };
+        let at_move = apart(&a, &c);
+        let (ma, mc) = (body::multibody(&a, &pa).unwrap(), body::multibody(&c, &pb).unwrap());
+        let gv = ma.generalized_velocity().iter().zip(mc.generalized_velocity().iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max);
+        assert!(at_move < 1e-5 && gv < 1e-5, "{name} moved inexactly: {at_move} apart, joint speeds {gv} apart");
+        let mut worst = 0.0f32;
+        for t in 30..90 {
+            drive(&mut a, &ja, t);
+            drive(&mut c, &jb, t);
+            a.step();
+            c.step();
+            worst = worst.max(apart(&a, &c));
+        }
+        eprintln!("{name}: apart by {at_move:.1e} at the move, {worst:.1e} at most over the next second");
+        if !chaotic {
+            assert!(worst < 1e-3, "{name} drifted from its twin by {worst}");
+        }
+    }
+}

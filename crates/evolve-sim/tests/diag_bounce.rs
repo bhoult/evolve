@@ -644,7 +644,8 @@ fn shard_scaling() {
     // Safe: set before any thread reads it.
     unsafe { std::env::set_var("EVOLVE_CPU_BRAINS", "1") };
     let n: usize = std::env::var("EVOLVE_DIAG_N").ok().and_then(|v| v.parse().ok()).unwrap_or(50);
-    let pool = rayon::ThreadPoolBuilder::new().num_threads(8).build().unwrap();
+    let k: usize = std::env::var("EVOLVE_DIAG_K").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(k).build().unwrap();
     let make = |count: usize, seed: u64| {
         let mut sim = Sim::new(SimParams { min_population: 0, weather: false, seed, ..SimParams::default() });
         let mut rng = evolve_sim::rng::Rng::new(seed);
@@ -656,7 +657,7 @@ fn shard_scaling() {
         sim
     };
     let steps = 120;
-    let mut one = make(8 * n, 1);
+    let mut one = make(k * n, 1);
     let t_one = pool.install(|| {
         for _ in 0..60 {
             one.step();
@@ -667,7 +668,14 @@ fn shard_scaling() {
         }
         t.elapsed().as_secs_f64() * 1000.0 / steps as f64
     });
-    let mut many: Vec<Sim> = (0..8).map(|k| make(n, 1 + k as u64)).collect();
+    let mut many: Vec<Sim> = (0..k).map(|i| make(n, 1 + i as u64)).collect();
+    if std::env::var_os("EVOLVE_DIAG_OWN_POOLS").is_some() {
+        // Each world's physics on a pool of its own, one thread: rapier's solver workers then
+        // never spin waiting on each other across worlds.
+        for s in &mut many {
+            s.world.physics_pipeline.configure_thread_pool(1).unwrap();
+        }
+    }
     let t_many = pool.install(|| {
         for _ in 0..60 {
             many.par_iter_mut().for_each(|s| s.step());
@@ -690,8 +698,8 @@ fn shard_scaling() {
         t.elapsed().as_secs_f64() * 1000.0 / steps as f64
     });
     println!(
-        "one world of {}: {t_one:.1} ms/step; 8 worlds of {n} in parallel: {t_many:.1} ms/step ({:.1}x faster); one world of {n} alone: {t_single:.1} ms/step",
-        8 * n, t_one / t_many
+        "one world of {}: {t_one:.1} ms/step; {k} worlds of {n} in parallel: {t_many:.1} ms/step ({:.1}x faster); one world of {n} alone: {t_single:.1} ms/step",
+        k * n, t_one / t_many
     );
 }
 
@@ -731,4 +739,77 @@ fn breathlessness_now() {
         "{} creatures after 30 s: exertion median {:.1} W/kg (90th pct {:.1}); {winded} out of breath (<30%); torso off the ground {:.0}% of samples; moved median {:.1} m, best {:.1} m",
         sim.creatures.len(), ex[ex.len() / 2], ex[ex.len() * 9 / 10], lifted as f32 / samples.max(1) as f32 * 100.0, m[m.len() / 2], m[m.len() - 1]
     );
+}
+
+/// How sensitive is the tentacled test body to a millionth of a radian? Two identical worlds;
+/// one gets one joint nudged by 1e-6 rad mid-motion; how far apart are they a second later?
+#[test]
+#[ignore]
+fn swivel_sensitivity() {
+    use evolve_sim::body;
+    use rapier3d::prelude::PhysicsWorld;
+    let p = SimParams { min_population: 0, terrain_resolution: 65, weather: false, ..SimParams::default() };
+    let mut g = evolve_sim::genome::Genome::random(&mut evolve_sim::rng::Rng::new(10), &SimParams::default());
+    g.spine.segments = 0;
+    for l in &mut g.limbs {
+        l.present = false;
+    }
+    let l = &mut g.limbs[0];
+    l.present = true;
+    l.parent = 0;
+    l.segment = 0;
+    l.attach = [0.0, -1.0, 0.6];
+    l.mirror = true;
+    l.segments = 3;
+    l.swivel_root = true;
+    l.swivel_knees = true;
+    let plan = body::body_plan(&g);
+    let mass = body::plan_mass(&plan, p.body_density);
+    let make = || {
+        let mut w = PhysicsWorld::new();
+        w.integration_parameters.num_solver_iterations = p.solver_iterations as usize;
+        w.integration_parameters.num_internal_pgs_iterations = p.solver_passes as usize;
+        w
+    };
+    let root = evolve_sim::math::Pose::from_parts(evolve_sim::math::Vec3::new(0.0, 100.0, 0.0), evolve_sim::math::Quat::from_rotation_y(0.7));
+    let (mut a, mut d) = (make(), make());
+    let (pa, ja) = body::spawn_body(&mut a, &plan, root, 1, mass, &p);
+    let (pd, jd) = body::spawn_body(&mut d, &plan, root, 1, mass, &p);
+    let drive = |w: &mut PhysicsWorld, joints: &[body::JointRef], t: usize| {
+        for (n, j) in joints.iter().enumerate() {
+            for &(axis, dd) in j.axes() {
+                let phase = (t as f32 * 0.07 + n as f32 * 1.3 + dd as f32).sin();
+                let target = 0.5 * (j.range[0] + j.range[1]) + 0.8 * phase * 0.5 * (j.range[1] - j.range[0]);
+                if let Some(data) = body::axis_joint_mut(w, j, dd) {
+                    data.set_motor_position(axis, target, p.motor_stiffness, p.motor_damping);
+                }
+            }
+        }
+    };
+    for t in 0..30 {
+        drive(&mut a, &ja, t);
+        drive(&mut d, &jd, t);
+        a.step();
+        d.step();
+    }
+    {
+        let link = *d.multibody_joints.rigid_body_link(pd[0].body).unwrap();
+        let mb = d.multibody_joints.get_multibody_mut(link.multibody).unwrap();
+        let mut disp = vec![0.0; mb.ndofs()];
+        disp[7] = 1e-6;
+        mb.apply_displacements(&disp);
+        mb.forward_kinematics(&d.bodies, true);
+        mb.update_rigid_bodies(&mut d.bodies, true);
+    }
+    let mut worst = 0.0f32;
+    for t in 30..90 {
+        drive(&mut a, &ja, t);
+        drive(&mut d, &jd, t);
+        a.step();
+        d.step();
+        for (x, y) in pa.iter().zip(&pd) {
+            worst = worst.max((a.bodies.get(x.body).unwrap().translation() - d.bodies.get(y.body).unwrap().translation()).length());
+        }
+    }
+    println!("nudged by 1e-6 rad: apart by {worst:.2e} m a second later");
 }
