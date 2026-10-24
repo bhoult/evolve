@@ -108,6 +108,8 @@ pub enum WorkerCtl {
     Params(Box<SimParams>),
     /// The going price of brain energy and the GPU headroom, set by the main world's runner.
     BrainPrice(f32, f32),
+    /// A question from the MCP server.
+    Ask(crate::mcp::Ask, crate::mcp::Reply),
     Quit,
 }
 
@@ -263,6 +265,7 @@ fn worker_loop(
     let mut pacer = Pacer::new();
     let mut next_migration = sim.time + sim.params.migration_interval as f64;
     let mut next_zoo = sim.time + sim.params.zoo_interval as f64;
+    let mut next_log = sim.time + crate::runner::LOG_EVERY;
     let mut window = (Instant::now(), 0u64);
     let mut rate = 0.0f32;
     loop {
@@ -280,6 +283,7 @@ fn worker_loop(
                 }
                 // Like the world you watch, a new island shape waits for a new world.
                 Ok(WorkerCtl::Params(p)) => sim.set_params(island_params(index, &p)),
+                Ok(WorkerCtl::Ask(ask, reply)) => sim.answer(ask, reply),
                 Err(TryRecvError::Empty) => break,
             }
         }
@@ -289,6 +293,10 @@ fn worker_loop(
         if sim.time >= next_migration {
             migrate(&mut sim.pool, &board, 0.0);
             next_migration = sim.time + sim.params.migration_interval as f64;
+        }
+        if sim.time >= next_log {
+            eprintln!("evolve world {index}: {}", sim.summary_line(crate::runner::LOG_EVERY));
+            next_log = sim.time + crate::runner::LOG_EVERY;
         }
         if sim.time >= next_zoo {
             store_best(&zoo, &sim, index);

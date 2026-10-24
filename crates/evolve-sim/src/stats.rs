@@ -125,18 +125,23 @@ impl GenePool {
         a.min(b) // entries are sorted best-first
     }
 
-    pub fn breed(&self, rng: &mut Rng, p: &SimParams) -> Option<(Genome, u32)> {
+    /// A child of the pool's best: a cross of two of them, or a copy of one, then mutated. True if
+    /// it's a cross. Only two close enough to interbreed in the world are crossed: the pool holds
+    /// lineages from every world, and a cross of strangers mixes limbs and neurons that have
+    /// nothing to do with each other.
+    pub fn breed(&self, rng: &mut Rng, p: &SimParams) -> Option<(Genome, u32, bool)> {
         if self.entries.is_empty() {
             return None;
         }
-        let a = &self.entries[self.tournament(rng)];
-        let b = &self.entries[self.tournament(rng)];
-        let mut g = if rng.coin() {
+        let (i, k) = (self.tournament(rng), self.tournament(rng));
+        let (a, b) = (&self.entries[i], &self.entries[k]);
+        let cross = i != k && rng.coin() && a.genome.distance(&b.genome) < p.species_threshold;
+        let mut g = if cross {
             Genome::crossover(&a.genome, &b.genome, rng)
         } else {
             a.genome.clone()
         };
         g.mutate(rng, p);
-        Some((g, a.generation.max(b.generation) + 1))
+        Some((g, a.generation.max(b.generation) + 1, cross))
     }
 }

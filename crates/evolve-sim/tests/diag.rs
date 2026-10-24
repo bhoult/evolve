@@ -751,3 +751,96 @@ fn economy() {
     }
     println!("at the end: {}", terrain(&sim));
 }
+
+/// The observatory's report on a world: a save (EVOLVE_DIAG_SAVE), or a new world seeded from a
+/// zoo (EVOLVE_ZOO_DIR, with EVOLVE_DIAG_MIN/MAX/SEED), run for EVOLVE_DIAG_SECS after a warm-up
+/// of EVOLVE_DIAG_WARM, with a summary line every minute. Extra params: EVOLVE_DIAG_SET="a=1,b=2".
+/// `EVOLVE_ZOO_DIR=copy cargo test --release --test diag census -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn census() {
+    let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let set = |p: &mut SimParams| {
+        for kv in std::env::var("EVOLVE_DIAG_SET").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').expect("EVOLVE_DIAG_SET takes name=value pairs");
+            p.set_by_name(k.trim(), v.trim()).unwrap();
+        }
+    };
+    let mut sim = match std::env::var("EVOLVE_DIAG_SAVE") {
+        Ok(path) => {
+            let mut sim = evolve_sim::save::load(path.as_ref()).unwrap();
+            let mut p = sim.params.clone();
+            set(&mut p);
+            sim.set_params(p);
+            sim
+        }
+        Err(_) => {
+            let mut p = SimParams {
+                min_population: env("EVOLVE_DIAG_MIN", 790.0) as u32,
+                max_population: env("EVOLVE_DIAG_MAX", 1000.0) as u32,
+                seed: env("EVOLVE_DIAG_SEED", 1.0) as u64,
+                ..SimParams::default()
+            };
+            set(&mut p);
+            let mut sim = Sim::new(p);
+            if let Ok(dir) = std::env::var("EVOLVE_ZOO_DIR") {
+                evolve_sim::zoo::seed_world(&evolve_sim::zoo::Zoo::shared(dir.into()), &mut sim);
+            }
+            sim
+        }
+    };
+    let tps = evolve_sim::sim::TICKS_PER_SECOND as usize;
+    let warm = env("EVOLVE_DIAG_WARM", 120.0) as usize;
+    let secs = env("EVOLVE_DIAG_SECS", 300.0) as usize;
+    for _ in 0..warm * tps {
+        sim.step();
+    }
+    for s in 0..secs {
+        for _ in 0..tps {
+            sim.step();
+        }
+        if (s + 1) % 60 == 0 {
+            println!("{}", sim.summary_line(60.0));
+        }
+    }
+    println!("\n{}", sim.report(secs as f64));
+}
+
+/// How the best creatures of a zoo (EVOLVE_ZOO_DIR, any score version) move: the top
+/// EVOLVE_DIAG_TOP (5) are dropped into a fresh world, two copies each, settle for 20 s, and each is
+/// watched for EVOLVE_DIAG_SECS (15).
+/// `EVOLVE_ZOO_DIR=copy cargo test --release --test diag watch_the_zoo -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn watch_the_zoo() {
+    let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let dir = std::env::var("EVOLVE_ZOO_DIR").expect("set EVOLVE_ZOO_DIR to a copy of a zoo");
+    let zoo = evolve_sim::zoo::Zoo::open(dir.into());
+    let mut best = zoo.entries.clone();
+    best.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let mut sim = Sim::new(SimParams { min_population: 0, parallel_worlds: 0, ..SimParams::default() });
+    for e in best.iter().take(env("EVOLVE_DIAG_TOP", 5.0) as usize) {
+        let g = zoo.genome(e.id).unwrap();
+        println!("{} (score {:.1}): dropped", e.name, e.score);
+        sim.drop_genome(&g, e.generation, None, 2);
+    }
+    for _ in 0..20 * 60 {
+        sim.step();
+    }
+    let secs = env("EVOLVE_DIAG_SECS", 15.0);
+    let mut waiting = Vec::new();
+    let ids: Vec<u64> = sim.creatures.iter().map(|c| c.id).collect();
+    for id in ids {
+        let (tx, rx) = std::sync::mpsc::channel();
+        sim.watch(id, secs, tx);
+        waiting.push(rx);
+    }
+    for _ in 0..((secs + 1.0) * 60.0) as usize {
+        sim.step();
+    }
+    for rx in waiting {
+        if let Ok(Ok(text)) = rx.try_recv() {
+            println!("\n{text}");
+        }
+    }
+}

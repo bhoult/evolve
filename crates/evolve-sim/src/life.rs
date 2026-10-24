@@ -201,8 +201,9 @@ impl Sim {
         let plastic_decay = brain::per_tick_decay(self.params.learned_memory, bdt);
         let exploration = self.params.exploration;
         let pipelined = self.brains.is_some();
+        let sense_radius = self.params.sense_radius;
         let learning = |c: &mut Creature, x: &[f32; N_IN]| {
-            approach_reward(c, x);
+            approach_reward(c, x, sense_radius);
             // Variations are measured against the creature's own exploration, so a creature
             // that explores gently learns as readily as a bold one.
             let sigma = exploration_sigma(c, exploration).max(0.03);
@@ -327,6 +328,7 @@ impl Sim {
             let c = &mut self.creatures[ci];
             c.soil = (c.soil - moved).clamp(0.0, capacity);
             c.energy -= dig_cost * moved.abs();
+            c.life.spent.digging += dig_cost * moved.abs();
         }
         self.settle_terrain();
     }
@@ -524,6 +526,7 @@ impl Sim {
         v.brain.reward -= damage / v.max_health * 2.0;
         let a = &mut self.creatures[ai];
         a.energy -= cost;
+        a.life.spent.other += cost;
         a.attack_cooldown = cooldown;
         a.attack_flash = 0.3;
         a.life.attacks += 1;
@@ -660,6 +663,10 @@ impl Sim {
         let a = self.rng.range(0.0, std::f32::consts::TAU);
         let offset = Vec3::new(a.cos(), 0.0, a.sin()) * (self.creatures[i].radius() + 0.8);
         let child = self.spawn_creature(genome, near + offset, 0.3, energy, generation, ids);
+        if let Some(c) = self.creature(child) {
+            let (lineage, mass) = (c.lineage, c.mass);
+            self.record_birth(lineage, mass);
+        }
         let parent = self.creatures[i].id;
         self.highlight(crate::snapshot::HighlightKind::Birth, child, Some(parent), near + offset);
         self.stats.births += 1;
@@ -848,7 +855,8 @@ fn birth_cost(p: &SimParams, energies: &[f32], child_mass: f32) -> Option<(f32, 
         }
         *g = (e - body) * share;
     }
-    (gifts.iter().sum::<f32>() >= p.min_child_energy).then_some((body, gifts))
+    let least = p.min_child_energy.max(p.child_start_fraction * p.energy_per_mass * child_mass);
+    (gifts.iter().sum::<f32>() >= least).then_some((body, gifts))
 }
 
 /// Exploration: each joint axis the body has wanders a little around what the brain asks for,
@@ -900,7 +908,7 @@ const SEEK_REWARD: f32 = 10.0;
 ///
 /// Each closeness is compared with last tick's; a jump means the target changed (eaten, or a new
 /// one came in range), not that the creature moved, so it doesn't count.
-fn approach_reward(c: &mut Creature, x: &[f32; N_IN]) {
+fn approach_reward(c: &mut Creature, x: &[f32; N_IN], sense_radius: f32) {
     use input::*;
     let diet = c.genome.traits.diet;
     let close = [
@@ -915,6 +923,13 @@ fn approach_reward(c: &mut Creature, x: &[f32; N_IN]) {
         let change = close[k] - last[k];
         if change.abs() < 0.05 {
             felt += need[k] * change;
+            // For the life score, in meters (closeness is 1 - distance / sense radius), while it
+            // has room to eat. Not weighted by hunger like the feeling: a creature from the sky
+            // starts with the same energy whatever its size, so a big one would always seem the
+            // hungrier and earn more for the same walk.
+            if k == 0 && x[ENERGY] < 0.9 {
+                c.life.approached += change * sense_radius;
+            }
         }
         last[k] = close[k];
     }

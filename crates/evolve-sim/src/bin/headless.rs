@@ -25,6 +25,7 @@ fn main() {
     let mut load_from: Option<PathBuf> = None;
     let mut sets: Vec<(String, String)> = Vec::new();
     let mut islands: Option<u32> = None;
+    let mut mcp: Option<u16> = None;
     let mut wall: f64 = 60.0;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -34,6 +35,7 @@ fn main() {
             "--report" => report = val().parse().unwrap_or_else(|_| die("bad --report")),
             "--save" => save_to = Some(val().into()),
             "--islands" => islands = Some(val().parse().unwrap_or_else(|_| die("bad --islands"))),
+            "--mcp" => mcp = Some(val().parse().unwrap_or_else(|_| die("bad --mcp"))),
             "--wall-seconds" => wall = val().parse().unwrap_or_else(|_| die("bad --wall-seconds")),
             "--load" => load_from = Some(val().into()),
             "--set" => {
@@ -43,7 +45,7 @@ fn main() {
             }
             "-h" | "--help" => {
                 println!(
-                    "evolve-headless [--minutes M] [--report SECONDS] [--save FILE] [--load FILE] [--set name=value]..."
+                    "evolve-headless [--minutes M] [--report SECONDS] [--save FILE] [--load FILE] [--set name=value]...\n                [--islands N --wall-seconds S [--mcp PORT]]"
                 );
                 return;
             }
@@ -85,7 +87,7 @@ fn main() {
     };
 
     if let Some(n) = islands {
-        run_islands(sim, n, wall, report, save_to);
+        run_islands(sim, n, wall, report, save_to, mcp);
         return;
     }
     println!(
@@ -177,13 +179,19 @@ fn main() {
 
 /// Runs the world through the real `Runner` at maximum speed with `n` background worlds, for
 /// `wall` seconds of real time, reporting every `report` seconds: how hard the hardware works.
-fn run_islands(mut sim: Sim, n: u32, wall: f64, report: f64, save_to: Option<PathBuf>) {
+fn run_islands(mut sim: Sim, n: u32, wall: f64, report: f64, save_to: Option<PathBuf>, mcp: Option<u16>) {
     let mut p = sim.params.clone();
     p.parallel_worlds = n;
     sim.set_params(p);
     println!("# brains: {}; {} background worlds", sim.brain_backend, n);
     let runner = evolve_sim::Runner::start(sim);
     runner.send(evolve_sim::Control::Speed(0.0));
+    if let Some(port) = mcp {
+        match evolve_sim::mcp::serve(port, runner.sender(), None) {
+            Ok(port) => println!("# MCP server at http://127.0.0.1:{port}/mcp"),
+            Err(e) => println!("# no MCP server on port {port} ({e})"),
+        }
+    }
     let start = Instant::now();
     let mut cpu_last = (Instant::now(), evolve_sim::process_cpu_seconds().unwrap_or(0.0));
     while start.elapsed().as_secs_f64() < wall {

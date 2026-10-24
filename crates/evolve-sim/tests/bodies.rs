@@ -15,6 +15,8 @@ fn quiet_params() -> SimParams {
         terrain_resolution: 65,
         weather: false,
         stones: 0,
+        // Breeding is tested here on creatures that never ate; that rule has a test of its own.
+        breeding_food: 0.0,
         ..SimParams::default()
     }
 }
@@ -462,6 +464,38 @@ fn specks_too_small_to_feed_a_child_cannot_breed() {
     assert!(bigs > 0, "a well-fed normal pair should still breed");
 }
 
+/// Births come from foraging: a creature that hasn't eaten `breeding_food` in its life can't
+/// breed on the energy it fell from the sky with, however full it is.
+#[test]
+fn only_creatures_that_have_eaten_can_breed() {
+    use evolve_sim::math::Vec3;
+    let mut p = quiet_params();
+    p.breeding_food = 50.0;
+    p.maturity_age = 0.0;
+    let mut sim = Sim::new(p);
+    let g = always(legged(), output::MATE);
+    let at = sim.random_land_point(20.0);
+    let a = sim.spawn_creature(g.clone(), at, 0.3, f32::MAX, 0, None);
+    let b = sim.spawn_creature(g, at + Vec3::new(1.5, 0.0, 0.0), 0.3, f32::MAX, 0, None);
+    for _ in 0..180 {
+        sim.step();
+    }
+    assert_eq!(sim.stats.births, 0, "a full pair that never ate bred");
+    assert!(sim.creature(a).unwrap().mate_drive < 0.01, "and feels no urge to");
+    for id in [a, b] {
+        let c = sim.creature_mut(id).unwrap();
+        c.life.plant_eaten = 60.0;
+        c.energy = c.max_energy;
+    }
+    for _ in 0..180 {
+        sim.step();
+        if sim.stats.births > 0 {
+            break;
+        }
+    }
+    assert!(sim.stats.births > 0, "once they've eaten, they breed");
+}
+
 #[test]
 fn a_child_killed_at_birth_leaves_no_more_meat_than_it_cost() {
     use evolve_sim::math::Vec3;
@@ -709,6 +743,8 @@ fn totems_make_creatures_breed_fight_and_flee() {
     p.maturity_age = 0.0;
     p.plant_max_count = 0;
     p.plant_spawn_rate = 0.0;
+    // Nothing here has eaten: love overrides that too.
+    p.breeding_food = SimParams::default().breeding_food;
     let mut sim = Sim::new(p);
     let run = |sim: &mut Sim, s: u64| {
         for _ in 0..s * evolve_sim::sim::TICKS_PER_SECOND {

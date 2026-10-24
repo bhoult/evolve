@@ -30,6 +30,24 @@ pub enum DeathCause {
     Glitch,
 }
 
+/// Where a creature came from.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum Origin {
+    /// From a save made before origins were noted.
+    #[default]
+    Unknown,
+    /// Born in the world to parents.
+    Born,
+    /// Fell from the sky, made at random.
+    Random,
+    /// Fell from the sky, a mutated copy of a genome in the gene pool.
+    PoolClone,
+    /// Fell from the sky, a cross of two genomes in the gene pool.
+    PoolCross,
+    /// Dropped in by hand or from the zoo.
+    Dropped,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct LifeStats {
     pub plant_eaten: f32,
@@ -41,6 +59,27 @@ pub struct LifeStats {
     /// Energy handed to its children.
     #[serde(default)]
     pub invested: f32,
+    /// Where the rest of its energy went.
+    #[serde(default)]
+    pub spent: Spending,
+    /// Meters closed on food it could sense while it had room to eat (see `life::approach_reward`).
+    #[serde(default)]
+    pub approached: f32,
+}
+
+/// Energy a creature has used up, by what it went on.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+pub struct Spending {
+    /// Staying alive: the resting burn of its body.
+    pub basal: f32,
+    pub brain: f32,
+    /// Work done by its joint motors.
+    pub muscle: f32,
+    /// Healing its wounds.
+    pub healing: f32,
+    pub digging: f32,
+    /// Calling and attacking.
+    pub other: f32,
 }
 
 impl LifeStats {
@@ -109,6 +148,11 @@ pub struct Creature {
     #[serde(default)]
     pub soil: f32,
     pub rained: bool,
+    /// Births in a row behind it, back to an ancestor that fell from the sky (0 if it fell).
+    #[serde(default)]
+    pub lineage: u32,
+    #[serde(default)]
+    pub origin: Origin,
     pub dead: Option<DeathCause>,
     /// Which physics world its body is in (see `Sim::shards`).
     #[serde(default)]
@@ -170,11 +214,12 @@ impl Creature {
     }
 
     pub fn ready_to_mate(&self, p: &SimParams, energy_fraction: f32) -> bool {
-        // A totem of love drowns out caution about being fed enough (though a child's body
-        // still has to be paid for).
+        // A totem of love drowns out caution about being fed enough, or about having eaten its
+        // own way (though a child's body still has to be paid for).
         self.dead.is_none()
             && self.age >= p.maturity_age
             && self.mate_cooldown <= 0.0
+            && self.life.food() >= p.breeding_food * (1.0 - self.urge[0])
             && self.energy >= energy_fraction * (1.0 - self.urge[0]) * self.max_energy
             && self.output(output::MATE) > 0.0
     }
@@ -311,6 +356,12 @@ pub struct Sim {
     pub highlights: Vec<Highlight>,
     #[serde(skip)]
     pub highlight_seq: u64,
+    /// Recent deaths and births, for reports (see `observe`).
+    #[serde(skip)]
+    pub census: crate::observe::Census,
+    /// Creatures being followed to see how they move (see `observe::Watch`).
+    #[serde(skip)]
+    pub watches: Vec<crate::observe::Watch>,
 }
 
 pub const MAX_HISTORY: usize = 4000;
@@ -384,6 +435,8 @@ impl Sim {
             weather: Default::default(),
             highlights: Vec::new(),
             highlight_seq: 0,
+            census: Default::default(),
+            watches: Vec::new(),
         };
         sim.refresh_weather();
         sim.init_brains();
@@ -491,7 +544,12 @@ impl Sim {
     fn apply_gpu_budget(&mut self) {
         let p = &self.params;
         if let Some(g) = self.brains.as_mut() {
-            let share = p.gpu_memory_gb.max(0.1) as f64 * 1e9 / (1 + p.parallel_worlds) as f64;
+            // Shared by population: a background world holds `background_population` of this
+            // world's creatures, so it gets that much less of the memory (an even split left the
+            // world on screen room for brains of only a few hundred neurons when it was full).
+            let bg = p.background_population.clamp(0.05, 1.0) as f64;
+            let weight = if self.background { bg } else { 1.0 };
+            let share = p.gpu_memory_gb.max(0.1) as f64 * 1e9 * weight / (1.0 + p.parallel_worlds as f64 * bg);
             g.budget_bytes = share as u64;
         }
     }
@@ -1028,6 +1086,12 @@ impl Sim {
             }
         }
         let brain = BrainState::new(&genome.brain);
+        let lineage = parents
+            .map(|(a, b)| {
+                let line = |id| self.creature(id).map(|c| c.lineage).unwrap_or(0);
+                line(a).max(line(b)) + 1
+            })
+            .unwrap_or(0);
         let creature = Creature {
             id,
             genome,
@@ -1065,6 +1129,8 @@ impl Sim {
             exertion: 0.0,
             soil: 0.0,
             rained: parents.is_none(),
+            lineage,
+            origin: if parents.is_some() { Origin::Born } else { Origin::Dropped },
             dead: None,
             shard,
         };
@@ -1087,8 +1153,14 @@ impl Sim {
             None
         };
         let from_pool = bred.is_some();
-        let (genome, generation) =
-            bred.unwrap_or_else(|| (Genome::random(&mut self.rng, &self.params), 0));
+        let origin = match &bred {
+            Some((_, _, true)) => Origin::PoolCross,
+            Some(_) => Origin::PoolClone,
+            None => Origin::Random,
+        };
+        let (genome, generation) = bred
+            .map(|(g, n, _)| (g, n))
+            .unwrap_or_else(|| (Genome::random(&mut self.rng, &self.params), 0));
         let near_kin = (from_pool && self.rng.chance(self.params.rain_near_kin))
             .then(|| self.near_kin_point(&genome))
             .flatten();
@@ -1096,7 +1168,16 @@ impl Sim {
         let lift = self.params.rain_height;
         let e = self.params.start_energy;
         self.stats.rained += 1;
-        self.spawn_creature(genome, at, lift, e, generation, None)
+        let id = self.spawn_creature(genome, at, lift, e, generation, None);
+        let energy = match self.creature_mut(id) {
+            Some(c) => {
+                c.origin = origin;
+                c.energy
+            }
+            None => 0.0,
+        };
+        self.record_sky(energy);
+        id
     }
 
     /// How well a lifetime went, for the gene pool and the zoo. Children count most; food eaten
@@ -1108,15 +1189,20 @@ impl Sim {
     }
 
     /// What a life achieved, in "plants' worth": eating (food and meat), hunting (kills),
-    /// breeding (children, and the energy given them) and travelling (net progress). Simply
-    /// lasting earns nothing, and neither do children given almost nothing.
+    /// breeding (children, and the energy given them) and travelling (net progress, and above all
+    /// closing in on food it has room to eat: 10 m of that is worth a plant). Simply lasting earns
+    /// nothing, and neither do children given almost nothing.
+    ///
+    /// Closing in on food is there because eating alone mostly measured luck: creatures from the
+    /// sky that landed beside a plant scored, and ones that set off toward a plant 5 m away and
+    /// starved on the way scored nothing, so walking to food never got a foothold.
     pub fn score_parts(&self, c: &Creature) -> [f32; 4] {
         let plant = self.params.plant_max_energy.max(1.0);
         [
             c.life.food() / plant,
             c.life.kills as f32 * 3.0,
             c.life.children as f32 * 0.5 + c.life.invested / plant,
-            c.life.distance / 50.0,
+            c.life.distance / 50.0 + c.life.approached.max(0.0) / 10.0,
         ]
     }
 
@@ -1328,6 +1414,9 @@ impl Sim {
             self.sample_history();
         }
         self.rain(DT);
+        if !self.watches.is_empty() && self.tick % 6 == 0 {
+            self.sample_watches();
+        }
         self.process_deaths();
         self.tick += 1;
         self.time += DT as f64;
@@ -1533,6 +1622,7 @@ impl Sim {
                 };
             }
             c.energy -= work * p.motor_energy_cost;
+            c.life.spent.muscle += work * p.motor_energy_cost;
 
             let mut bad = false;
             let mut slow = 1.0f32;
@@ -1653,15 +1743,20 @@ impl Sim {
             let brain = c.brain_cost(p, self.brain_price);
             let calling = p.call_cost * crate::life::call_loudness(c);
             c.energy -= (basal + brain + calling) * bdt;
+            c.life.spent.basal += basal * bdt;
+            c.life.spent.brain += brain * bdt;
+            c.life.spent.other += calling * bdt;
             if c.health < c.max_health && c.energy > 0.0 {
                 let h = (p.health_regen * bdt).min(c.max_health - c.health);
                 c.health += h;
                 c.energy -= h * 0.5;
+                c.life.spent.healing += h * 0.5;
             }
-            // The mating drive builds while it could breed (mature, past its cooldown, fed enough
-            // to be a partner) and fades quickly while it couldn't.
+            // The mating drive builds while it could breed (mature, past its cooldown, has eaten its
+            // own way, fed enough to be a partner) and fades quickly while it couldn't.
             let ready = c.age >= p.maturity_age
                 && c.mate_cooldown <= 0.0
+                && c.life.food() >= p.breeding_food * (1.0 - c.urge[0])
                 && c.energy >= p.mate_energy_fraction * 0.5 * c.max_energy;
             c.mate_drive = if ready {
                 let rate = 2f32.powf(c.genome.traits.libido.clamp(-1.0, 1.0)) / p.mate_drive_time.max(0.1);
@@ -1771,6 +1866,8 @@ impl Sim {
                 DeathCause::Removed | DeathCause::Glitch => self.stats.deaths_other += 1,
             }
             if !matches!(cause, DeathCause::Removed | DeathCause::Glitch) {
+                let at = self.torso_of(&c).map(|b| b.translation()).filter(|p| p.is_finite()).unwrap_or(c.last_pos);
+                self.record_death(&c, at);
                 let score = self.life_score(&c);
                 match learned.get(&c.id) {
                     Some(p) => {

@@ -42,14 +42,16 @@ pub struct ZooMeta {
     pub score_version: u32,
 }
 
-/// 4: as 3, with bodies that fell from the sky leaving no meat of their own (2026-10-23); before,
+/// 5: as 4, plus a point for every 10 m closed on food it had room to eat (2026-10-24); before, the
+/// pool mostly rewarded landing beside a plant, and 300 kg flailers that starved within 40 s
+/// with plants 2-5 m away won. 4: as 3, with bodies that fell from the sky leaving no meat of their own (2026-10-23); before,
 /// the population floor rained free carcasses, and huge limbless carrion-eaters that never moved
 /// won. 3: as 2, earned with servo motors (2026-10-23), whose limbs can push the body; before, a
 /// planted leg could barely push, so limbless bodies won. 2: earned with children's bodies paid
 /// for. 1 (2026-10-22) was earned while a child's body was free and its carcass still left meat,
 /// which heaps of meat-eaters living on their own dead exploited. 0 (before 2026-10-22) counted 4
 /// points per child however little it was given, which tiny do-nothing breeders exploited.
-pub const SCORE_VERSION: u32 = 4;
+pub const SCORE_VERSION: u32 = 5;
 
 pub type SharedZoo = Arc<Mutex<Zoo>>;
 

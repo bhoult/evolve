@@ -9,6 +9,7 @@ mod genome_view;
 mod help;
 mod miracles;
 mod neural_view;
+mod observatory;
 mod preview;
 mod recording;
 mod scene;
@@ -108,11 +109,13 @@ pub struct Args {
     /// Start recording the window to this video file at launch.
     pub record: Option<PathBuf>,
     pub pick_test: bool,
+    /// Port of the MCP server (see `evolve_sim::mcp`); 0 for none.
+    pub mcp_port: u16,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "evolve [--load FILE] [--seed N] [--speed X] [--zoo] [--director] [--mute] [--set name=value]...\n       [--screenshot FILE --frames N] [--camera x,z,distance,yaw,pitch] [--select-first]\n       [--time-of-day F] [--weather clear|cloudy|rain|storm] [--lightning] [--record VIDEO.mp4]"
+        "evolve [--load FILE] [--seed N] [--speed X] [--zoo] [--director] [--mute] [--set name=value]...\n       [--screenshot FILE --frames N] [--camera x,z,distance,yaw,pitch] [--select-first]\n       [--time-of-day F] [--weather clear|cloudy|rain|storm] [--lightning] [--record VIDEO.mp4]\n       [--mcp-port N (default 7311, 0 for none)]"
     );
     std::process::exit(2)
 }
@@ -120,6 +123,7 @@ fn usage() -> ! {
 fn main() -> AppExit {
     let mut args = Args {
         frames: 240,
+        mcp_port: evolve_sim::mcp::DEFAULT_PORT,
         ..default()
     };
     let mut load: Option<PathBuf> = None;
@@ -152,6 +156,7 @@ fn main() -> AppExit {
                 args.miracle = Some((kind.to_string(), lead.parse().unwrap_or_else(|_| usage())));
             }
             "--record" => args.record = Some(val().into()),
+            "--mcp-port" => args.mcp_port = val().parse().unwrap_or_else(|_| usage()),
             "--time-of-day" => visuals.time_of_day = Some(val().parse().unwrap_or_else(|_| usage())),
             "--weather" => visuals.weather = Some(val().parse().unwrap_or_else(|_| usage())),
             "--lightning" => visuals.lightning = true,
@@ -205,6 +210,14 @@ fn main() -> AppExit {
     if let Some(s) = speed {
         runner.send(Control::Speed(s));
     }
+    // Screenshot runs are checks of their own, beside a real session that may hold the port.
+    let (shot_tx, shot_rx) = std::sync::mpsc::channel();
+    if args.mcp_port != 0 && args.screenshot.is_none() {
+        match evolve_sim::mcp::serve(args.mcp_port, runner.sender(), Some(shot_tx)) {
+            Ok(port) => eprintln!("evolve: MCP server at http://127.0.0.1:{port}/mcp"),
+            Err(e) => eprintln!("evolve: no MCP server on port {} ({e})", args.mcp_port),
+        }
+    }
 
     App::new()
         .insert_resource(ClearColor(scene::SKY))
@@ -239,6 +252,7 @@ fn main() -> AppExit {
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(EguiPlugin::default())
         .insert_resource(SimLink(runner))
+        .insert_resource(observatory::Shots::new(shot_rx))
         .init_resource::<Snap>()
         .init_resource::<Interp>()
         .insert_resource(args)
@@ -260,7 +274,7 @@ fn main() -> AppExit {
             audio::AudioPlugin,
             recording::RecordingPlugin,
         ))
-        .add_plugins(miracles::MiraclesPlugin)
+        .add_plugins((miracles::MiraclesPlugin, observatory::ObservatoryPlugin))
         .add_systems(PreUpdate, refresh_snapshot)
         .add_systems(Update, (auto_screenshot, load_after))
         .run()

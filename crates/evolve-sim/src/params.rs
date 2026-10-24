@@ -264,8 +264,9 @@ params! {
         eat_reach: f32 = 0.6, [0, 5], Live;
         /// Energy in each kg of body: what parents pay to grow a child's body, and what its
         /// carcass leaves as meat (plus half the energy it still held). Bodies that fell from
-        /// the sky cost nothing, so they leave only the half.
-        meat_per_mass: f32 = 0.8, [0, 10], Live;
+        /// the sky cost nothing, so they leave only the half. (At 0.8 a child cost its parents
+        /// so much of a full-size body that what was left for it to live on was a crumb.)
+        meat_per_mass: f32 = 0.5, [0, 10], Live;
         /// Fraction of meat energy lost per second to rot.
         meat_decay: f32 = 0.01, [0, 0.5], Live;
     }
@@ -329,6 +330,13 @@ params! {
         mate_energy_fraction: f32 = 0.5, [0, 1], Live;
         /// Least energy a child can start with; parents who can't give that much can't breed.
         min_child_energy: f32 = 5.0, [0, 100], Live;
+        /// Least share of its own energy store a child can start with (whichever is more, this or
+        /// min_child_energy). Without it most children were born with a few seconds' worth and
+        /// starved at once.
+        child_start_fraction: f32 = 0.25, [0, 1], Live;
+        /// Food a creature must have eaten in its life before it can breed, so births come from
+        /// foraging rather than from the energy it fell from the sky with.
+        breeding_food: f32 = 50.0, [0, 1000], Live;
         /// Fraction of each parent's energy handed to the child.
         child_energy_share: f32 = 0.3, [0.01, 0.9], Live;
         /// How close two creatures must be to mate, m (between bodies).
@@ -363,11 +371,12 @@ params! {
         /// Simulated seconds between migrations of the best genomes between worlds.
         migration_interval: f32 = 60.0, [5, 1200], Live;
         /// How busy the brains should keep the GPU at Max speed (0..1), by the GPU's own timer.
-        /// System monitors read higher: 0.5 shows as roughly 70% in nvidia-smi. Below the target
+        /// System monitors read higher: 0.5 showed as roughly 70% in nvidia-smi. Below the target
         /// brains get cheaper and tend to grow; above it, dearer and tend to shrink. 0 turns the
         /// steering off.
-        gpu_target: f32 = 0.5, [0, 1], Live;
-        /// GPU memory for brains, shared by all worlds, in GB. Brains that don't fit are trimmed.
+        gpu_target: f32 = 0.65, [0, 1], Live;
+        /// GPU memory for brains, shared by all worlds in proportion to their populations, in GB.
+        /// Brains that don't fit are trimmed.
         gpu_memory_gb: f32 = 8.0, [0.5, 64], Live;
     }
     "Zoo" {
@@ -408,6 +417,24 @@ fn default_background_worlds() -> u32 {
 }
 
 impl SimParams {
+    /// Sets a parameter by name from text, e.g. ("min_population", "200").
+    pub fn set_by_name(&mut self, name: &str, value: &str) -> Result<(), String> {
+        let mut result = Err(format!("no parameter named {name}"));
+        self.visit(&mut |info, r| {
+            if info.name != name {
+                return;
+            }
+            let bad = |_| format!("{name} can't be {value}");
+            result = match r {
+                ParamRef::F32(x) => value.parse().map(|v| *x = v).map_err(|e: std::num::ParseFloatError| bad(e.to_string())),
+                ParamRef::U32(x) => value.parse().map(|v| *x = v).map_err(|e: std::num::ParseIntError| bad(e.to_string())),
+                ParamRef::U64(x) => value.parse().map(|v| *x = v).map_err(|e: std::num::ParseIntError| bad(e.to_string())),
+                ParamRef::Bool(x) => value.parse().map(|v| *x = v).map_err(|e: std::str::ParseBoolError| bad(e.to_string())),
+            };
+        });
+        result
+    }
+
     pub fn neuron_range(&self) -> (u32, u32) {
         let lo = self.brain_min_neurons.max(1);
         (lo, self.brain_max_neurons.max(lo))

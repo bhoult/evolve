@@ -37,6 +37,8 @@ pub enum Control {
     ZooPin(u64, bool),
     /// Keep only the best n zoo creatures (and the pinned ones).
     ZooKeepBest(usize),
+    /// A question from the MCP server (see `mcp`) for world `world` (0 is this one).
+    Ask { world: usize, ask: crate::mcp::Ask, reply: crate::mcp::Reply },
     Quit,
 }
 
@@ -49,6 +51,10 @@ pub enum ZooTarget {
     /// Every world.
     All,
 }
+
+/// Simulated seconds between the one-line summaries each world writes to stderr (the journal,
+/// when the app runs as a service).
+pub const LOG_EVERY: f64 = 600.0;
 
 struct Shared {
     snapshot: Mutex<Arc<Snapshot>>,
@@ -84,6 +90,11 @@ impl Runner {
 
     pub fn command(&self, c: Command) {
         self.send(Control::Sim(c));
+    }
+
+    /// Another way in to the simulation thread, e.g. for the MCP server.
+    pub fn sender(&self) -> Sender<Control> {
+        self.tx.clone()
     }
 
     pub fn snapshot(&self) -> Arc<Snapshot> {
@@ -167,6 +178,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     let mut next_migration = sim.time;
     let mut world_epoch = 1u64;
     let mut next_zoo = sim.time + sim.params.zoo_interval as f64;
+    let mut next_log = sim.time + LOG_EVERY;
     let mut zoo_cache: (u64, Arc<Vec<ZooMeta>>) = (0, Arc::new(Vec::new()));
     let zoo_dir = zoo.lock().map(|z| z.dir().display().to_string()).unwrap_or_default();
     // A world that hasn't started yet (not a loaded one) begins with zoo creatures.
@@ -292,6 +304,43 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                         }
                     }
                 }
+                Ok(Control::Ask { world, ask, reply }) => {
+                    use crate::mcp::Ask;
+                    match ask {
+                        Ask::Worlds => {
+                            let _ = reply.send(Ok(workers.len().to_string()));
+                        }
+                        Ask::SetParam { name, value } => {
+                            let mut p = sim.params.clone();
+                            let before = sim.params_text(&name);
+                            match p.set_by_name(&name, &value) {
+                                Ok(()) => {
+                                    for w in &workers {
+                                        w.send(WorkerCtl::Params(Box::new(p.clone())));
+                                    }
+                                    sim.apply(Command::SetParams(Box::new(p)));
+                                    sim.log(format!("{name} set to {value} (by the MCP server)"));
+                                    let _ = reply.send(Ok(format!("was: {before}now: {}", sim.params_text(&name))));
+                                }
+                                Err(e) => {
+                                    let _ = reply.send(Err(e));
+                                }
+                            }
+                        }
+                        Ask::Save(path) => {
+                            let r = save::save(&mut sim, &path)
+                                .map(|bytes| format!("saved {} ({:.1} MB)", path.display(), bytes as f64 / 1e6));
+                            let _ = reply.send(r);
+                        }
+                        ask if world == 0 => sim.answer(ask, reply),
+                        ask => match workers.get(world - 1) {
+                            Some(w) if w.alive() => w.send(WorkerCtl::Ask(ask, reply)),
+                            _ => {
+                                let _ = reply.send(Err(format!("there is no background world {world} running")));
+                            }
+                        },
+                    }
+                }
                 Ok(Control::ZooPin(id, pinned)) => {
                     if let Ok(mut z) = zoo.lock() {
                         z.set_pinned(id, pinned);
@@ -340,6 +389,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         if sim.time >= next_zoo {
             store_best(&zoo, &sim, 0);
             next_zoo = sim.time + sim.params.zoo_interval as f64;
+        }
+        if sim.time >= next_log {
+            eprintln!("evolve world 0: {}", sim.summary_line(LOG_EVERY));
+            next_log = sim.time + LOG_EVERY;
         }
         if sim.time >= next_migration {
             let interval = sim.params.migration_interval;

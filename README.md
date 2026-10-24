@@ -400,8 +400,13 @@ weakly, so what the brain already does carries over.
 (`species_threshold`), willing partner produces a child. The partner only needs half the energy
 bar. The genomes cross over, then mutate. The parents pay for the child's body, at the meat it
 will be worth when it dies (`meat_per_mass` per kg, split between them), then each gives it part
-of what it has left as its energy. Pairs that can't pay for the body and still give the child
-`min_child_energy` don't breed. Without this, crowds of meat-eaters once lived on their own
+of what it has left as its energy. Pairs that can't pay for the body and still give the child a
+quarter of what its body can store (`child_start_fraction`, and never less than
+`min_child_energy`) don't breed, and neither does a creature that hasn't yet eaten
+`breeding_food` (50) in its life, so births come from foraging rather than from the 80 energy a
+creature falls from the sky with. (Until 2026-10-24 a body cost 0.8 per kg and the only floor was
+5: a 120 kg pair at the mating threshold could give its child about 7, and every child born in the
+census starved within 40 s without eating.) Without the body's cost, crowds of meat-eaters once lived on their own
 dead: every birth was a free body and every death left meat, so they gathered in heaps and bred
 without ever leaving. Genetic distance splits the population into species that can't
 interbreed. Breeding alone is an optional parameter.
@@ -422,7 +427,8 @@ A life is scored by what it achieved, in "plants' worth":
 - *Eating:* 1 per plant's worth of food or meat.
 - *Hunting:* 3 per kill.
 - *Breeding:* 0.5 per child, plus 1 per plant's worth of energy given to children.
-- *Travelling:* 1 per 50 m of net progress.
+- *Travelling:* 1 per 50 m of net progress, and 1 per 10 m closed on food while it has room to
+  eat.
 
 Lasting long earns nothing by itself. Children must start with at least `min_child_energy`.
 Before both rules, tiny limbless specks that bred where they landed topped the rankings: their
@@ -432,6 +438,38 @@ species panel spotlight the best scorer.
 Distance counts net progress over 5-second windows, because an earlier per-second tally ended
 up rewarding creatures that just flailed in place. This keeps
 evolution moving until the population can sustain itself.
+
+Closing in on food was added on 2026-10-24, when a 217-day world had bred 350–450 kg flailers.
+They fell from the sky with 80 energy, burned about 2 a second (a third of it on muscles that
+moved them 13 m a minute) and starved within 40 s, with 1,100–1,600 plants standing and one 2–5 m
+away from three quarters of them; a third never ate at all. Scored on food alone, the pool
+rewarded landing beside a plant rather than walking to one. The gene pool now only crosses two
+genomes close enough to interbreed (else it copies one): the pool holds lineages from every world.
+
+**Seeing what a world is doing.** Every 10 simulated minutes each world writes a line to the
+terminal (the journal, when the app runs as a service): population and how many were born there,
+births and arrivals from the sky per minute, deaths, age at death, food eaten and distance
+covered per creature-minute, the longest unbroken line of births, body and brain size. The full
+report, from the MCP server below or the `census` diagnostic test, adds deaths by cause and by
+origin (random, gene-pool copy, gene-pool cross, zoo, born), where energy went (basal, brain,
+muscle, healing, digging, calls and attacks), muscle energy per 100 kg per 100 m travelled, how
+far the starved were from the nearest plant, and the best creatures alive.
+
+**MCP server.** The app (and `evolve-headless --islands N --mcp PORT`) serves the
+[Model Context Protocol](https://modelcontextprotocol.io) on `http://127.0.0.1:7311/mcp`
+(`--mcp-port N` to move it, 0 to turn it off), so an AI assistant can look into the running
+world: `worlds_summary`, `world_report`, `list_creatures`, `creature`, `watch_creature` (follows
+one for some simulated seconds and describes its gait: travel, heading, how upright, which limb
+tips touch the ground and how often they step, whether it closes on food), `get_params`,
+`set_param`, `save_world` (to a new `.evo` file) and, in the app, `screenshot` (the view turns to
+a creature for a moment and back). It listens on localhost only and turns away requests from web
+pages. Register it with Claude Code:
+
+```
+claude mcp add --transport http evolve http://127.0.0.1:7311/mcp
+```
+
+A watch on a paused world waits until the world runs again.
 
 **World.**
 - *Terrain:* an island in an ocean. The coast follows the hills, with headlands and bays
@@ -533,8 +571,8 @@ At **Max** speed the program is built to keep the whole machine busy.
   a world are evaluated in two batched compute dispatches per brain tick: one for every hidden
   neuron of every creature, one for every output plus the learning step. Results are read
   back one tick later, so the GPU thinks while the CPU runs physics. Brains live in growable GPU
-  buffers, and `gpu_memory_gb` (default 8) caps their total memory across all worlds; a brain
-  that doesn't fit is trimmed. The kernels match the CPU reference (`brain::step_cpu`) to within
+  buffers, and `gpu_memory_gb` (default 8) caps their total memory across all worlds, shared in
+  proportion to their populations; a brain that doesn't fit is trimmed. The kernels match the CPU reference (`brain::step_cpu`) to within
   5×10⁻⁶. 50 brains of 2048 neurons take 0.52 ms per tick, about 830 GB/s, close to the RTX
   5080's memory bandwidth. Without a GPU, or with `EVOLVE_CPU_BRAINS=1`, brains run on the CPU.
 - **GPU, drawing:** Bevy on wgpu/Vulkan, in HDR with bloom and filmic tonemapping, with custom
@@ -566,8 +604,8 @@ At **Max** speed the program is built to keep the whole machine busy.
 - **Balancing CPU and GPU:** physics fills the CPU long before small brains fill the GPU, so brain
   size is steered to fill it.
   - *How it's steered:* at Max speed, the runner adds up every world's GPU time on brains and
-    compares it with `gpu_target` (50% by the GPU's own timer, which shows as roughly 70% in
-    nvidia-smi).
+    compares it with `gpu_target` (65% by the GPU's own timer since 2026-10-24; 50% showed as
+    roughly 70% in nvidia-smi, and 70% as 84–97%).
   - *Below the target:* brains get cheaper to run (a floating energy price) and tend to grow
     when they mutate.
   - *Above it:* they get dearer and tend to shrink.

@@ -536,6 +536,13 @@ fn breeding(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
+            "Both have eaten at least {} energy of food in their lives (breeding_food), so births come from foraging, not from the energy a creature fell from the sky with.",
+            num(p.breeding_food)
+        ),
+    );
+    bullet(
+        ui,
+        format!(
             "The one starting it has at least {} of a full energy bar (mate_energy_fraction); the partner half that.",
             pct(p.mate_energy_fraction)
         ),
@@ -566,12 +573,13 @@ fn breeding(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Then each parent gives it {} of what it has left as its starting energy (child_energy_share). If together they can't give at least {} (min_child_energy), there's no child.",
+            "Then each parent gives it {} of what it has left as its starting energy (child_energy_share). If together they can't give at least {} of what the child's body can store (child_start_fraction), and never less than {} (min_child_energy), there's no child.",
             pct(p.child_energy_share),
+            pct(p.child_start_fraction),
             num(p.min_child_energy)
         ),
     );
-    bullet(ui, "So breeding needs well-fed parents. Without the body's cost, crowds of meat-eaters once lived on their own dead: every birth was a free body and every death left meat, so they gathered in heaps and bred without ever leaving.");
+    bullet(ui, "So breeding needs well-fed parents, and a child starts with enough to look for food (with only a floor of 5, most were born with a few seconds' worth and starved at once). Without the body's cost, crowds of meat-eaters once lived on their own dead: every birth was a free body and every death left meat, so they gathered in heaps and bred without ever leaving.");
     sub(ui, "The child");
     bullet(
         ui,
@@ -653,8 +661,9 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
     );
     bullet(ui, "Hunting: 3 per kill.");
     bullet(ui, "Breeding: 0.5 per child, plus 1 per plant's worth of energy given to children.");
-    bullet(ui, "Travelling: 1 per 50 m of real progress, counted over 5-second stretches so flailing in place earns nothing.");
+    bullet(ui, "Travelling: 1 per 50 m of real progress, counted over 5-second stretches so flailing in place earns nothing, and 1 per 10 m closed on food while it has room to eat (scored on food alone, the pool rewarded landing beside a plant rather than walking to one).");
     para(ui, "Lasting long earns nothing by itself. The inspector shows each creature's score and its breakdown.");
+    para(ui, "A creature bred from the pool is a mutated copy of one of its best, or half the time a cross of two of them, but only of two close enough to interbreed: the pool holds lineages from every world, and a cross of strangers mixes limbs and brain wiring that have nothing to do with each other.");
     sub(ui, "Mutation");
     bullet(
         ui,
