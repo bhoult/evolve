@@ -129,6 +129,8 @@ fn main() -> AppExit {
     let mut load: Option<PathBuf> = None;
     let mut speed: Option<f32> = None;
     let mut params = SimParams::default();
+    // `--set` pairs, also applied on top of a loaded world's own settings.
+    let mut sets: Vec<(String, String)> = Vec::new();
     let mut visuals = env::VisualOverride::default();
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
@@ -193,6 +195,7 @@ fn main() -> AppExit {
                     eprintln!("evolve: no param named {k}");
                     usage();
                 }
+                sets.push((k.to_string(), v.to_string()));
             }
             _ => usage(),
         }
@@ -200,10 +203,26 @@ fn main() -> AppExit {
 
     evolve_sim::init_thread_pool();
     let sim = match &load {
-        Some(p) => save::load(p).unwrap_or_else(|e| {
-            eprintln!("evolve: {e}");
-            std::process::exit(1)
-        }),
+        Some(p) => {
+            let mut sim = save::load(p).unwrap_or_else(|e| {
+                eprintln!("evolve: {e}");
+                std::process::exit(1)
+            });
+            // A loaded world keeps its own settings except those given with --set (one that
+            // shapes a new world, like terrain_resolution, applies to the background worlds and
+            // to the next terrain made).
+            if !sets.is_empty() {
+                let mut p = sim.params.clone();
+                for (k, v) in &sets {
+                    p.set_by_name(k, v).unwrap_or_else(|e| {
+                        eprintln!("evolve: {e}");
+                        usage()
+                    });
+                }
+                sim.set_params(p);
+            }
+            sim
+        }
         None => Sim::new(params),
     };
     let runner = Runner::start(sim);

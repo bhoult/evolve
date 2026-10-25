@@ -398,10 +398,12 @@ impl Terrain {
 
     fn cell_coords(&self, x: f32, z: f32) -> (usize, usize, f32, f32) {
         let n = (self.res - 1) as f32;
-        let gx = ((x / self.size + 0.5) * n).clamp(0.0, n - 1e-4);
-        let gz = ((z / self.size + 0.5) * n).clamp(0.0, n - 1e-4);
-        let j = gx.floor() as usize;
-        let i = gz.floor() as usize;
+        let gx = ((x / self.size + 0.5) * n).clamp(0.0, n);
+        let gz = ((z / self.size + 0.5) * n).clamp(0.0, n);
+        // The last cell's far edge belongs to it (an f32 can't stay just short of it on a large
+        // grid: 4999 - 1e-4 rounds to 4999).
+        let j = (gx.floor() as usize).min(self.res - 2);
+        let i = (gz.floor() as usize).min(self.res - 2);
         (i, j, gx - j as f32, gz - i as f32)
     }
 
