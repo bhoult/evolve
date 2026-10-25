@@ -17,6 +17,7 @@ use evolve_sim::brain::{input_label, output_label};
 use evolve_sim::params::{ParamInfo, ParamKind, ParamRef};
 use evolve_sim::snapshot::{CreatureDetail, Snapshot};
 use evolve_sim::stats::Sample;
+use evolve_sim::wiring::SketchLimits;
 use evolve_sim::zoo::ZooMeta;
 use evolve_sim::{Command, Control, SimParams, ZooTarget, save};
 
@@ -67,9 +68,8 @@ pub struct UiState {
     /// for that creature).
     show_brain: bool,
     brain_closed_for: Option<u64>,
-    /// Which picture of the brain the brain view shows.
-    brain_tab: BrainTab,
-    neural: crate::neural_view::NeuralView,
+    /// Which picture of the brain the brain view shows, and how much of the brain each shows.
+    brain: BrainView,
     /// Body plans of zoo creatures, read as their rows come into view.
     sketches: Sketches,
 }
@@ -218,8 +218,7 @@ impl Default for UiState {
             confirm_compact: false,
             show_brain: false,
             brain_closed_for: None,
-            brain_tab: BrainTab::Network,
-            neural: Default::default(),
+            brain: BrainView::default(),
             sketches: Sketches::default(),
         }
     }
@@ -236,7 +235,7 @@ impl Plugin for UiPlugin {
                 st.show_zoo = args.zoo;
                 if args.neural_view {
                     st.show_brain = true;
-                    st.brain_tab = BrainTab::Neural;
+                    st.brain.tab = BrainTab::Neural;
                 }
                 if let Some(name) = &args.help_page {
                     st.show_help = true;
@@ -399,6 +398,7 @@ fn ui_system(
     if director.active {
         director_overlay(ctx, &mut director, &mut sound, &mut rec, now);
         if !director.panels {
+            st.brain.ask(&link, None);
             return Ok(());
         }
     }
@@ -406,6 +406,8 @@ fn ui_system(
     params_panel(ctx, &link, st, &mut gfx, now);
     stats_panel(ctx, snap, st, fps, &link, &mut cam);
     events_panel(ctx, snap, rec.fresh_notice());
+    // The runner sketches the brain only while the brain view is open, to what it shows.
+    let mut brain_wants = None;
     if let Some(sel) = &snap.selected {
         inspector(ctx, sel, &link, &mut cam, &mut st.show_brain, &mut st.show_genome);
         if st.show_genome {
@@ -414,13 +416,16 @@ fn ui_system(
         let following = cam.follow && st.brain_closed_for != Some(sel.id);
         if st.show_brain || following {
             let mut open = true;
-            brain_window(ctx, sel, &mut open, &mut st.brain_tab, &mut st.neural, now);
-            if !open {
+            brain_window(ctx, sel, &mut open, &mut st.brain, now);
+            if open {
+                brain_wants = Some(st.brain.wants(sel));
+            } else {
                 st.show_brain = false;
                 st.brain_closed_for = Some(sel.id);
             }
         }
     }
+    st.brain.ask(&link, brain_wants);
     saves_window(ctx, &link, st, now);
     zoo_window(ctx, snap, &link, st, &mut tools, &mut preview);
     crate::help::help_window(ctx, &mut st.show_help, &mut st.help_topic, &st.params);
@@ -1907,19 +1912,75 @@ enum BrainTab {
     Network,
     /// The same wiring as tissue: neurons, dendrites and synapses, with spikes.
     Neural,
+    /// Every neuron in a brain you can turn, with the strongest connections.
+    ThreeD,
+}
+
+impl BrainTab {
+    /// The most neurons and connections this picture draws smoothly, for a brain of `neurons`.
+    fn most(self, neurons: usize) -> (usize, usize) {
+        match self {
+            BrainTab::Network => (neurons, 10_000),
+            // Tissue grows a dendrite tree for every neuron and an axon for every connection, and
+            // grows them again whenever learning changes which connections are the strongest.
+            BrainTab::Neural => (neurons.min(300), 2_000),
+            BrainTab::ThreeD => (neurons, 100_000),
+        }
+    }
+}
+
+/// The brain view's state, kept while the app runs.
+struct BrainView {
+    tab: BrainTab,
+    /// How much of the brain each picture shows (by tab), as its sliders set it; usize::MAX
+    /// neurons is all of them, whatever the brain.
+    limits: [SketchLimits; 3],
+    neural: crate::neural_view::NeuralView,
+    solid: crate::brain3d::Brain3d,
+    /// What the runner was last asked to sketch (None: nothing, the view is closed).
+    asked: Option<SketchLimits>,
+}
+
+impl Default for BrainView {
+    fn default() -> Self {
+        Self {
+            tab: BrainTab::Network,
+            limits: [
+                SketchLimits::default(),
+                SketchLimits::default(),
+                SketchLimits { neurons: usize::MAX, connections: 20_000 },
+            ],
+            neural: Default::default(),
+            solid: Default::default(),
+            asked: None,
+        }
+    }
+}
+
+impl BrainView {
+    /// What the picture on show wants sketched of `c`'s brain.
+    fn wants(&self, c: &CreatureDetail) -> SketchLimits {
+        let (neurons, connections) = self.tab.most(c.neurons);
+        let l = self.limits[self.tab as usize];
+        SketchLimits { neurons: l.neurons.min(neurons), connections: l.connections.min(connections) }
+    }
+
+    /// Asks the runner to sketch to `limits` (None: not at all), unless that's what it was last
+    /// asked.
+    fn ask(&mut self, link: &SimLink, limits: Option<SketchLimits>) {
+        if limits != self.asked {
+            link.0.send(Control::BrainView(limits));
+            self.asked = limits;
+        }
+    }
 }
 
 /// The creature's brain, as a live diagram (senses on the left, the hidden neurons that matter
-/// most in a ring, actions on the right, and the strongest connections between them) or as
-/// living tissue (see `neural_view`).
-fn brain_window(
-    ctx: &mut egui::Context,
-    c: &CreatureDetail,
-    open: &mut bool,
-    tab: &mut BrainTab,
-    neural: &mut crate::neural_view::NeuralView,
-    now: f64,
-) {
+/// most in a ring, actions on the right, and the strongest connections between them), as living
+/// tissue (see `neural_view`), or whole in 3D (see `brain3d`). Sliders set how many neurons and
+/// connections each picture shows.
+fn brain_window(ctx: &mut egui::Context, c: &CreatureDetail, open: &mut bool, view: &mut BrainView, now: f64) {
+    use crate::brain3d::count;
     use evolve_sim::wiring::Node;
     egui::Window::new(format!("Brain of #{}", c.id))
         .id(egui::Id::new("brain_view"))
@@ -1929,24 +1990,60 @@ fn brain_window(
         .resizable(true)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.selectable_value(tab, BrainTab::Network, "Network")
+                ui.selectable_value(&mut view.tab, BrainTab::Network, "Network")
                     .on_hover_text("The wiring as a diagram");
-                ui.selectable_value(tab, BrainTab::Neural, "Neural")
+                ui.selectable_value(&mut view.tab, BrainTab::Neural, "Neural")
                     .on_hover_text("The same wiring as living tissue, firing");
+                ui.selectable_value(&mut view.tab, BrainTab::ThreeD, "3D")
+                    .on_hover_text("Every neuron it has, in a brain you can turn, with its strongest connections");
+            });
+            let tab = view.tab;
+            let (most_neurons, most_links) = tab.most(c.neurons);
+            let limits = &mut view.limits[tab as usize];
+            ui.horizontal(|ui| {
+                if tab != BrainTab::ThreeD {
+                    let mut n = limits.neurons.clamp(1, most_neurons.max(1));
+                    if ui
+                        .add(egui::Slider::new(&mut n, 1..=most_neurons.max(1)).logarithmic(true).text("neurons"))
+                        .on_hover_text("How many of its hidden neurons to show: those most strongly tied to its senses and actions first")
+                        .changed()
+                    {
+                        // All the way up is all of them, in a bigger brain too.
+                        limits.neurons = if n >= most_neurons { usize::MAX } else { n };
+                    }
+                }
+                ui.add(egui::Slider::new(&mut limits.connections, 1..=most_links).logarithmic(true).text("connections"))
+                    .on_hover_text("How many connections to show, the strongest first: shared among senses into neurons, neurons into neurons, and neurons into actions by how many of each there are among the neurons shown");
             });
             let w = &*c.wiring;
             if w.creature != c.id || w.inputs.is_empty() {
                 ui.label("Reading its wiring...");
                 return;
             }
-            if *tab == BrainTab::Neural {
+            if tab == BrainTab::ThreeD {
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} neurons, {} connections; showing {}. Every neuron it has, glowing as it works, with its senses on the disc behind and its actions on the disc in front, and its strongest connections: orange excites, blue inhibits, fainter is weaker. Drag to turn it, scroll to zoom.",
+                        count(w.total_hidden),
+                        count(c.synapses),
+                        count(w.edges.len())
+                    ))
+                    .small()
+                    .weak(),
+                );
+                let size = ui.available_size().max(egui::vec2(520.0, 480.0));
+                let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                view.solid.show(ui, rect, &resp, c, now);
+                return;
+            }
+            if tab == BrainTab::Neural {
                 ui.label(
                     egui::RichText::new(format!(
                         "{} of its {} neurons and the strongest {} of {} connections, as tissue. Senses on the left, hidden neurons in the middle, motor neurons on the right. Each neuron fires as fast as it is active; spikes run down axons to synapses, warm ones exciting and cool ones inhibiting the next neuron. Hover a cell body for its name and value.",
-                        w.hidden.len(),
-                        w.total_hidden,
-                        w.edges.len(),
-                        c.synapses
+                        count(w.hidden.len()),
+                        count(w.total_hidden),
+                        count(w.edges.len()),
+                        count(c.synapses)
                     ))
                     .small()
                     .weak(),
@@ -1956,17 +2053,17 @@ fn brain_window(
                     let width = ui.available_width().max(560.0);
                     let height = (rows * 13.0 + 28.0).max(ui.available_height()).max(480.0);
                     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-                    neural.show(ui, rect, &resp, c, now);
+                    view.neural.show(ui, rect, &resp, c, now);
                 });
                 return;
             }
             ui.label(
                 egui::RichText::new(format!(
                     "{} of its {} neurons and the strongest {} of {} connections. Orange excites, blue inhibits; brighter lines carry more signal right now. Hover for names and values.",
-                    w.hidden.len(),
-                    w.total_hidden,
-                    w.edges.len(),
-                    c.synapses
+                    count(w.hidden.len()),
+                    count(w.total_hidden),
+                    count(w.edges.len()),
+                    count(c.synapses)
                 ))
                 .small()
                 .weak(),
@@ -1996,6 +2093,8 @@ fn brain_window(
                     let p = center + egui::vec2(a.cos(), a.sin()) * radius;
                     at.insert(Node::Hidden(k), (p, c.hidden.get(k).copied().unwrap_or(0.0)));
                 }
+                // Smaller as the ring fills, down to dots for thousands.
+                let hidden_r = (std::f32::consts::TAU * radius / n * 0.35).clamp(1.5, 6.0);
                 // Weights are scaled per kind of link, so each layer's strongest reads as strong.
                 let kind = |e: &evolve_sim::wiring::Edge| match (e.from, e.to) {
                     (Node::Input(_), _) => 0,
@@ -2007,6 +2106,11 @@ fn brain_window(
                     let k = kind(e);
                     max[k] = max[k].max(e.weight.abs());
                 }
+                // The lines go into one mesh: thousands of curves drawn one by one by egui would
+                // take most of a frame. Fewer points to a curve when there are many.
+                let mut lines = crate::brain3d::Lines::new(egui::Mesh::default(), ui.ctx().pixels_per_point(), true);
+                let steps = if w.edges.len() > 2000 { 4 } else { 10 };
+                let mut curve = Vec::with_capacity(steps + 1);
                 for e in &w.edges {
                     let (Some(&(a, va)), Some(&(b, _))) = (at.get(&e.from), at.get(&e.to)) else {
                         continue;
@@ -2015,30 +2119,34 @@ fn brain_window(
                     let flow = va.abs().min(1.0);
                     let alpha = (25.0 + 210.0 * strength * (0.2 + 0.8 * flow)) as u8;
                     let color = signal_color(e.weight.signum(), alpha);
-                    let stroke = egui::Stroke::new(0.4 + 2.4 * strength, color);
+                    let width = 0.4 + 2.4 * strength;
                     if kind(e) == 1 {
                         if a == b {
                             // A neuron feeding itself: a small loop outside the ring.
                             let out = (a - center).normalized() * 9.0;
-                            painter.circle_stroke(a + out, 6.0, stroke);
+                            painter.circle_stroke(a + out, 6.0, egui::Stroke::new(width, color));
                         } else {
                             let ctrl = a + (b - a) * 0.5 + (center - (a + (b - a) * 0.5)) * 0.55;
-                            painter.add(egui::epaint::QuadraticBezierShape::from_points_stroke(
-                                [a, ctrl, b],
-                                false,
-                                egui::Color32::TRANSPARENT,
-                                stroke,
-                            ));
+                            curve.clear();
+                            curve.extend((0..=steps).map(|i| {
+                                let t = i as f32 / steps as f32;
+                                let u = 1.0 - t;
+                                let p = a.to_vec2() * (u * u) + ctrl.to_vec2() * (2.0 * u * t) + b.to_vec2() * (t * t);
+                                (p.to_pos2(), color)
+                            }));
+                            lines.path(&curve, width);
                         }
                     } else {
-                        painter.line_segment([a, b], stroke);
+                        lines.path(&[(a, color), (b, color)], width);
                     }
                 }
+                painter.add(egui::Shape::mesh(lines.mesh));
                 let font = egui::FontId::proportional(10.5);
                 let text = ui.visuals().text_color();
                 for (&node, &(p, v)) in &at {
-                    let r = if matches!(node, Node::Hidden(_)) { 6.0 } else { 4.0 };
-                    painter.circle(p, r, signal_color(v, 255), egui::Stroke::new(0.8, egui::Color32::from_gray(30)));
+                    let r = if matches!(node, Node::Hidden(_)) { hidden_r } else { 4.0 };
+                    let rim = if r >= 3.0 { egui::Stroke::new(0.8, egui::Color32::from_gray(30)) } else { egui::Stroke::NONE };
+                    painter.circle(p, r, signal_color(v, 255), rim);
                     match node {
                         Node::Input(k) => {
                             painter.text(p - egui::vec2(8.0, 0.0), egui::Align2::RIGHT_CENTER, short_input(k), font.clone(), text);

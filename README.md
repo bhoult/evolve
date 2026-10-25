@@ -199,9 +199,16 @@ file. `--record FILE` records from launch. There is no sound in the video.
 **The brain view** opens when you follow a creature (F, or Follow in its inspector), or with the
 inspector's Brain view button.
 - *Layout:* the senses its body uses are on the left and the actions it can take on the right. The
-  (up to) 40 hidden neurons most tied to them sit in a ring between.
+  hidden neurons most tied to them sit in a ring between (40 at first).
 - *Connections:* the strongest connections are drawn in orange (excite) or blue (inhibit), thicker
   for stronger weights and brighter while signal is flowing through them.
+- *Sliders:* how many neurons and connections each tab shows, remembered while the app runs:
+  the Network tab up to every neuron and 10,000 connections, the Neural tab up to 300 neurons
+  and 2,000 connections (tissue is costly to grow). Connections come strongest first, the budget
+  shared among senses into neurons, neurons into neurons, and neurons into actions by how many
+  of each there are among the neurons shown (their sizes can't be compared: a big brain's
+  neuron-to-neuron weights are an order of magnitude smaller than its sense weights). The app
+  asks the simulation for just that much (wiring.rs), and for nothing while the view is closed.
 - *Live:* nodes light up with their current activity. Hover a node for its name and value.
 - *Neural tab:* the same brain drawn as living tissue (neural_view.rs). Sensory neurons with
   receptor endings sit on the left, hidden neurons with branching dendrites in the middle, and
@@ -209,6 +216,13 @@ inspector's Brain view button.
   neuron fires as often as it is active. Spikes run down its axons to synapses, warm where they
   excite and cool where they inhibit, and the next cell body glows as they arrive. Thicker axons
   are stronger connections. `--neural-view` with `--select-first` opens it, for screenshots.
+- *3D tab:* the whole brain (brain3d.rs). Every hidden neuron is a point in a brain-shaped volume,
+  two hemispheres, placed by its number on an even scatter (Roberts' R3 sequence), so a neuron
+  keeps its place. The senses sit on a disc behind and the actions on a disc in front, and up to
+  100,000 of the strongest connections are drawn as lines (20,000 at first). Points glow with
+  live activity. Drag to turn it, scroll to zoom; it turns slowly by itself when left alone.
+  Sketching every neuron of a 4,096-neuron brain to 100,000 connections takes about 20 ms on
+  three cores; the simulation redoes it once a second, or less often if it takes longer.
 
 **The genome view** (Genome in a creature's inspector) lists every gene of the creature: its body
 (size, torso, spine and each of the six limb genes, including the ones switched off), its

@@ -232,7 +232,7 @@ fn watching(ui: &mut egui::Ui) {
     bullet(ui, "Genome: every gene, what it does, and where it sits in its possible range.");
     bullet(ui, "Feed, Kill and Remove are acts of god, and they look it: feeding is a blessing (a shaft of golden light, a glow, a choir), killing a smite (lightning out of a clear sky, then fire), removing takes the creature up in a shaft of white light.");
     bullet(ui, "Blessing of heaven (in the creature's inspector, on and off): it glows gold and can't die (whatever would kill it leaves it at half its energy and health; Kill lifts the blessing first), and every simulated hour (heaven_mutation_interval) it's remade where it stands from a mutated copy of its genome, a new body and brain, the same creature otherwise.");
-    bullet(ui, "Brain view: the network live. The Network tab draws the strongest connections, orange exciting and blue inhibiting; the Neural tab draws the same brain as nerve cells with spikes running down axons to the muscles.");
+    bullet(ui, "Brain view: the network live. The Network tab draws the strongest connections, orange exciting and blue inhibiting; the Neural tab draws the same brain as nerve cells with spikes running down axons to the muscles; the 3D tab shows every neuron it has, in a brain you can turn (drag) and zoom (scroll), with up to 100,000 of its strongest connections. Sliders set how many neurons and connections each tab shows.");
     sub(ui, "Leaders and species");
     para(ui, "The right panel names who's ahead now (top score, oldest, most evolved, biggest brain, fastest, farthest travelled, biggest eater, most children, best hunter, heaviest, best swimmer) and lists the species. Click any of them to follow it.");
     sub(ui, "Recording");
