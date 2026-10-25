@@ -602,10 +602,11 @@ fn tissue(l: &Layout, id: u64) -> Vec<Shape> {
         shapes.push(Shape::line(pts[2.min(pts.len() - 1)..].to_vec(), Stroke::new(w, axon(85))));
     }
     for n in &l.neurons {
+        // Once a neuron, not once a synapse: with thousands of each, that's millions of looks.
+        let trunk = l.trunks.iter().find(|t| n.out.first().is_some_and(|&f| l.synapses[f].axon == t.0)).map_or(0, |t| t.1);
         for &j in &n.out {
             let syn = &l.synapses[j];
             let path = &l.paths[syn.axon];
-            let trunk = l.trunks.iter().find(|t| n.out.first().is_some_and(|&f| l.synapses[f].axon == t.0)).map_or(0, |t| t.1);
             let pts = path.pts[trunk.saturating_sub(1)..].to_vec();
             shapes.push(Shape::line(pts, Stroke::new(0.35 + 1.2 * syn.weight.abs(), axon(52))));
         }

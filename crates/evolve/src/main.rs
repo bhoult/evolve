@@ -2,6 +2,7 @@
 //! draws it with Bevy on the GPU and lets the user poke at it.
 
 mod audio;
+mod brain3d;
 mod camera;
 mod director;
 mod env;

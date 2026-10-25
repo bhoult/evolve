@@ -17,7 +17,7 @@ use crate::sim::Sim;
 use crate::snapshot::{Highlight, HighlightKind, Snapshot};
 use crate::stats::{GenePool, Sample};
 use crate::terrain::Terrain;
-use crate::wiring::Wiring;
+use crate::wiring::{SketchLimits, Wiring};
 
 pub enum Control {
     Sim(Command),
@@ -41,6 +41,9 @@ pub enum Control {
     ZooKeepBest(usize),
     /// A question from the MCP server (see `mcp`) for world `world` (0 is this one).
     Ask { world: usize, ask: crate::mcp::Ask, reply: crate::mcp::Reply },
+    /// How much of the selected creature's brain the brain view wants sketched; None while it's
+    /// closed, so a big sketch costs nothing when nobody's looking.
+    BrainView(Option<SketchLimits>),
     Quit,
 }
 
@@ -207,7 +210,9 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     let mut cpu_mark = (Instant::now(), crate::process_cpu_seconds().unwrap_or(0.0));
     let mut events: Vec<String> = Vec::new();
     let mut highlights: Arc<Vec<Highlight>> = Arc::default();
-    let mut wiring: Option<(Arc<Wiring>, Instant)> = None;
+    // The brain sketch: what it was made to, when, and how long it took.
+    let mut wiring: Option<(Arc<Wiring>, SketchLimits, Instant, Duration)> = None;
+    let mut brain_view: Option<SketchLimits> = None;
     let mut caches = Caches::new(&sim);
     let mut step_once = false;
     let mut board: Board = Arc::new(Mutex::new(GenePool::default()));
@@ -256,6 +261,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     workers.iter().for_each(|w| w.send(WorkerCtl::Speed(speed)));
                 }
                 Ok(Control::StepOnce) => step_once = true,
+                Ok(Control::BrainView(limits)) => brain_view = limits,
                 Ok(Control::Save(path)) => {
                     shared.busy(Some("Saving the world"));
                     match save::save(&mut sim, &path) {
@@ -579,17 +585,28 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             let mut snap = sim.snapshot(caches.terrain.clone(), caches.history.clone());
             let ms = publish.elapsed().as_secs_f32() * 1000.0;
             sim.perf.publish_ms += (ms - sim.perf.publish_ms) * 0.05;
-            // The brain sketch is a little work for a big brain, so it's redone once a second.
-            if let Some(sel) = snap.selected.as_mut() {
-                let stale = wiring.as_ref().is_none_or(|(w, at): &(Arc<Wiring>, Instant)| {
-                    w.creature != sel.id || at.elapsed() > Duration::from_secs(1)
+            // The brain sketch is redone once a second while the brain view is open (learning
+            // moves the weights), and at once for another creature. Every neuron and 100,000
+            // connections of a big brain hold the world up a while, so a sketch is never
+            // redone sooner than ten times as long as it took (and new limits from a slider
+            // being dragged wait a moment).
+            if let Some(limits) = brain_view
+                && let Some(sel) = snap.selected.as_mut()
+            {
+                let stale = wiring.as_ref().is_none_or(|(w, made_to, at, took)| {
+                    let every = if *made_to == limits { Duration::from_secs(1) } else { Duration::from_millis(200) };
+                    w.creature != sel.id || at.elapsed() > every.max(*took * 10)
                 });
                 if stale && let Some(c) = sim.creature(sel.id) {
-                    wiring = Some((Arc::new(crate::wiring::sketch(c)), Instant::now()));
+                    let start = Instant::now();
+                    let w = pool.install(|| crate::wiring::sketch(c, limits));
+                    wiring = Some((Arc::new(w), limits, Instant::now(), start.elapsed()));
                 }
-                if let Some((w, _)) = &wiring {
+                if let Some((w, ..)) = &wiring {
                     sel.wiring = w.clone();
                 }
+            } else {
+                wiring = None;
             }
             snap.paused = paused;
             snap.speed = speed;
