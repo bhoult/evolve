@@ -475,9 +475,14 @@ impl Sim {
             return;
         }
         self.settled_at = self.time;
+        // Timed, and a settling over a tenth of a second says where it went (it showed as pauses).
+        let started = std::time::Instant::now();
+        let area: usize = self.terrain.dirty.iter().map(|&(i0, i1, j0, j1)| (i1 + 1 - i0) * (j1 + 1 - j0)).sum();
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
         // Steep loose earth slides first; what's still sliding goes on next time.
         let p = &self.params;
         self.terrain.slump(p.slump_angle, p.dig_depth, p.pile_height, 24);
+        let slumped = ms(started);
         let patches = self.terrain.take_dirty();
         let worn = std::mem::take(&mut self.terrain.worn_tiles);
         // Only where earth is still sliding goes on next time (carrying every patch over while
@@ -494,12 +499,14 @@ impl Sim {
             .collect();
         tiles.sort_unstable();
         tiles.dedup();
+        let wanted = tiles.len();
         // At most `TILES_PER_SETTLE` rebuilt at a time; the rest wait for the next settling (half
         // a simulated second), so a burst of healing or erosion doesn't stall one step.
         if tiles.len() > TILES_PER_SETTLE {
             let n = self.terrain.tiles();
             self.terrain.worn_tiles.extend(tiles.drain(TILES_PER_SETTLE..).map(|(ti, tj)| ti * n + tj));
         }
+        let rebuilding = std::time::Instant::now();
         for (ti, tj) in tiles {
             let (_, shape) = self.terrain.tile_shape(ti, tj);
             for shard in &mut self.shards {
@@ -508,6 +515,7 @@ impl Sim {
                 }
             }
         }
+        let rebuilt = ms(rebuilding);
         let (n, size) = ((self.terrain.res - 1) as f32, self.terrain.size);
         let at = |k: usize| (k as f32 / n - 0.5) * size;
         let areas: Vec<(f32, f32, f32, f32)> =
@@ -575,6 +583,17 @@ impl Sim {
             if buried > 0.0 {
                 self.translate_creature(ci, Vec3::Y * buried);
             }
+        }
+        let took = ms(started);
+        if took > 100.0 {
+            eprintln!(
+                "evolve: settling took {took:.0} ms: slumping {slumped:.0} ms over {} patches ({:.1}M points), \
+                 ground tiles {rebuilt:.0} ms ({} of {wanted} wanted), the rest {:.0} ms",
+                patches.len(),
+                area as f32 / 1e6,
+                wanted.min(TILES_PER_SETTLE),
+                took - slumped - rebuilt
+            );
         }
     }
 
