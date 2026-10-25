@@ -36,6 +36,13 @@ pub enum Ask {
     /// How many background worlds are running (answered by the runner).
     Worlds,
     SetParam { name: String, value: String },
+    /// Several at once: all are checked before any is set (answered by the runner).
+    SetParams(Vec<(String, String)>),
+    /// Rebuild the landscape of the world on screen from the current settings, keeping all life.
+    RegenerateTerrain,
+    /// Start the world on screen over with the current settings (and restart the background
+    /// worlds), as the New world button does.
+    NewWorld,
     Save(PathBuf),
 }
 
@@ -56,7 +63,9 @@ impl Sim {
             Ask::Creature { id } => self.creature_details(id),
             Ask::Watch { id, seconds } => return self.watch(id, seconds, reply),
             Ask::Params { filter } => Ok(self.params_text(&filter)),
-            Ask::Worlds | Ask::SetParam { .. } | Ask::Save(_) => Err("the runner answers that".into()),
+            Ask::Worlds | Ask::SetParam { .. } | Ask::SetParams(_) | Ask::RegenerateTerrain | Ask::NewWorld | Ask::Save(_) => {
+                Err("the runner answers that".into())
+            }
         };
         let _ = reply.send(text);
     }
@@ -340,6 +349,23 @@ fn tools(pictures: bool) -> Value {
             }, "required": ["name", "value"]},
         }),
         json!({
+            "name": "set_params",
+            "description": "Changes several parameters in every world at once, e.g. {\"values\": {\"min_population\": 300, \"rain_from_zoo\": 0.4}}. All are checked before any is set. Ones that shape a new world (island, terrain_resolution...) take effect with regenerate_terrain or new_world.",
+            "inputSchema": {"type": "object", "properties": {
+                "values": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+            }, "required": ["values"]},
+        }),
+        json!({
+            "name": "regenerate_terrain",
+            "description": "Rebuilds the landscape of the world on screen from the current settings (world_size, terrain_resolution, island shape...), keeping every creature, as the Regenerate terrain button does. Large terrains take a while and run slowly: every doubling of terrain_resolution is four times the cells.",
+            "inputSchema": {"type": "object", "properties": {}},
+        }),
+        json!({
+            "name": "new_world",
+            "description": "Discards the world on screen and starts over with the current settings, seeded from the zoo, and restarts the background worlds, as the New world button does. Save it first (save_world) to keep it.",
+            "inputSchema": {"type": "object", "properties": {"confirm": {"type": "boolean", "description": "must be true"}}, "required": ["confirm"]},
+        }),
+        json!({
             "name": "save_world",
             "description": "Saves the world on screen to a new .evo file (it won't overwrite one), e.g. to study it offline with the diagnostic tests.",
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "absolute path ending in .evo"}}, "required": ["path"]},
@@ -405,6 +431,25 @@ fn call(name: &str, args: &Value, runner: &Sender<Control>, shots: Option<&Sende
                 _ => return Err("value is required".into()),
             };
             ask(runner, 0, Ask::SetParam { name, value }).map(text)
+        }
+        "set_params" => {
+            let values = args.get("values").and_then(Value::as_object).ok_or("values is required: an object of name: value")?;
+            let pairs = values
+                .iter()
+                .map(|(k, v)| match v {
+                    Value::String(s) => Ok((k.clone(), s.clone())),
+                    Value::Number(_) | Value::Bool(_) => Ok((k.clone(), v.to_string())),
+                    _ => Err(format!("{k}: give a number, true/false or text")),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            ask(runner, 0, Ask::SetParams(pairs)).map(text)
+        }
+        "regenerate_terrain" => ask(runner, 0, Ask::RegenerateTerrain).map(text),
+        "new_world" => {
+            if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+                return Err("new_world discards the world on screen; pass confirm: true".into());
+            }
+            ask(runner, 0, Ask::NewWorld).map(text)
         }
         "save_world" => {
             let path = PathBuf::from(args.get("path").and_then(Value::as_str).ok_or("path is required")?);

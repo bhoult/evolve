@@ -192,6 +192,9 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         // Background worlds must exist before commands that target them are handled.
         sync_workers(&mut workers, &sim, speed, paused, &board, &zoo);
         let mut reset_islands = false;
+        // A new world asked for (by the New world button or the MCP server), started once the
+        // messages are read.
+        let mut new_world: Option<Box<SimParams>> = None;
         // Zoo creatures bound for background worlds go out after a new or loaded world has
         // restarted them, so a drop sent alongside a new world isn't lost with the old workers.
         let mut worker_drops: Vec<(ZooTarget, Box<crate::genome::Genome>, u32, u32)> = Vec::new();
@@ -232,13 +235,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     }
                     Err(e) => sim.log(format!("Load failed: {e}")),
                 },
-                Ok(Control::NewWorld(p)) => {
-                    sim = Sim::new(*p);
-                    crate::zoo::seed_world(&zoo, &mut sim);
-                    caches = Caches::new(&sim);
-                    reset_islands = true;
-                    sim.log("New world");
-                }
+                Ok(Control::NewWorld(p)) => new_world = Some(p),
                 Ok(Control::ZooAdd(cid)) => {
                     if let Some(c) = sim.creature(cid) {
                         let score = sim.life_score(c);
@@ -327,6 +324,41 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                                 }
                             }
                         }
+                        Ask::SetParams(pairs) => {
+                            let mut p = sim.params.clone();
+                            match pairs.iter().try_for_each(|(k, v)| p.set_by_name(k, v)) {
+                                Ok(()) => {
+                                    for w in &workers {
+                                        w.send(WorkerCtl::Params(Box::new(p.clone())));
+                                    }
+                                    sim.apply(Command::SetParams(Box::new(p)));
+                                    let names: Vec<&str> = pairs.iter().map(|(k, _)| k.as_str()).collect();
+                                    sim.log(format!("{} set (by the MCP server)", names.join(", ")));
+                                    let now: String = names.iter().map(|k| sim.params_text(k)).collect();
+                                    let _ = reply.send(Ok(format!("now:\n{now}")));
+                                }
+                                Err(e) => {
+                                    let _ = reply.send(Err(format!("{e}; nothing was changed")));
+                                }
+                            }
+                        }
+                        Ask::RegenerateTerrain => {
+                            let started = Instant::now();
+                            sim.apply(Command::RegenerateTerrain);
+                            let t = &sim.terrain;
+                            let _ = reply.send(Ok(format!(
+                                "the world on screen has new terrain: {} x {} samples over {:.0} m ({:.2} m apart), made in {:.1} s",
+                                t.res,
+                                t.res,
+                                t.size,
+                                t.size / (t.res - 1) as f32,
+                                started.elapsed().as_secs_f32()
+                            )));
+                        }
+                        Ask::NewWorld => {
+                            new_world = Some(Box::new(sim.params.clone()));
+                            let _ = reply.send(Ok("starting a new world with the current settings".into()));
+                        }
                         Ask::Save(path) => {
                             let r = save::save(&mut sim, &path)
                                 .map(|bytes| format!("saved {} ({:.1} MB)", path.display(), bytes as f64 / 1e6));
@@ -348,6 +380,13 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 }
                 Err(TryRecvError::Empty) => break,
             }
+        }
+        if let Some(p) = new_world {
+            sim = Sim::new(*p);
+            crate::zoo::seed_world(&zoo, &mut sim);
+            caches = Caches::new(&sim);
+            reset_islands = true;
+            sim.log("New world");
         }
 
         // Background worlds: restart them for a new or loaded world, and match the param.
