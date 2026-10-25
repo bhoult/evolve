@@ -296,7 +296,13 @@ pub struct Grab {
 #[derive(Serialize, Deserialize)]
 pub struct Shard {
     pub world: PhysicsWorld,
-    pub terrain_collider: ColliderHandle,
+    /// The ground, in `Terrain::tiles` squared pieces, row by row.
+    #[serde(default)]
+    pub ground: Vec<ColliderHandle>,
+    /// The ground in one piece, as saves made before it was split have it (moved to `ground` on
+    /// loading).
+    #[serde(default, skip_serializing)]
+    pub terrain_collider: Option<ColliderHandle>,
     pub walls: Vec<ColliderHandle>,
     /// Tree trunks, by tree id: like the ground, every tree stands in every world.
     #[serde(default)]
@@ -556,6 +562,14 @@ impl Sim {
         for e in &mut self.pool.entries {
             e.genome.upgrade();
         }
+        // The ground as this version splits it (one piece in saves from before it was split).
+        let n = self.terrain.tiles();
+        if self.shards.iter().any(|s| s.ground.len() != n * n) {
+            let tiles = self.ground_tiles();
+            for shard in &mut self.shards {
+                Self::place_ground(&tiles, self.params.ground_friction, shard);
+            }
+        }
         self.rebuild_index();
         self.species = self.species_summary();
         self.perf = Perf::default();
@@ -689,16 +703,27 @@ impl Sim {
 
     /// A new physics world with the ground and walls in it.
     fn new_shard(&self) -> Shard {
-        let mut world = PhysicsWorld::new();
-        let terrain_collider = world.colliders.insert(
-            self.terrain
-                .collider()
-                .friction(self.params.ground_friction)
-                .user_data(Tag::Terrain.encode()),
-        );
-        let mut shard = Shard { world, terrain_collider, walls: Vec::new(), trunks: HashMap::new() };
+        let mut shard = Shard { world: PhysicsWorld::new(), ground: Vec::new(), terrain_collider: None, walls: Vec::new(), trunks: HashMap::new() };
+        Self::place_ground(&self.ground_tiles(), self.params.ground_friction, &mut shard);
         Self::build_walls(&self.terrain, &mut shard);
         shard
+    }
+
+    /// The pieces of the physics ground, row by row (see `Terrain::tile_shape`).
+    fn ground_tiles(&self) -> Vec<(Vec3, SharedShape)> {
+        let n = self.terrain.tiles();
+        (0..n * n).map(|k| self.terrain.tile_shape(k / n, k % n)).collect()
+    }
+
+    /// Puts the ground into a physics world, in place of what was there.
+    fn place_ground(tiles: &[(Vec3, SharedShape)], friction: f32, shard: &mut Shard) {
+        for h in std::mem::take(&mut shard.ground).into_iter().chain(shard.terrain_collider.take()) {
+            shard.world.remove_collider(h);
+        }
+        for (at, shape) in tiles {
+            let c = ColliderBuilder::new(shape.clone()).translation(*at).friction(friction).user_data(Tag::Terrain.encode());
+            shard.ground.push(shard.world.colliders.insert(c));
+        }
     }
 
     /// Matches the number of physics worlds to the `physics_shards` param, moving the creatures
@@ -766,8 +791,10 @@ impl Sim {
             world.integration_parameters.dt = DT;
             world.integration_parameters.num_solver_iterations = p.solver_iterations.max(1) as usize;
             world.integration_parameters.num_internal_pgs_iterations = p.solver_passes.max(1) as usize;
-            if let Some(c) = world.colliders.get_mut(shard.terrain_collider) {
-                c.set_friction(p.ground_friction);
+            for &h in &shard.ground {
+                if let Some(c) = world.colliders.get_mut(h) {
+                    c.set_friction(p.ground_friction);
+                }
             }
         }
         let friction_changed = old.is_none_or(|o| o.body_friction != p.body_friction);
@@ -869,15 +896,10 @@ impl Sim {
     /// Swaps in a new ground surface and the walls around it.
     pub fn install_terrain(&mut self, terrain: Terrain) {
         self.terrain = terrain;
-        // The same ground in every physics world (the heightfield shape is shared).
-        let shape = self.terrain.shape();
+        // The same ground in every physics world (the heightfield shapes are shared).
+        let tiles = self.ground_tiles();
         for shard in &mut self.shards {
-            shard.world.remove_collider(shard.terrain_collider);
-            shard.terrain_collider = shard.world.colliders.insert(
-                ColliderBuilder::new(shape.clone())
-                    .friction(self.params.ground_friction)
-                    .user_data(Tag::Terrain.encode()),
-            );
+            Self::place_ground(&tiles, self.params.ground_friction, shard);
             Self::build_walls(&self.terrain, shard);
         }
     }

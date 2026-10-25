@@ -96,7 +96,7 @@ fn bounce() {
                 .shards[0]
                 .world
                 .narrow_phase
-                .contact_pairs_with(sim.shards[0].terrain_collider)
+                .contact_pairs_with(sim.shards[0].ground[0])
                 .any(|pair| pair.has_any_active_contact());
             if !touching {
                 air += 1;

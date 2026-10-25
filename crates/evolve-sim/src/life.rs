@@ -380,11 +380,14 @@ impl Sim {
         if !settled {
             self.terrain.mark_dirty(i0, i1, j0, j1);
         }
-        // The same ground in every physics world.
-        let shape = self.terrain.shape();
-        for shard in &mut self.shards {
-            if let Some(col) = shard.world.colliders.get_mut(shard.terrain_collider) {
-                col.set_shape(shape.clone());
+        // The same ground in every physics world: the pieces of it that changed.
+        let n = self.terrain.tiles();
+        for (ti, tj) in self.terrain.tiles_over(i0, i1, j0, j1).collect::<Vec<_>>() {
+            let (_, shape) = self.terrain.tile_shape(ti, tj);
+            for shard in &mut self.shards {
+                if let Some(col) = shard.ground.get(ti * n + tj).and_then(|&h| shard.world.colliders.get_mut(h)) {
+                    col.set_shape(shape.clone());
+                }
             }
         }
         let (n, size) = ((self.terrain.res - 1) as f32, self.terrain.size);

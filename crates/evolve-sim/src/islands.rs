@@ -173,6 +173,10 @@ fn island_params(index: usize, p: &SimParams) -> SimParams {
     let share = p.background_population.clamp(0.05, 1.0);
     p.min_population = ((p.min_population as f32 * share).round() as u32).max(p.min_population.min(4));
     p.max_population = ((p.max_population as f32 * share).round() as u32).max(p.min_population);
+    // Nobody looks at a background world's ground: no finer than the water is worked out at (a
+    // 5000-a-side terrain each, 25 million points, nearly ran the app out of memory).
+    let finest = (p.world_size / crate::hydro::HYDRO_CELL).ceil() as u32 + 1;
+    p.terrain_resolution = p.terrain_resolution.min(finest);
     p
 }
 

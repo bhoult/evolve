@@ -54,7 +54,17 @@ pub struct Terrain {
     pub dirty: Option<(usize, usize, usize, usize)>,
     /// Bumped whenever the shape changes so renderers know to rebuild.
     pub version: u64,
+    /// On a terrain finer than `hydro::HYDRO_CELL`, the grid the water is worked out on (its
+    /// lakes stay there between updates; see `hydro::update`). Rebuilt from this one when lost.
+    #[serde(skip)]
+    pub coarse: Option<Box<Terrain>>,
 }
+
+/// Cells along a side of each piece the physics ground is split into, on a terrain wider than
+/// that. Reshaping the ground (digging, slumps, erosion) rebuilds only the pieces it touched:
+/// rebuilding one heightfield of 25 million points in every physics world, up to twice a
+/// simulated second, stalled big worlds.
+pub const GROUND_TILE: usize = 512;
 
 /// A placeholder 2x2 flat terrain, used before the first real snapshot arrives.
 impl Default for Terrain {
@@ -74,6 +84,7 @@ impl Default for Terrain {
             spring_reach: Default::default(),
             dirty: None,
             version: 0,
+            coarse: None,
         }
     }
 }
@@ -130,6 +141,7 @@ impl Terrain {
             spring_reach: Default::default(),
             version,
             dirty: None,
+            coarse: None,
         }
     }
 
@@ -155,6 +167,65 @@ impl Terrain {
     /// How trampled a grid point looks and feels, 0 (untouched) to 1 (a bare path).
     pub fn worn(&self, k: usize) -> f32 {
         1.0 - (-self.wear.get(k).copied().unwrap_or(0.0) / WEAR_SCALE).exp()
+    }
+
+    /// A layer of this grid (`heights`, `water`...) at a spot, interpolated over its cell, and the
+    /// largest of the cell's four corners.
+    pub fn sample(&self, layer: &[f32], x: f32, z: f32) -> (f32, f32) {
+        let (i, j, fx, fz) = self.cell_coords(x, z);
+        let r = self.res;
+        let (a, b) = (layer[i * r + j], layer[i * r + j + 1]);
+        let (c, d) = (layer[(i + 1) * r + j], layer[(i + 1) * r + j + 1]);
+        let v = (a * (1.0 - fx) + b * fx) * (1.0 - fz) + (c * (1.0 - fx) + d * fx) * fz;
+        (v, a.max(b).max(c).max(d))
+    }
+
+    /// Where grid point `k` is, (x, z).
+    pub fn point(&self, k: usize) -> (f32, f32) {
+        let c = self.cell();
+        ((k % self.res) as f32 * c - self.half(), (k / self.res) as f32 * c - self.half())
+    }
+
+    /// The grid point nearest a spot.
+    pub fn nearest(&self, x: f32, z: f32) -> usize {
+        let n = (self.res - 1) as f32;
+        let j = ((x / self.size + 0.5) * n).round().clamp(0.0, n) as usize;
+        let i = ((z / self.size + 0.5) * n).round().clamp(0.0, n) as usize;
+        i * self.res + j
+    }
+
+    /// This terrain sampled onto a coarser grid of `res` a side over the same ground: every layer
+    /// but fertility, and the springs at their nearest points.
+    pub fn resampled(&self, res: usize) -> Terrain {
+        let mut t = Terrain { size: self.size, res, ..Terrain::default() };
+        let n = res * res;
+        let points: Vec<(f32, f32)> = (0..n).map(|k| t.point(k)).collect();
+        let layer = |src: &[f32]| points.iter().map(|&(x, z)| self.sample(src, x, z).0).collect::<Vec<f32>>();
+        t.heights = layer(&self.heights);
+        t.ground = layer(&self.ground);
+        t.eroded = layer(&self.eroded);
+        t.wear = layer(&self.wear);
+        t.water = layer(&self.water);
+        t.pooled = layer(&self.pooled);
+        t.moisture = layer(&self.moisture);
+        t.fertility = vec![0.0; n];
+        t.springs = self.springs_on(&t);
+        t
+    }
+
+    /// This grid's springs at their nearest points of another grid over the same ground.
+    pub fn springs_on(&self, other: &Terrain) -> Vec<u32> {
+        let mut s: Vec<u32> = self
+            .springs
+            .iter()
+            .map(|&k| {
+                let (x, z) = self.point(k as usize);
+                other.nearest(x, z) as u32
+            })
+            .collect();
+        s.sort_unstable();
+        s.dedup();
+        s
     }
 
     /// Water on the ground at a spot, m deep (streams, ponds, puddles; not the sea).
@@ -394,6 +465,33 @@ impl Terrain {
         let h = &self.heights;
         let arr = Array2::from_fn(res, res, |i, j| h[i * res + j]);
         SharedShape::heightfield(arr, Vec3::new(self.size, 1.0, self.size))
+    }
+
+    /// How many pieces the physics ground is split into along each side (see `GROUND_TILE`).
+    pub fn tiles(&self) -> usize {
+        (self.res - 1).div_ceil(GROUND_TILE)
+    }
+
+    /// Piece (ti, tj) of the physics surface: a heightfield over grid rows ti*GROUND_TILE to
+    /// (ti+1)*GROUND_TILE and the same columns (neighbours share their edge), and where its
+    /// center sits. A terrain of one piece gets exactly `shape()`.
+    pub fn tile_shape(&self, ti: usize, tj: usize) -> (Vec3, SharedShape) {
+        let n = self.res - 1;
+        let (i0, j0) = (ti * GROUND_TILE, tj * GROUND_TILE);
+        let (i1, j1) = ((i0 + GROUND_TILE).min(n), (j0 + GROUND_TILE).min(n));
+        let (res, h, c) = (self.res, &self.heights, self.cell());
+        let arr = Array2::from_fn(i1 - i0 + 1, j1 - j0 + 1, |a, b| h[(i0 + a) * res + j0 + b]);
+        let (w, d) = ((j1 - j0) as f32 * c, (i1 - i0) as f32 * c);
+        let center = Vec3::new(j0 as f32 * c - self.half() + w * 0.5, 0.0, i0 as f32 * c - self.half() + d * 0.5);
+        (center, SharedShape::heightfield(arr, Vec3::new(w, 1.0, d)))
+    }
+
+    /// The pieces of the physics ground that grid rows i0..=i1 and columns j0..=j1 lie in.
+    pub fn tiles_over(&self, i0: usize, i1: usize, j0: usize, j1: usize) -> impl Iterator<Item = (usize, usize)> {
+        let last = self.tiles() - 1;
+        let span = |a: usize, b: usize| (a.saturating_sub(1) / GROUND_TILE).min(last)..=(b / GROUND_TILE).min(last);
+        let cols = span(j0, j1);
+        span(i0, i1).flat_map(move |ti| cols.clone().map(move |tj| (ti, tj)))
     }
 
     fn cell_coords(&self, x: f32, z: f32) -> (usize, usize, f32, f32) {

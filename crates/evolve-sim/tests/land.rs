@@ -454,3 +454,69 @@ fn dug_ground_weathers_back() {
     assert!((0..n * n).all(|k| t.disturbance(k) == 0.0), "healed ground isn't dug any more");
     assert!(!t.heal(3600.0, 3600.0), "and there's nothing left to heal");
 }
+
+/// On a terrain finer than `HYDRO_CELL` the water is worked out on a coarse grid and spread back:
+/// the same island at four times the resolution gets about the same lakes and wet ground, and the
+/// update costs about what the coarse grid's does, not sixteen times more.
+#[test]
+fn a_fine_terrain_gets_the_same_water_from_a_coarse_grid() {
+    // 120 m at 121 a side is 1 m apart, the coarsest the water is worked out at; 481 is 0.25 m.
+    let base = SimParams { world_size: 120.0, terrain_resolution: 121, ..SimParams::default() };
+    let fine_p = SimParams { terrain_resolution: 481, ..base.clone() };
+    let mut coarse = Terrain::generate(&base, 1);
+    let mut fine = Terrain::generate(&fine_p, 1);
+    let time = |t: &mut Terrain, p: &SimParams| {
+        let start = std::time::Instant::now();
+        for _ in 0..40 {
+            hydro::update(t, p, 1.0, 1.0, 30.0, None);
+        }
+        start.elapsed().as_secs_f32()
+    };
+    let (tc, tf) = (time(&mut coarse, &base), time(&mut fine, &fine_p));
+    assert!(fine.coarse.as_ref().is_some_and(|c| c.res == 121), "worked out on a 121 grid");
+    let wet = |t: &Terrain| {
+        let land = (0..t.heights.len()).filter(|&k| t.heights[k] > base.water_level).count();
+        (0..t.heights.len()).filter(|&k| t.heights[k] > base.water_level && t.water[k] > 0.05).count() as f32 / land as f32
+    };
+    let (wc, wf) = (wet(&coarse), wet(&fine));
+    assert!(wc > 0.0 && (wf - wc).abs() < 0.35 * wc + 0.005, "wet share of the land: {wf:.4} fine vs {wc:.4} coarse");
+    let lakes = |t: &Terrain| t.pooled.iter().sum::<f32>() * t.cell() * t.cell();
+    let (lc, lf) = (lakes(&coarse), lakes(&fine));
+    assert!((lf - lc).abs() <= 0.35 * lc + 1.0, "lake volume {lf:.0} m³ fine vs {lc:.0} m³ coarse");
+    // 16 times the points; spreading the water back is all that grows with them.
+    assert!(tf < 6.0 * tc + 0.5, "{tf:.2} s fine vs {tc:.2} s coarse");
+}
+
+/// A terrain wider than `GROUND_TILE` has its physics ground in pieces: a stone dropped where four
+/// pieces meet rests on the ground, and reshaping the land rebuilds only the pieces it touched.
+#[test]
+fn a_big_terrain_has_its_physics_ground_in_pieces() {
+    use evolve_sim::sim::ObstacleShape;
+    // 1025 a side is two pieces of 512 cells each way; they meet in the middle (x = z = 0).
+    let p = SimParams { world_size: 120.0, terrain_resolution: 1025, stones: 0, plant_max_count: 0, plant_spawn_rate: 0.0, ..quiet_params() };
+    let mut sim = Sim::new(p);
+    assert_eq!(sim.terrain.tiles(), 2);
+    assert!(sim.shards.iter().all(|s| s.ground.len() == 4));
+    let at = evolve_sim::math::Vec3::new(0.0, 0.0, 0.0);
+    let stone = sim.add_obstacle(at, ObstacleShape::Box { half: [0.3, 0.3, 0.3] }, true, 0.0);
+    for _ in 0..180 {
+        sim.step();
+    }
+    let o = sim.obstacles.iter().find(|o| o.id == stone).unwrap();
+    let t = sim.shards[o.shard].world.bodies[o.body].translation();
+    let ground = sim.terrain.height_at(t.x, t.z);
+    assert!(t.y > ground && t.y < ground + 1.0, "the stone sits on the ground: {} over ground at {ground}, at ({}, {})", t.y, t.x, t.z);
+    assert!(t.x.abs() < 1.0 && t.z.abs() < 1.0, "where the pieces meet: ({}, {})", t.x, t.z);
+    // Raise the land well inside one piece: only that piece is rebuilt.
+    let shapes = |sim: &Sim| -> Vec<usize> {
+        sim.shards[0].ground.iter().map(|&h| std::sync::Arc::as_ptr(&sim.shards[0].world.colliders[h].shared_shape().0) as *const u8 as usize).collect()
+    };
+    let before = shapes(&sim);
+    sim.apply(Command::Terraform { at: [-30.0, 0.0, -30.0], radius: 3.0, amount: 1.0 });
+    for _ in 0..60 {
+        sim.step();
+    }
+    let after = shapes(&sim);
+    let changed: Vec<usize> = (0..4).filter(|&k| before[k] != after[k]).collect();
+    assert_eq!(changed, vec![0], "only the piece that was raised");
+}

@@ -16,6 +16,8 @@
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
+use rayon::prelude::*;
+
 use crate::params::SimParams;
 use crate::terrain::Terrain;
 
@@ -131,7 +133,86 @@ pub struct Budget {
 
 /// Moves the water and soil on for `dt` seconds of `rain` (0 to 1) after a spell whose
 /// `soak` (recent rain, 0 to 1) is given. With `erode`, also wears channels for that long.
+/// The finest spacing the water is worked out at, m. On a finer terrain, drainage, lakes,
+/// streams and erosion run on a grid this coarse (kept in `Terrain::coarse`, so its lakes stay
+/// put), and the water, soil moisture and erosion are spread back over the fine grid. Water needs
+/// no finer detail, and a priority flood over the 25 million points of a 5000-a-side terrain
+/// every two simulated seconds held the world to about a tenth of real time.
+pub const HYDRO_CELL: f32 = 1.0;
+
+/// Rain on the land for `dt` seconds (see the module docs), on a grid no finer than `HYDRO_CELL`.
 pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, erode: Option<f32>) -> Budget {
+    t.ensure_layers();
+    let stride = (HYDRO_CELL / t.cell()).ceil() as usize;
+    if stride <= 1 {
+        t.coarse = None;
+        return update_grid(t, p, rain, soak, dt, erode);
+    }
+    let res = (t.res - 1).div_ceil(stride) + 1;
+    // The coarse grid keeps its water between updates; its ground is taken afresh from the fine
+    // one, which creatures dig and pile.
+    let mut c = match t.coarse.take() {
+        Some(c) if c.res == res && c.size == t.size => c,
+        _ => Box::new(t.resampled(res)),
+    };
+    {
+        let fine = &*t;
+        let points: Vec<(f32, f32)> = (0..res * res).map(|k| c.point(k)).collect();
+        let sample = |src: &[f32]| points.par_iter().map(|&(x, z)| fine.sample(src, x, z).0).collect::<Vec<f32>>();
+        c.heights = sample(&fine.heights);
+        c.ground = sample(&fine.ground);
+        c.eroded = sample(&fine.eroded);
+        c.wear = sample(&fine.wear);
+        c.springs = fine.springs_on(&c);
+    }
+    let (heights, eroded) = (c.heights.clone(), c.eroded.clone());
+    let budget = update_grid(&mut c, p, rain, soak, dt, erode);
+
+    // Back onto the fine grid. Water lies at the level the coarse grid has it (a lake's surface
+    // is flat however bumpy its bed), wherever the coarse grid has any in the cell.
+    let n = t.res;
+    let surface: Vec<f32> = c.heights.iter().zip(&c.water).map(|(h, w)| h + w).collect();
+    let pool_surface: Vec<f32> = c.heights.iter().zip(&c.pooled).map(|(h, w)| h + w).collect();
+    let dh: Vec<f32> = c.heights.iter().zip(&heights).map(|(a, b)| a - b).collect();
+    let de: Vec<f32> = c.eroded.iter().zip(&eroded).map(|(a, b)| a - b).collect();
+    let reshaped = budget.reshaped;
+    let recover = (-dt * std::f32::consts::LN_2 / (p.wear_recovery.max(0.01) * 60.0)).exp();
+    let cr = &*c;
+    let cell = t.cell();
+    let half = t.half();
+    let Terrain { heights: th, eroded: te, water: tw, pooled: tp, moisture: tm, wear: twr, .. } = t;
+    th.par_chunks_mut(n)
+        .zip(te.par_chunks_mut(n))
+        .zip(tw.par_chunks_mut(n))
+        .zip(tp.par_chunks_mut(n))
+        .zip(tm.par_chunks_mut(n))
+        .zip(twr.par_chunks_mut(n))
+        .enumerate()
+        .for_each(|(i, (((((h, e), w), pl), m), wr))| {
+            let z = i as f32 * cell - half;
+            for j in 0..n {
+                let x = j as f32 * cell - half;
+                if reshaped {
+                    h[j] += cr.sample(&dh, x, z).0;
+                    e[j] += cr.sample(&de, x, z).0;
+                }
+                let (s, any) = cr.sample(&cr.water, x, z);
+                w[j] = if any > 0.0 { (cr.sample(&surface, x, z).0 - h[j]).max(0.0).min(s.max(any)) } else { 0.0 };
+                let (_, pooled) = cr.sample(&cr.pooled, x, z);
+                pl[j] = if pooled > 0.0 { (cr.sample(&pool_surface, x, z).0 - h[j]).max(0.0) } else { 0.0 };
+                m[j] = cr.sample(&cr.moisture, x, z).0;
+                wr[j] *= recover;
+            }
+        });
+    if reshaped {
+        t.mark_dirty(0, n - 1, 0, n - 1);
+    }
+    t.coarse = Some(c);
+    t.version += 1;
+    budget
+}
+
+fn update_grid(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, erode: Option<f32>) -> Budget {
     t.ensure_layers();
     let (n, wl) = (t.res, p.water_level);
     let count = n * n;
