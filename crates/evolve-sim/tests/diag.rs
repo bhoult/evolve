@@ -812,6 +812,102 @@ fn census() {
     println!("\n{}", sim.report(secs as f64));
 }
 
+/// Whether creatures sink into the ground: every few steps, how far each creature's parts sit
+/// below the terrain surface, and how the deepest ones end. Same world settings as `census`
+/// (EVOLVE_DIAG_SAVE, SEED, SET, SECS).
+/// `EVOLVE_CPU_BRAINS=1 cargo test --release --test diag sinking -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn sinking() {
+    let env = |k: &str, d: f32| std::env::var(k).ok().and_then(|s| s.parse().ok()).unwrap_or(d);
+    let set = |p: &mut SimParams| {
+        for kv in std::env::var("EVOLVE_DIAG_SET").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+            let (k, v) = kv.split_once('=').expect("EVOLVE_DIAG_SET takes name=value pairs");
+            p.set_by_name(k.trim(), v.trim()).unwrap();
+        }
+    };
+    let mut sim = match std::env::var("EVOLVE_DIAG_SAVE") {
+        Ok(path) => {
+            let mut sim = evolve_sim::save::load(path.as_ref()).unwrap();
+            let mut p = sim.params.clone();
+            set(&mut p);
+            sim.set_params(p);
+            sim
+        }
+        Err(_) => {
+            let mut p = SimParams { seed: env("EVOLVE_DIAG_SEED", 1.0) as u64, ..SimParams::default() };
+            set(&mut p);
+            Sim::new(p)
+        }
+    };
+    let tps = evolve_sim::sim::TICKS_PER_SECOND as usize;
+    let secs = env("EVOLVE_DIAG_SECS", 120.0) as usize;
+    // Deepest a creature's part centers ever went below the ground, and the torso's, by id.
+    let mut deepest: std::collections::HashMap<u64, (f32, f32)> = Default::default();
+    let mut samples = 0u64;
+    let mut under = [0u64; 4];
+    let mut shown = 0;
+    let glitches0 = sim.stats.deaths_other;
+    for step in 0..secs * tps {
+        sim.step();
+        if step % 6 != 0 {
+            continue;
+        }
+        for c in sim.creatures.iter().filter(|c| c.dead.is_none()) {
+            let world = sim.world_of(c);
+            let mut worst = f32::MIN;
+            let mut torso = 0.0;
+            for (k, q) in c.parts.iter().enumerate() {
+                let Some(b) = world.bodies.get(q.body) else { continue };
+                let t = b.translation();
+                let d = sim.terrain.height_at(t.x, t.z) - t.y;
+                worst = worst.max(d);
+                if k == 0 {
+                    torso = d;
+                }
+            }
+            samples += 1;
+            for (i, lim) in [0.0, 0.25, 0.5, 1.0].iter().enumerate() {
+                if worst > *lim {
+                    under[i] += 1;
+                }
+            }
+            let e = deepest.entry(c.id).or_insert((f32::MIN, f32::MIN));
+            e.0 = e.0.max(worst);
+            e.1 = e.1.max(torso);
+            if torso > 0.5 && shown < 15 {
+                shown += 1;
+                let t = world.bodies[c.parts[0].body].translation();
+                let v = world.bodies[c.parts[0].body].linvel();
+                println!(
+                    "t {:.1}s #{} torso {:.2} m under the ground at ({:.1}, {:.1}, {:.1}), ground {:.2}, velocity ({:.1}, {:.1}, {:.1}), age {:.0} s, in water {:.2}, {} kg",
+                    sim.time, c.id, torso, t.x, t.y, t.z, sim.terrain.height_at(t.x, t.z), v.x, v.y, v.z, c.age, c.in_water, c.mass as i32
+                );
+            }
+        }
+    }
+    let lives = deepest.len().max(1) as f32;
+    let deep = |lim: f32, torso: bool| deepest.values().filter(|d| if torso { d.1 > lim } else { d.0 > lim }).count();
+    println!(
+        "{} creature samples: some part's center under the ground {:.2}%, >0.25 m {:.3}%, >0.5 m {:.3}%, >1 m {:.4}%",
+        samples,
+        100.0 * under[0] as f64 / samples as f64,
+        100.0 * under[1] as f64 / samples as f64,
+        100.0 * under[2] as f64 / samples as f64,
+        100.0 * under[3] as f64 / samples as f64
+    );
+    println!(
+        "{} lives: a part ever >0.5 m under {:.2}%, >1 m {:.2}%; torso ever >0.5 m under {:.2}%, >1 m {:.2}%, >3 m {:.2}%; deaths as glitches {}",
+        deepest.len(),
+        100.0 * deep(0.5, false) as f32 / lives,
+        100.0 * deep(1.0, false) as f32 / lives,
+        100.0 * deep(0.5, true) as f32 / lives,
+        100.0 * deep(1.0, true) as f32 / lives,
+        100.0 * deep(3.0, true) as f32 / lives,
+        sim.stats.deaths_other - glitches0
+    );
+}
+
 /// How the best creatures of a zoo (EVOLVE_ZOO_DIR, any score version) move: the top
 /// EVOLVE_DIAG_TOP (5) are dropped into a fresh world, two copies each, settle for 20 s, and each is
 /// watched for EVOLVE_DIAG_SECS (15).
