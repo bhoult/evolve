@@ -2,11 +2,18 @@
 
 use crate::math::Vec3;
 
+/// The items are sorted by cell into one list (a counting sort), so building a grid allocates
+/// three vectors rather than one per cell: about a dozen grids are built every brain tick, and on
+/// an 800 m world each has 25,600 cells, which as a vector apiece cost most of a step.
 pub struct Grid {
     cell: f32,
     half: f32,
     n: usize,
-    cells: Vec<Vec<u32>>,
+    /// The items in cell c are `items[start[c]..start[c + 1]]`.
+    start: Vec<u32>,
+    items: Vec<u32>,
+    /// Items inserted one at a time since the last rebuild, with their cells.
+    extra: Vec<(u32, u32)>,
 }
 
 impl Grid {
@@ -16,7 +23,9 @@ impl Grid {
             cell,
             half: world_size * 0.5,
             n,
-            cells: vec![Vec::new(); n * n],
+            start: vec![0; n * n + 1],
+            items: Vec::new(),
+            extra: Vec::new(),
         }
     }
 
@@ -24,21 +33,39 @@ impl Grid {
         (((v + self.half) / self.cell).floor().max(0.0) as usize).min(self.n - 1)
     }
 
+    fn cell_of(&self, pos: Vec3) -> usize {
+        self.coord(pos.z) * self.n + self.coord(pos.x)
+    }
+
     pub fn clear(&mut self) {
-        for c in &mut self.cells {
-            c.clear();
-        }
+        self.start.fill(0);
+        self.items.clear();
+        self.extra.clear();
     }
 
     pub fn insert(&mut self, pos: Vec3, index: u32) {
-        let (i, j) = (self.coord(pos.z), self.coord(pos.x));
-        self.cells[i * self.n + j].push(index);
+        let c = self.cell_of(pos) as u32;
+        self.extra.push((c, index));
     }
 
     pub fn rebuild(&mut self, positions: impl Iterator<Item = Vec3>) {
-        self.clear();
-        for (k, p) in positions.enumerate() {
-            self.insert(p, k as u32);
+        let cells: Vec<u32> = positions.map(|p| self.cell_of(p) as u32).collect();
+        self.extra.clear();
+        // Count each cell's items, then where each cell's run starts, then place them.
+        self.start.fill(0);
+        for &c in &cells {
+            self.start[c as usize + 1] += 1;
+        }
+        for c in 1..self.start.len() {
+            self.start[c] += self.start[c - 1];
+        }
+        self.items.clear();
+        self.items.resize(cells.len(), 0);
+        let mut next = self.start.clone();
+        for (k, &c) in cells.iter().enumerate() {
+            let at = &mut next[c as usize];
+            self.items[*at as usize] = k as u32;
+            *at += 1;
         }
     }
 
@@ -49,10 +76,16 @@ impl Grid {
         let j0 = self.coord(pos.x - radius);
         let j1 = self.coord(pos.x + radius);
         for i in i0..=i1 {
-            for j in j0..=j1 {
-                for &k in &self.cells[i * self.n + j] {
-                    f(k);
-                }
+            let row = i * self.n;
+            let (a, b) = (self.start[row + j0] as usize, self.start[row + j1 + 1] as usize);
+            for &k in &self.items[a..b] {
+                f(k);
+            }
+        }
+        for &(c, k) in &self.extra {
+            let (i, j) = (c as usize / self.n, c as usize % self.n);
+            if (i0..=i1).contains(&i) && (j0..=j1).contains(&j) {
+                f(k);
             }
         }
     }

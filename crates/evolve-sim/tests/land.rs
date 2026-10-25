@@ -492,11 +492,11 @@ fn a_fine_terrain_gets_the_same_water_from_a_coarse_grid() {
 #[test]
 fn a_big_terrain_has_its_physics_ground_in_pieces() {
     use evolve_sim::sim::ObstacleShape;
-    // 1025 a side is two pieces of 512 cells each way; they meet in the middle (x = z = 0).
+    // 1025 a side is eight pieces of 128 cells each way; four meet in the middle (x = z = 0).
     let p = SimParams { world_size: 120.0, terrain_resolution: 1025, stones: 0, plant_max_count: 0, plant_spawn_rate: 0.0, ..quiet_params() };
     let mut sim = Sim::new(p);
-    assert_eq!(sim.terrain.tiles(), 2);
-    assert!(sim.shards.iter().all(|s| s.ground.len() == 4));
+    assert_eq!(sim.terrain.tiles(), 8);
+    assert!(sim.shards.iter().all(|s| s.ground.len() == 64));
     let at = evolve_sim::math::Vec3::new(0.0, 0.0, 0.0);
     let stone = sim.add_obstacle(at, ObstacleShape::Box { half: [0.3, 0.3, 0.3] }, true, 0.0);
     for _ in 0..180 {
@@ -507,7 +507,7 @@ fn a_big_terrain_has_its_physics_ground_in_pieces() {
     let ground = sim.terrain.height_at(t.x, t.z);
     assert!(t.y > ground && t.y < ground + 1.0, "the stone sits on the ground: {} over ground at {ground}, at ({}, {})", t.y, t.x, t.z);
     assert!(t.x.abs() < 1.0 && t.z.abs() < 1.0, "where the pieces meet: ({}, {})", t.x, t.z);
-    // Raise the land well inside one piece: only that piece is rebuilt.
+    // Raise a patch of land: only the pieces under it are rebuilt.
     let shapes = |sim: &Sim| -> Vec<usize> {
         sim.shards[0].ground.iter().map(|&h| std::sync::Arc::as_ptr(&sim.shards[0].world.colliders[h].shared_shape().0) as *const u8 as usize).collect()
     };
@@ -517,6 +517,8 @@ fn a_big_terrain_has_its_physics_ground_in_pieces() {
         sim.step();
     }
     let after = shapes(&sim);
-    let changed: Vec<usize> = (0..4).filter(|&k| before[k] != after[k]).collect();
-    assert_eq!(changed, vec![0], "only the piece that was raised");
+    let changed: Vec<usize> = (0..64).filter(|&k| before[k] != after[k]).collect();
+    // (-30, -30) is cell 256 each way, piece 2; 3 m around it reaches into pieces 1 and 2.
+    assert!(!changed.is_empty() && changed.len() <= 4, "pieces rebuilt: {changed:?}");
+    assert!(changed.iter().all(|&k| (1..=2).contains(&(k / 8)) && (1..=2).contains(&(k % 8))), "pieces rebuilt: {changed:?}");
 }

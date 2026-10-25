@@ -205,7 +205,27 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
             }
         });
     if reshaped {
-        t.mark_dirty(0, n - 1, 0, n - 1);
+        // The physics ground follows where the wear has added up (see `EROSION_REBUILD`).
+        let (tiles, cells) = (t.tiles(), t.tile_cells());
+        t.erosion_drift.resize(tiles * tiles, 0.0);
+        // This time's deepest wear in each piece, added up over the times (never less than the
+        // deepest a point has worn since).
+        let mut deepest = vec![0.0f32; tiles * tiles];
+        for (k, &d) in dh.iter().enumerate() {
+            if d != 0.0 {
+                let (x, z) = c.point(k);
+                let f = t.nearest(x, z);
+                let tile = ((f / n) / cells).min(tiles - 1) * tiles + ((f % n) / cells).min(tiles - 1);
+                deepest[tile] = deepest[tile].max(d.abs());
+            }
+        }
+        for (k, drift) in t.erosion_drift.iter_mut().enumerate() {
+            *drift += deepest[k];
+            if *drift > crate::terrain::EROSION_REBUILD {
+                *drift = 0.0;
+                t.worn_tiles.push(k);
+            }
+        }
     }
     t.coarse = Some(c);
     t.version += 1;

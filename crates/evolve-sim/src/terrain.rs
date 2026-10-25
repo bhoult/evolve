@@ -49,22 +49,36 @@ pub struct Terrain {
     /// How far down its path each spring's water has got, m (by grid point; see `hydro`).
     #[serde(default)]
     pub spring_reach: std::collections::HashMap<u32, f32>,
-    /// Grid rows and columns changed since the last `take_dirty` (i0, i1, j0, j1, inclusive).
+    /// Patches of the grid (rows i0..=i1, columns j0..=j1, inclusive) changed since the last
+    /// `take_dirty`, kept apart unless they nearly touch: one box around them all made creatures
+    /// digging at opposite ends of a big island settle and rebuild the whole island.
     #[serde(skip)]
-    pub dirty: Option<(usize, usize, usize, usize)>,
+    pub dirty: Vec<(usize, usize, usize, usize)>,
     /// Bumped whenever the shape changes so renderers know to rebuild.
     pub version: u64,
     /// On a terrain finer than `hydro::HYDRO_CELL`, the grid the water is worked out on (its
     /// lakes stay there between updates; see `hydro::update`). Rebuilt from this one when lost.
     #[serde(skip)]
     pub coarse: Option<Box<Terrain>>,
+    /// On a big terrain, how far erosion has worn each piece of the physics ground (row by row,
+    /// at its deepest, m) since it was last rebuilt, and the pieces to rebuild for it.
+    #[serde(skip)]
+    pub erosion_drift: Vec<f32>,
+    #[serde(skip)]
+    pub worn_tiles: Vec<usize>,
 }
 
 /// Cells along a side of each piece the physics ground is split into, on a terrain wider than
-/// that. Reshaping the ground (digging, slumps, erosion) rebuilds only the pieces it touched:
-/// rebuilding one heightfield of 25 million points in every physics world, up to twice a
-/// simulated second, stalled big worlds.
-pub const GROUND_TILE: usize = 512;
+/// `ONE_PIECE` cells. Reshaping the ground (digging, slumps, erosion) rebuilds only the pieces it
+/// touched: rebuilding one heightfield of 25 million points in every physics world, up to twice
+/// a simulated second, stalled big worlds, and pieces of 512 still took tens of ms each.
+pub const GROUND_TILE: usize = 128;
+/// The widest terrain (in cells) whose physics ground stays in one piece, as it always was.
+pub const ONE_PIECE: usize = 512;
+/// How far erosion may wear a piece of a big terrain's ground (m, at its deepest) before the
+/// physics ground there is rebuilt: physics needs no millimetres, and rebuilding every piece
+/// with a channel in it every 30 s stalled the world.
+pub const EROSION_REBUILD: f32 = 0.05;
 
 /// A placeholder 2x2 flat terrain, used before the first real snapshot arrives.
 impl Default for Terrain {
@@ -82,9 +96,11 @@ impl Default for Terrain {
             moisture: vec![0.0; 4],
             springs: Vec::new(),
             spring_reach: Default::default(),
-            dirty: None,
+            dirty: Vec::new(),
             version: 0,
             coarse: None,
+            erosion_drift: Vec::new(),
+            worn_tiles: Vec::new(),
         }
     }
 }
@@ -140,8 +156,10 @@ impl Terrain {
             springs: Vec::new(),
             spring_reach: Default::default(),
             version,
-            dirty: None,
+            dirty: Vec::new(),
             coarse: None,
+            erosion_drift: Vec::new(),
+            worn_tiles: Vec::new(),
         }
     }
 
@@ -296,12 +314,18 @@ impl Terrain {
     /// they are. Works outward from the region changed since the last `take_dirty`, at most
     /// `passes` sweeps, and marks what it moved as changed. Returns whether it settled.
     pub fn slump(&mut self, angle: f32, max_dig: f32, max_pile: f32, passes: usize) -> bool {
-        let Some((i0, i1, j0, j1)) = self.dirty else {
-            return true;
-        };
         if angle >= 90.0 || self.res < 2 {
             return true;
         }
+        let mut settled = true;
+        for patch in self.dirty.clone() {
+            settled &= self.slump_patch(patch, angle, max_dig, max_pile, passes);
+        }
+        settled
+    }
+
+    /// `slump` over one changed patch and whatever slides beyond it.
+    fn slump_patch(&mut self, (i0, i1, j0, j1): (usize, usize, usize, usize), angle: f32, max_dig: f32, max_pile: f32, passes: usize) -> bool {
         self.ensure_layers();
         let (n, cell) = (self.res, self.cell());
         let lim = angle.to_radians().tan() * cell;
@@ -435,16 +459,40 @@ impl Terrain {
 
     /// Marks grid rows i0..=i1 and columns j0..=j1 as reshaped.
     pub fn mark_dirty(&mut self, i0: usize, i1: usize, j0: usize, j1: usize) {
-        self.dirty = Some(match self.dirty {
-            Some((a, b, c, d)) => (a.min(i0), b.max(i1), c.min(j0), d.max(j1)),
-            None => (i0, i1, j0, j1),
-        });
+        // Patches this close (in cells) or overlapping become one.
+        const NEAR: usize = 8;
+        let mut r = (i0, i1, j0, j1);
+        loop {
+            let before = self.dirty.len();
+            self.dirty.retain(|&(a, b, c, d)| {
+                let touch = a <= r.1 + NEAR && r.0 <= b + NEAR && c <= r.3 + NEAR && r.2 <= d + NEAR;
+                if touch {
+                    r = (r.0.min(a), r.1.max(b), r.2.min(c), r.3.max(d));
+                }
+                !touch
+            });
+            if self.dirty.len() == before {
+                break;
+            }
+        }
+        self.dirty.push(r);
+        if self.dirty.len() > 256 {
+            // Too many to keep apart: merge those in the same 256-cell block.
+            let mut blocks: std::collections::BTreeMap<(usize, usize), (usize, usize, usize, usize)> = Default::default();
+            for x in self.dirty.drain(..) {
+                blocks
+                    .entry((x.0 / 256, x.2 / 256))
+                    .and_modify(|y| *y = (x.0.min(y.0), x.1.max(y.1), x.2.min(y.2), x.3.max(y.3)))
+                    .or_insert(x);
+            }
+            self.dirty.extend(blocks.into_values());
+        }
         self.version += 1;
     }
 
-    /// The region changed since the last call, if any.
-    pub fn take_dirty(&mut self) -> Option<(usize, usize, usize, usize)> {
-        self.dirty.take()
+    /// The patches changed since the last call.
+    pub fn take_dirty(&mut self) -> Vec<(usize, usize, usize, usize)> {
+        std::mem::take(&mut self.dirty)
     }
 
     pub fn cell(&self) -> f32 {
@@ -467,18 +515,23 @@ impl Terrain {
         SharedShape::heightfield(arr, Vec3::new(self.size, 1.0, self.size))
     }
 
-    /// How many pieces the physics ground is split into along each side (see `GROUND_TILE`).
+    /// Cells along a side of each piece of the physics ground (see `GROUND_TILE`).
+    pub fn tile_cells(&self) -> usize {
+        if self.res - 1 <= ONE_PIECE { self.res - 1 } else { GROUND_TILE }
+    }
+
+    /// How many pieces the physics ground is split into along each side.
     pub fn tiles(&self) -> usize {
-        (self.res - 1).div_ceil(GROUND_TILE)
+        (self.res - 1).div_ceil(self.tile_cells())
     }
 
     /// Piece (ti, tj) of the physics surface: a heightfield over grid rows ti*GROUND_TILE to
     /// (ti+1)*GROUND_TILE and the same columns (neighbours share their edge), and where its
     /// center sits. A terrain of one piece gets exactly `shape()`.
     pub fn tile_shape(&self, ti: usize, tj: usize) -> (Vec3, SharedShape) {
-        let n = self.res - 1;
-        let (i0, j0) = (ti * GROUND_TILE, tj * GROUND_TILE);
-        let (i1, j1) = ((i0 + GROUND_TILE).min(n), (j0 + GROUND_TILE).min(n));
+        let (n, cells) = (self.res - 1, self.tile_cells());
+        let (i0, j0) = (ti * cells, tj * cells);
+        let (i1, j1) = ((i0 + cells).min(n), (j0 + cells).min(n));
         let (res, h, c) = (self.res, &self.heights, self.cell());
         let arr = Array2::from_fn(i1 - i0 + 1, j1 - j0 + 1, |a, b| h[(i0 + a) * res + j0 + b]);
         let (w, d) = ((j1 - j0) as f32 * c, (i1 - i0) as f32 * c);
@@ -488,8 +541,8 @@ impl Terrain {
 
     /// The pieces of the physics ground that grid rows i0..=i1 and columns j0..=j1 lie in.
     pub fn tiles_over(&self, i0: usize, i1: usize, j0: usize, j1: usize) -> impl Iterator<Item = (usize, usize)> {
-        let last = self.tiles() - 1;
-        let span = |a: usize, b: usize| (a.saturating_sub(1) / GROUND_TILE).min(last)..=(b / GROUND_TILE).min(last);
+        let (last, cells) = (self.tiles() - 1, self.tile_cells());
+        let span = move |a: usize, b: usize| (a.saturating_sub(1) / cells).min(last)..=(b / cells).min(last);
         let cols = span(j0, j1);
         span(i0, i1).flat_map(move |ti| cols.clone().map(move |tj| (ti, tj)))
     }

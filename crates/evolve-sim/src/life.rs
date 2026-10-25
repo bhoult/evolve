@@ -367,22 +367,30 @@ impl Sim {
         // Swapping in a new ground shape costs a full heightfield rebuild and drops the cached
         // contacts of everything touching the ground, so it's done twice a simulated second at
         // most; earth moves only centimeters in that time.
-        if self.terrain.dirty.is_none() || self.time - self.settled_at < 0.5 {
+        if (self.terrain.dirty.is_empty() && self.terrain.worn_tiles.is_empty()) || self.time - self.settled_at < 0.5 {
             return;
         }
         self.settled_at = self.time;
         // Steep loose earth slides first; what's still sliding goes on next time.
         let p = &self.params;
         let settled = self.terrain.slump(p.slump_angle, p.dig_depth, p.pile_height, 24);
-        let Some((i0, i1, j0, j1)) = self.terrain.take_dirty() else {
-            return;
-        };
+        let patches = self.terrain.take_dirty();
+        let worn = std::mem::take(&mut self.terrain.worn_tiles);
         if !settled {
-            self.terrain.mark_dirty(i0, i1, j0, j1);
+            for &(i0, i1, j0, j1) in &patches {
+                self.terrain.mark_dirty(i0, i1, j0, j1);
+            }
         }
         // The same ground in every physics world: the pieces of it that changed.
         let n = self.terrain.tiles();
-        for (ti, tj) in self.terrain.tiles_over(i0, i1, j0, j1).collect::<Vec<_>>() {
+        let mut tiles: Vec<(usize, usize)> = patches
+            .iter()
+            .flat_map(|&(i0, i1, j0, j1)| self.terrain.tiles_over(i0, i1, j0, j1))
+            .chain(worn.iter().map(|&k| (k / n, k % n)))
+            .collect();
+        tiles.sort_unstable();
+        tiles.dedup();
+        for (ti, tj) in tiles {
             let (_, shape) = self.terrain.tile_shape(ti, tj);
             for shard in &mut self.shards {
                 if let Some(col) = shard.ground.get(ti * n + tj).and_then(|&h| shard.world.colliders.get_mut(h)) {
@@ -392,8 +400,9 @@ impl Sim {
         }
         let (n, size) = ((self.terrain.res - 1) as f32, self.terrain.size);
         let at = |k: usize| (k as f32 / n - 0.5) * size;
-        let (x0, x1, z0, z1) = (at(j0) - 1.0, at(j1) + 1.0, at(i0) - 1.0, at(i1) + 1.0);
-        let inside = |pos: Vec3| pos.x >= x0 && pos.x <= x1 && pos.z >= z0 && pos.z <= z1;
+        let areas: Vec<(f32, f32, f32, f32)> =
+            patches.iter().map(|&(i0, i1, j0, j1)| (at(j0) - 1.0, at(j1) + 1.0, at(i0) - 1.0, at(i1) + 1.0)).collect();
+        let inside = |pos: Vec3| areas.iter().any(|&(x0, x1, z0, z1)| pos.x >= x0 && pos.x <= x1 && pos.z >= z0 && pos.z <= z1);
         for k in 0..self.plants.len() {
             let pos = self.plants[k].pos;
             if inside(pos) {
@@ -405,7 +414,9 @@ impl Sim {
                 f.pos.y = self.terrain.height_at(f.pos.x, f.pos.z);
             }
         }
-        self.reseat_trees(Some((x0, x1, z0, z1)));
+        for &area in &areas {
+            self.reseat_trees(Some(area));
+        }
         // Ground can rise by meters at once (land raised, or thrown up by a quake or a meteor):
         // a stone it buried is set back on top, and so is a creature, by as much as its most
         // buried part needs.
