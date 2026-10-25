@@ -70,6 +70,19 @@ pub struct Terrain {
     /// Where the last `slump` left earth still sliding, to go on with next time.
     #[serde(skip)]
     pub sliding: Vec<(usize, usize, usize, usize)>,
+    /// For spreading the coarse grid's water back (see `hydro::update`): which of its cells had
+    /// water last time, the stripe of rows whose soil moisture and trampling are brought up to
+    /// date next, and how long since each stripe last was.
+    #[serde(skip)]
+    pub wet_cells: Vec<bool>,
+    #[serde(skip)]
+    pub stripe: usize,
+    #[serde(skip)]
+    pub stripe_age: Vec<f32>,
+    /// The coarse grid's water being worked out on another thread, to be spread back at the next
+    /// update (see `hydro::update`).
+    #[serde(skip)]
+    pub water_job: Option<crate::hydro::WaterJob>,
     #[serde(skip)]
     pub worn_tiles: Vec<usize>,
 }
@@ -169,6 +182,10 @@ impl Default for Terrain {
             erosion_drift: Vec::new(),
             worn_tiles: Vec::new(),
             sliding: Vec::new(),
+            wet_cells: Vec::new(),
+            stripe: 0,
+            stripe_age: Vec::new(),
+            water_job: None,
         }
     }
 }
@@ -229,6 +246,10 @@ impl Terrain {
             erosion_drift: Vec::new(),
             worn_tiles: Vec::new(),
             sliding: Vec::new(),
+            wet_cells: Vec::new(),
+            stripe: 0,
+            stripe_age: Vec::new(),
+            water_job: None,
         }
     }
 
@@ -484,30 +505,68 @@ impl Terrain {
         if self.ground.len() != self.heights.len() {
             return false;
         }
+        use rayon::prelude::*;
         let keep = (-dt * std::f32::consts::LN_2 / half_life.max(1.0)).exp();
-        let n = self.res;
-        // Healing only eases ground back toward the land as made, so nothing need slide after
-        // it: the physics ground is rebuilt where it healed, piece by piece. (One box around
-        // every dug spot, marked as reshaped, had slopes settle over most of a big island.)
-        let (tiles, cells) = (self.tiles(), self.tile_cells());
-        let mut healed = vec![false; tiles * tiles];
-        for k in 0..self.heights.len() {
-            let natural = self.natural(k);
-            let off = self.heights[k] - natural;
-            if off == 0.0 {
-                continue;
-            }
-            // The last millimeters go at once, so healed ground stops counting as dug.
-            self.heights[k] = if off.abs() * keep < 0.002 { natural } else { natural + off * keep };
-            let (i, j) = ((k / n) / cells, (k % n) / cells);
-            healed[i.min(tiles - 1) * tiles + j.min(tiles - 1)] = true;
-        }
-        let before = self.worn_tiles.len();
-        self.worn_tiles.extend(healed.iter().enumerate().filter(|(_, h)| **h).map(|(t, _)| t));
-        if self.worn_tiles.len() == before {
+        let (n, tiles, cells) = (self.res, self.tiles(), self.tile_cells());
+        // Row by row on every core: each row's changed columns and its biggest change.
+        let (ground, eroded) = (&self.ground, &self.eroded);
+        let rows: Vec<Option<(usize, usize, f32)>> = self
+            .heights
+            .par_chunks_mut(n)
+            .enumerate()
+            .map(|(i, row)| {
+                let mut span: Option<(usize, usize, f32)> = None;
+                for (j, h) in row.iter_mut().enumerate() {
+                    let k = i * n + j;
+                    let natural = ground[k] - eroded.get(k).copied().unwrap_or(0.0);
+                    let off = *h - natural;
+                    if off == 0.0 {
+                        continue;
+                    }
+                    // The last millimeters go at once, so healed ground stops counting as dug.
+                    let new = if off.abs() * keep < 0.002 { natural } else { natural + off * keep };
+                    let moved = (*h - new).abs();
+                    *h = new;
+                    span = Some(span.map_or((j, j, moved), |(a, b, d)| (a.min(j), b.max(j), d.max(moved))));
+                }
+                span
+            })
+            .collect();
+        if rows.iter().all(Option::is_none) {
             return false;
         }
-        self.version += 1;
+        if tiles > 1 {
+            // On a big terrain healing is spread over the whole island: like erosion, it rebuilds
+            // a piece of the physics ground once it has moved it enough (`EROSION_REBUILD`), and
+            // doesn't set slopes settling (one box around everything healed did, over 25 million
+            // points, for most of a second).
+            let mut deepest = vec![0.0f32; tiles * tiles];
+            for (i, r) in rows.iter().enumerate() {
+                if let Some((a, b, d)) = *r {
+                    let ti = (i / cells).min(tiles - 1);
+                    for tj in (a / cells).min(tiles - 1)..=(b / cells).min(tiles - 1) {
+                        deepest[ti * tiles + tj] = deepest[ti * tiles + tj].max(d);
+                    }
+                }
+            }
+            self.erosion_drift.resize(tiles * tiles, 0.0);
+            for (k, drift) in self.erosion_drift.iter_mut().enumerate() {
+                *drift += deepest[k];
+                if *drift > EROSION_REBUILD {
+                    *drift = 0.0;
+                    self.worn_tiles.push(k);
+                }
+            }
+            self.version += 1;
+            return true;
+        }
+        let (mut i0, mut i1, mut j0, mut j1) = (usize::MAX, 0, usize::MAX, 0);
+        for (i, r) in rows.iter().enumerate() {
+            if let Some((a, b, _)) = *r {
+                (i0, i1, j0, j1) = (i0.min(i), i1.max(i), j0.min(a), j1.max(b));
+            }
+        }
+        self.mark_dirty(i0, i1, j0, j1);
         true
     }
 
