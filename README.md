@@ -540,8 +540,9 @@ A watch on a paused world waits until the world runs again.
   `dig_depth` (1.5 m) below and piled `pile_height` (1.5 m) above where the world made it.
 - *Slumping and weathering:* loose earth can't stand steeper than `slump_angle` (35°): it slides
   down until it holds, so holes become bowls and heaps become mounds, and the land stays
-  walkable. Dug and piled ground weathers back toward the land as it was made, halfway in
-  `earth_recovery` (2 hours).
+  walkable. Ground left alone for `earth_rest` (10 minutes: not dug, piled, slid or raised, in
+  blocks of 16 grid points a side) weathers back toward the land as it was made, halfway in
+  `earth_recovery` (2 hours); disturbing it starts the wait over.
 - *What it can build:* pits, ponds where a hole goes below sea level, mounds, walls, ramps and
   dams. There are no tunnels or overhangs: the ground stays a smooth surface, reshaped in place.
 - *What follows:* the physics ground, plants, water and rendering follow the new shape. Freshly

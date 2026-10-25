@@ -446,13 +446,54 @@ fn dug_ground_weathers_back() {
     t.reshape(x * t.size, z * t.size, -1.0, 3.0, 3.0);
     let dug = t.disturbance(k);
     assert!(dug < -0.3, "dug {dug}");
-    assert!(t.heal(3600.0, 3600.0));
+    assert!(t.heal(3600.0, 3600.0, 0.0));
     assert!((t.disturbance(k) - dug * 0.5).abs() < 1e-3, "halfway back in its half-life: {} of {dug}", t.disturbance(k));
     for _ in 0..20 {
-        t.heal(3600.0, 3600.0);
+        t.heal(3600.0, 3600.0, 0.0);
     }
     assert!((0..n * n).all(|k| t.disturbance(k) == 0.0), "healed ground isn't dug any more");
-    assert!(!t.heal(3600.0, 3600.0), "and there's nothing left to heal");
+    assert!(!t.heal(3600.0, 3600.0, 0.0), "and there's nothing left to heal");
+}
+
+/// Dug ground heals only once it's been left alone `earth_rest`; digging again starts the wait
+/// over, and ground elsewhere heals meanwhile.
+#[test]
+fn dug_ground_heals_only_once_left_alone() {
+    let p = SimParams::default();
+    let mut t = Terrain::generate(&p, 1);
+    let n = t.res;
+    let land: Vec<usize> = (0..n * n).filter(|&k| t.heights[k] > p.water_level + 2.0).collect();
+    let spot = |t: &Terrain, k: usize| {
+        let (x, z) = t.point(k);
+        (x, z)
+    };
+    // Two holes far apart.
+    let (a, b) = (land[land.len() / 4], land[3 * land.len() / 4]);
+    for &k in &[a, b] {
+        let (x, z) = spot(&t, k);
+        t.reshape(x, z, -1.0, 3.0, 3.0);
+    }
+    let (da, db) = (t.disturbance(a), t.disturbance(b));
+    assert!(da < -0.3 && db < -0.3);
+    let rest = 600.0;
+    // Five minutes on: neither has rested ten, so neither heals.
+    for _ in 0..10 {
+        t.heal(30.0, 3600.0, rest);
+    }
+    assert_eq!((t.disturbance(a), t.disturbance(b)), (da, db), "nothing heals before it has rested");
+    // Dig at a again; ten minutes after the first digging, b heals and a waits.
+    let (x, z) = spot(&t, a);
+    t.reshape(x, z, -0.2, 3.0, 3.0);
+    let da = t.disturbance(a);
+    for _ in 0..12 {
+        t.heal(30.0, 3600.0, rest);
+    }
+    assert!(t.disturbance(b) > db + 0.01, "b, left alone, heals: {} from {db}", t.disturbance(b));
+    assert_eq!(t.disturbance(a), da, "a, dug again, waits");
+    for _ in 0..12 {
+        t.heal(30.0, 3600.0, rest);
+    }
+    assert!(t.disturbance(a) > da + 0.01, "and then heals too: {} from {da}", t.disturbance(a));
 }
 
 /// On a terrain finer than `HYDRO_CELL` the water is worked out on a coarse grid and spread back:

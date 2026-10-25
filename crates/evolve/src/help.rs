@@ -819,8 +819,9 @@ fn land(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Loose earth can't stand steeper than {}° (slump_angle): it slides down until it holds, so holes become bowls and heaps mounds. Dug and piled ground weathers back toward the land as it was made, halfway in {} (earth_recovery).",
+            "Loose earth can't stand steeper than {}° (slump_angle): it slides down until it holds, so holes become bowls and heaps mounds. Dug and piled ground left alone for {} (earth_rest) weathers back toward the land as it was made, halfway in {} (earth_recovery); digging there again starts the wait over.",
             num(p.slump_angle),
+            dur(p.earth_rest * 60.0),
             dur(p.earth_recovery * 60.0)
         ),
     );

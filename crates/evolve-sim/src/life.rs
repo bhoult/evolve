@@ -914,7 +914,7 @@ impl Sim {
         // Dug and piled ground weathers back in batches too.
         let batch = |t: f64| (t / EROSION_EVERY as f64).floor();
         if batch(self.time) != batch(self.time - dt as f64) {
-            self.terrain.heal(EROSION_EVERY, self.params.earth_recovery * 60.0);
+            self.terrain.heal(EROSION_EVERY, self.params.earth_recovery * 60.0, self.params.earth_rest * 60.0);
         }
         if !self.params.hydrology {
             if self.terrain.water.iter().chain(&self.terrain.pooled).any(|&w| w > 0.0) {

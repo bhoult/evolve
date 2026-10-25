@@ -394,6 +394,9 @@ params! {
         slump_angle: f32 = 35.0, [10, 90], Live;
         /// Minutes for dug and piled ground to weather halfway back to the land as it was made.
         earth_recovery: f32 = 120.0, [1, 100000], Live;
+        /// Minutes ground must be left alone (not dug, piled, slid or raised) before it starts
+        /// to weather back (`earth_recovery`), in blocks of 16 grid points a side.
+        earth_rest: f32 = 10.0, [0, 10000], Live;
     }
     "Land and water" {
         /// Rain runs downhill into streams and collects in hollows, and running water slowly

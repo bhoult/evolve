@@ -70,6 +70,10 @@ pub struct Terrain {
     /// Where the last `slump` left earth still sliding, to go on with next time.
     #[serde(skip)]
     pub sliding: Vec<(usize, usize, usize, usize)>,
+    /// Seconds each block of `REST_BLOCK` grid cells a side has gone undisturbed (dug, piled,
+    /// slid, raised...), row by row: only ground left alone `earth_rest` heals.
+    #[serde(default)]
+    pub quiet: Vec<f32>,
     /// For spreading the coarse grid's water back (see `hydro::update`): which of its cells had
     /// water last time, the stripe of rows whose soil moisture and trampling are brought up to
     /// date next, and how long since each stripe last was.
@@ -92,6 +96,10 @@ pub struct Terrain {
 /// touched: rebuilding one heightfield of 25 million points in every physics world, up to twice
 /// a simulated second, stalled big worlds, and pieces of 512 still took tens of ms each.
 pub const GROUND_TILE: usize = 128;
+/// Grid cells along a side of each block whose quiet time decides whether it heals (see
+/// `Terrain::quiet`).
+pub const REST_BLOCK: usize = 16;
+
 /// The widest terrain (in cells) whose physics ground stays in one piece, as it always was.
 pub const ONE_PIECE: usize = 512;
 /// How far erosion may wear a piece of a big terrain's ground (m, at its deepest) before the
@@ -182,6 +190,7 @@ impl Default for Terrain {
             erosion_drift: Vec::new(),
             worn_tiles: Vec::new(),
             sliding: Vec::new(),
+            quiet: Vec::new(),
             wet_cells: Vec::new(),
             stripe: 0,
             stripe_age: Vec::new(),
@@ -246,6 +255,7 @@ impl Terrain {
             erosion_drift: Vec::new(),
             worn_tiles: Vec::new(),
             sliding: Vec::new(),
+            quiet: Vec::new(),
             wet_cells: Vec::new(),
             stripe: 0,
             stripe_age: Vec::new(),
@@ -499,28 +509,34 @@ impl Terrain {
         false
     }
 
-    /// Dug and piled ground weathers back toward the land as the world made it (less what water
-    /// has worn away), halfway in `half_life` seconds. Returns whether anything changed.
-    pub fn heal(&mut self, dt: f32, half_life: f32) -> bool {
+    /// Dug and piled ground left alone at least `rest` seconds weathers back toward the land as
+    /// the world made it (less what water has worn away), halfway in `half_life` seconds.
+    /// Returns whether anything changed.
+    pub fn heal(&mut self, dt: f32, half_life: f32, rest: f32) -> bool {
         if self.ground.len() != self.heights.len() {
             return false;
         }
         use rayon::prelude::*;
+        self.ensure_quiet();
+        for q in &mut self.quiet {
+            *q = (*q + dt).min(f32::MAX);
+        }
         let keep = (-dt * std::f32::consts::LN_2 / half_life.max(1.0)).exp();
-        let (n, tiles, cells) = (self.res, self.tiles(), self.tile_cells());
+        let (n, tiles, cells, blocks) = (self.res, self.tiles(), self.tile_cells(), self.rest_blocks());
         // Row by row on every core: each row's changed columns and its biggest change.
-        let (ground, eroded) = (&self.ground, &self.eroded);
+        let (ground, eroded, quiet) = (&self.ground, &self.eroded, &self.quiet);
         let rows: Vec<Option<(usize, usize, f32)>> = self
             .heights
             .par_chunks_mut(n)
             .enumerate()
             .map(|(i, row)| {
                 let mut span: Option<(usize, usize, f32)> = None;
+                let resting = &quiet[(i / REST_BLOCK) * blocks..(i / REST_BLOCK + 1) * blocks];
                 for (j, h) in row.iter_mut().enumerate() {
                     let k = i * n + j;
                     let natural = ground[k] - eroded.get(k).copied().unwrap_or(0.0);
                     let off = *h - natural;
-                    if off == 0.0 {
+                    if off == 0.0 || resting[j / REST_BLOCK] < rest {
                         continue;
                     }
                     // The last millimeters go at once, so healed ground stops counting as dug.
@@ -566,7 +582,7 @@ impl Terrain {
                 (i0, i1, j0, j1) = (i0.min(i), i1.max(i), j0.min(a), j1.max(b));
             }
         }
-        self.mark_dirty(i0, i1, j0, j1);
+        self.mark_reshaped(i0, i1, j0, j1);
         true
     }
 
@@ -619,6 +635,36 @@ impl Terrain {
 
     /// Marks grid rows i0..=i1 and columns j0..=j1 as reshaped.
     pub fn mark_dirty(&mut self, i0: usize, i1: usize, j0: usize, j1: usize) {
+        self.disturbed(i0, i1, j0, j1);
+        self.mark_reshaped(i0, i1, j0, j1);
+    }
+
+    /// Blocks of `REST_BLOCK` cells along each side of the grid.
+    fn rest_blocks(&self) -> usize {
+        self.res.div_ceil(REST_BLOCK)
+    }
+
+    /// Fills in quiet times missing from saves made before they were kept: long left alone.
+    fn ensure_quiet(&mut self) {
+        let b = self.rest_blocks();
+        if self.quiet.len() != b * b {
+            self.quiet = vec![f32::MAX; b * b];
+        }
+    }
+
+    /// The ground in rows i0..=i1, columns j0..=j1 was disturbed just now: it rests again before
+    /// it heals.
+    fn disturbed(&mut self, i0: usize, i1: usize, j0: usize, j1: usize) {
+        self.ensure_quiet();
+        let b = self.rest_blocks();
+        for bi in i0 / REST_BLOCK..=(i1 / REST_BLOCK).min(b - 1) {
+            self.quiet[bi * b + j0 / REST_BLOCK..=bi * b + (j1 / REST_BLOCK).min(b - 1)].fill(0.0);
+        }
+    }
+
+    /// Marks rows i0..=i1 and columns j0..=j1 as reshaped, for slopes to settle and the physics
+    /// ground to follow, without counting as a disturbance (healing reshapes ground too).
+    fn mark_reshaped(&mut self, i0: usize, i1: usize, j0: usize, j1: usize) {
         // Patches this close (in cells) or overlapping become one.
         const NEAR: usize = 8;
         let mut r = (i0, i1, j0, j1);

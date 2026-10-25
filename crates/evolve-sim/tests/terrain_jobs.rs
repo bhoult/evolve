@@ -48,7 +48,7 @@ fn terrain_jobs() {
     println!("slump over {patches} dug patches: {:.1} ms", ms(s));
     t.take_dirty();
     let s = Instant::now();
-    t.heal(30.0, p.earth_recovery * 60.0);
+    t.heal(30.0, p.earth_recovery * 60.0, 0.0);
     println!("heal: {:.1} ms, leaving {} patches", ms(s), t.dirty.len());
     let s = Instant::now();
     t.slump(p.slump_angle, p.dig_depth, p.pile_height, 24);
