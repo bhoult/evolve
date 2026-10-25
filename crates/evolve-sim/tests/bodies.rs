@@ -15,6 +15,7 @@ fn quiet_params() -> SimParams {
         terrain_resolution: 65,
         weather: false,
         stones: 0,
+        tree_max_count: 0,
         // Breeding is tested here on creatures that never ate; that rule has a test of its own.
         breeding_food: 0.0,
         ..SimParams::default()

@@ -8,7 +8,8 @@ use bevy::prelude::*;
 use evolve_sim::body::PartShape;
 use evolve_sim::genome::hsv_to_rgb;
 use evolve_sim::sim::ObstacleShape;
-use evolve_sim::snapshot::CreatureView;
+use evolve_sim::sim::PlantKind;
+use evolve_sim::snapshot::{CreatureView, FruitView, TreeView};
 
 use crate::{Interp, Snap};
 
@@ -21,8 +22,17 @@ pub struct PartOf {
     pub part: u16,
 }
 
+/// Grass, a seedling, a tree or a piece of fruit (all removed by the same tool).
 #[derive(Component)]
 pub struct PlantOf(pub u64);
+
+/// How trees.rs dresses a plant entity.
+#[derive(Component, Clone, Copy, PartialEq, Eq)]
+pub enum PlantLook {
+    Grass,
+    /// A tree seedling or a tree.
+    Tree,
+}
 
 #[derive(Component)]
 pub struct MeatOf(pub u64);
@@ -73,6 +83,7 @@ struct Shared3d {
     plant: Handle<Mesh>,
     plant_mat: Handle<StandardMaterial>,
     meat_mat: Handle<StandardMaterial>,
+    fruit_mat: Handle<StandardMaterial>,
     eye_mat: Handle<StandardMaterial>,
     rock_mat: Handle<StandardMaterial>,
     boulder_mat: Handle<StandardMaterial>,
@@ -107,6 +118,8 @@ struct Mirror {
     creatures: HashMap<u64, CreatureEnt>,
     dying: Vec<Dying>,
     plants: HashMap<u64, Entity>,
+    trees: HashMap<u64, Entity>,
+    fruit: HashMap<u64, Entity>,
     meat: HashMap<u64, Entity>,
     obstacles: HashMap<u64, Entity>,
 }
@@ -118,7 +131,7 @@ impl Plugin for SyncPlugin {
             .add_systems(Startup, setup_assets)
             .add_systems(
                 Update,
-                (reset_on_new_world, (sync_creatures, sync_food, sync_obstacles)).chain(),
+                (reset_on_new_world, (sync_creatures, sync_food, sync_trees, sync_obstacles)).chain(),
             );
     }
 }
@@ -142,6 +155,7 @@ fn setup_assets(
         plant: meshes.add(Cone::new(0.35, 0.9)),
         plant_mat: mat(&mut materials, Color::srgb(0.18, 0.55, 0.14), 0.9),
         meat_mat: mat(&mut materials, Color::srgb(0.55, 0.12, 0.10), 0.6),
+        fruit_mat: mat(&mut materials, Color::srgb(0.92, 0.42, 0.12), 0.45),
         eye_mat: mat(&mut materials, Color::srgb(0.03, 0.03, 0.03), 0.2),
         rock_mat: mat(&mut materials, Color::srgb(0.42, 0.41, 0.40), 0.95),
         boulder_mat: mat(&mut materials, Color::srgb(0.55, 0.45, 0.35), 0.85),
@@ -413,6 +427,8 @@ fn reset_on_new_world(
     for (_, e) in mirror
         .plants
         .drain()
+        .chain(mirror.trees.drain())
+        .chain(mirror.fruit.drain())
         .chain(mirror.meat.drain())
         .chain(mirror.obstacles.drain())
     {
@@ -420,10 +436,33 @@ fn reset_on_new_world(
     }
 }
 
-fn plant_transform(pos: [f32; 3], energy: f32, max: f32) -> Transform {
-    let s = 0.3 + 0.7 * (energy / max.max(1e-3)).clamp(0.0, 1.0).sqrt();
+fn plant_transform(pos: [f32; 3], energy: f32, max: f32, kind: PlantKind) -> Transform {
+    let grown = (energy / max.max(1e-3)).clamp(0.0, 1.0).sqrt();
+    // Grass stays knee-high; a seedling reaches a meter before it turns woody.
+    let s = match kind {
+        PlantKind::Grass => 0.2 + 0.4 * grown,
+        PlantKind::Seedling => 0.25 + 0.85 * grown,
+    };
     // `pos` is the lowest ground under the plant; sink the base a little more so it is planted.
     Transform::from_xyz(pos[0], pos[1] + 0.45 * s - 0.04, pos[2]).with_scale(Vec3::splat(s))
+}
+
+/// The tree meshes are 0.9 units tall, centered. A tree that died topples over about three
+/// seconds, away from where its id points, about the foot of its trunk.
+fn tree_transform(t: &TreeView) -> Transform {
+    let s = t.height / 0.9;
+    let base = Vec3::from_array(t.pos) - Vec3::Y * 0.1;
+    let fall = (t.fallen / 3.0).clamp(0.0, 1.0);
+    let toward = (t.id.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as f32 * 0.001;
+    let axis = Vec3::new(toward.cos(), 0.0, toward.sin());
+    let rot = Quat::from_axis_angle(axis, fall * fall * std::f32::consts::FRAC_PI_2 * 0.97);
+    Transform::from_translation(base + rot * (Vec3::Y * 0.45 * s)).with_rotation(rot).with_scale(Vec3::splat(s))
+}
+
+fn fruit_transform(f: &FruitView, full: f32) -> Transform {
+    let s = 0.16 + 0.2 * (f.energy / full.max(1e-3)).clamp(0.0, 1.0).sqrt();
+    let lift = if f.hanging { 0.0 } else { 0.4 * s };
+    Transform::from_xyz(f.pos[0], f.pos[1] + lift, f.pos[2]).with_scale(Vec3::splat(s))
 }
 
 fn meat_transform(pos: [f32; 3], energy: f32) -> Transform {
@@ -451,7 +490,7 @@ fn sync_food(
             let tf = if is_meat {
                 meat_transform(f.pos, f.energy)
             } else {
-                plant_transform(f.pos, f.energy, max)
+                plant_transform(f.pos, f.energy, max, f.kind)
             };
             match map.get(&f.id) {
                 Some(&e) => {
@@ -468,8 +507,9 @@ fn sync_food(
                             .spawn((Mesh3d(shared.sphere.clone()), MeshMaterial3d(shared.meat_mat.clone()), tf, MeatOf(f.id)))
                             .id()
                     } else {
+                        let look = if f.kind == PlantKind::Grass { PlantLook::Grass } else { PlantLook::Tree };
                         commands
-                            .spawn((Mesh3d(shared.plant.clone()), MeshMaterial3d(shared.plant_mat.clone()), tf, PlantOf(f.id)))
+                            .spawn((Mesh3d(shared.plant.clone()), MeshMaterial3d(shared.plant_mat.clone()), tf, PlantOf(f.id), look))
                             .id()
                     };
                     map.insert(f.id, e);
@@ -484,6 +524,64 @@ fn sync_food(
             keep
         });
     }
+}
+
+/// Trees (drawn by trees.rs once they appear here) and their fruit, hanging and fallen.
+fn sync_trees(
+    mut commands: Commands,
+    snap: Res<Snap>,
+    shared: Res<Shared3d>,
+    mut mirror: ResMut<Mirror>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let snap = &snap.0;
+    let mirror = &mut *mirror;
+    let mut place = |map: &mut HashMap<u64, Entity>, id: u64, tf: Transform, spawn: &mut dyn FnMut(Transform) -> Entity| {
+        match map.get(&id) {
+            Some(&e) => {
+                if let Ok(mut t) = transforms.get_mut(e)
+                    && ((t.scale - tf.scale).length_squared() > 1e-4
+                        || (t.translation - tf.translation).length_squared() > 1e-6
+                        || t.rotation.angle_between(tf.rotation) > 1e-3)
+                {
+                    *t = tf;
+                }
+            }
+            None => {
+                map.insert(id, spawn(tf));
+            }
+        }
+    };
+    let mut alive = HashSet::with_capacity(snap.trees.len());
+    for t in &snap.trees {
+        alive.insert(t.id);
+        place(&mut mirror.trees, t.id, tree_transform(t), &mut |tf| {
+            commands
+                .spawn((Mesh3d(shared.plant.clone()), MeshMaterial3d(shared.plant_mat.clone()), tf, PlantOf(t.id), PlantLook::Tree))
+                .id()
+        });
+    }
+    let gone = |map: &mut HashMap<u64, Entity>, alive: &HashSet<u64>, commands: &mut Commands| {
+        map.retain(|id, e| {
+            let keep = alive.contains(id);
+            if !keep {
+                commands.entity(*e).despawn();
+            }
+            keep
+        });
+    };
+    gone(&mut mirror.trees, &alive, &mut commands);
+    let full = snap.params.fruit_energy;
+    let mut alive = HashSet::with_capacity(snap.fruit.len());
+    for f in &snap.fruit {
+        alive.insert(f.id);
+        place(&mut mirror.fruit, f.id, fruit_transform(f, full), &mut |tf| {
+            commands
+                .spawn((Mesh3d(shared.sphere.clone()), MeshMaterial3d(shared.fruit_mat.clone()), tf, PlantOf(f.id)))
+                .id()
+        });
+    }
+    gone(&mut mirror.fruit, &alive, &mut commands);
 }
 
 fn sync_obstacles(

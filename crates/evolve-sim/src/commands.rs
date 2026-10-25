@@ -136,7 +136,14 @@ impl Sim {
                 }
                 self.miracle(id, HighlightKind::Blessing);
             }
-            Command::RemovePlant(id) => self.plants.retain(|f| f.id != id),
+            // Grass, a seedling, a tree or a piece of fruit (one tool removes any plant).
+            Command::RemovePlant(id) => {
+                self.plants.retain(|f| f.id != id);
+                self.fruit.retain(|f| f.id != id);
+                if self.trees.iter().any(|t| t.id == id) {
+                    self.remove_tree(id);
+                }
+            }
             Command::RemoveMeat(id) => self.meat.retain(|f| f.id != id),
             Command::RemoveObstacle(id) => self.remove_obstacle(id),
             Command::Select(id) => self.selected = id,
@@ -170,7 +177,12 @@ impl Sim {
                     c.dead = Some(DeathCause::Removed);
                 }
             }
-            Command::ClearPlants => self.plants.clear(),
+            Command::ClearPlants => {
+                self.plants.clear();
+                self.trees.clear();
+                self.fruit.clear();
+                self.sync_trunks();
+            }
             Command::ClearObstacles => {
                 let ids: Vec<u64> = self.obstacles.iter().map(|o| o.id).collect();
                 for id in ids {

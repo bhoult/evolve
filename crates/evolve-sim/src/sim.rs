@@ -241,11 +241,23 @@ impl Creature {
     }
 }
 
+/// Plants and meat both. A plant is grass, which stays small, or a tree seedling, which turns
+/// into a woody tree (see `forest`) once it has grown full without being eaten.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Food {
     pub id: u64,
     pub pos: Vec3,
     pub energy: f32,
+    /// Saves from before trees hold only grass.
+    #[serde(default)]
+    pub kind: PlantKind,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlantKind {
+    #[default]
+    Grass,
+    Seedling,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
@@ -284,6 +296,9 @@ pub struct Shard {
     pub world: PhysicsWorld,
     pub terrain_collider: ColliderHandle,
     pub walls: Vec<ColliderHandle>,
+    /// Tree trunks, by tree id: like the ground, every tree stands in every world.
+    #[serde(default)]
+    pub trunks: HashMap<u64, ColliderHandle>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -314,6 +329,12 @@ pub struct Sim {
     pub creatures: Vec<Creature>,
     pub plants: Vec<Food>,
     pub meat: Vec<Food>,
+    /// Woody trees (see `forest`); seedlings are still plants.
+    #[serde(default)]
+    pub trees: Vec<crate::forest::Tree>,
+    /// Fruit hanging in the trees and lying under them.
+    #[serde(default)]
+    pub fruit: Vec<crate::forest::Fruit>,
     pub obstacles: Vec<Obstacle>,
     pub rng: Rng,
     pub tick: u64,
@@ -422,6 +443,8 @@ impl Sim {
             creatures: Vec::new(),
             plants: Vec::new(),
             meat: Vec::new(),
+            trees: Vec::new(),
+            fruit: Vec::new(),
             obstacles: Vec::new(),
             rng,
             tick: 0,
@@ -467,6 +490,7 @@ impl Sim {
             tries += 1;
             sim.try_spawn_random_plant(energy, &mut grid);
         }
+        sim.plant_forest();
         sim.scatter_stones();
         sim
     }
@@ -642,7 +666,7 @@ impl Sim {
                 .friction(self.params.ground_friction)
                 .user_data(Tag::Terrain.encode()),
         );
-        let mut shard = Shard { world, terrain_collider, walls: Vec::new() };
+        let mut shard = Shard { world, terrain_collider, walls: Vec::new(), trunks: HashMap::new() };
         Self::build_walls(&self.terrain, &mut shard);
         shard
     }
@@ -669,6 +693,7 @@ impl Sim {
             }
             self.shards.truncate(want);
         }
+        self.sync_trunks();
         // Each world's physics runs on a thread of its own: left to share the world pool, rapier
         // spreads every world's solver over all of it, and the worlds' workers wait on each other.
         for shard in &mut self.shards {
@@ -788,6 +813,7 @@ impl Sim {
             let p = self.plants[i].pos;
             self.plants[i].pos.y = self.ground_under(p.x, p.z, PLANT_FOOTPRINT);
         }
+        self.reseat_trees(None);
         let terrain = &self.terrain;
         for o in &self.obstacles {
             if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body) {
@@ -1305,6 +1331,10 @@ impl Sim {
     }
 
     pub fn add_plant(&mut self, pos: Vec3, energy: f32) -> Option<u64> {
+        self.add_plant_of(pos, energy, PlantKind::Grass)
+    }
+
+    pub fn add_plant_of(&mut self, pos: Vec3, energy: f32, kind: PlantKind) -> Option<u64> {
         if !self.terrain.contains(pos.x, pos.z, 0.3) {
             return None;
         }
@@ -1314,6 +1344,7 @@ impl Sim {
             id,
             pos: Vec3::new(pos.x, y, pos.z),
             energy,
+            kind,
         });
         Some(id)
     }
@@ -1328,6 +1359,7 @@ impl Sim {
             id,
             pos: Vec3::new(x, y, z),
             energy,
+            kind: PlantKind::Grass,
         });
         id
     }

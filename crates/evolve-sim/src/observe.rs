@@ -167,13 +167,24 @@ impl Sim {
         let plant_energy: f32 = self.plants.iter().map(|f| f.energy).sum();
         let meat_energy: f32 = self.meat.iter().map(|f| f.energy).sum();
         let full = self.plants.iter().filter(|f| f.energy >= 0.95 * p.plant_max_energy).count();
+        let seedlings = self.plants.iter().filter(|f| f.kind == crate::sim::PlantKind::Seedling).count();
+        let standing = self.trees.iter().filter(|t| t.standing()).count();
+        let bearing = self.trees.iter().filter(|t| t.standing() && t.grown() >= 0.5).count();
+        let hanging = self.fruit.iter().filter(|f| f.hanging()).count();
+        let fruit_energy: f32 = self.fruit.iter().map(|f| f.energy).sum();
         let _ = writeln!(
             o,
-            "Food standing: {} plants (most {}), {} of them full grown, holding {:.0} energy; {} pieces of meat holding {:.0}.",
+            "Food standing: {} plants (most {}; {} of them tree seedlings), {} of them full grown, holding {:.0} energy; {} trees ({} old enough to bear), {} fruit hanging and {} fallen, holding {:.0}; {} pieces of meat holding {:.0}.",
             self.plants.len(),
             p.plant_max_count,
+            seedlings,
             full,
             plant_energy,
+            standing,
+            bearing,
+            hanging,
+            self.fruit.len() - hanging,
+            fruit_energy,
             self.meat.len(),
             meat_energy
         );

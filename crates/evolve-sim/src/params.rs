@@ -289,6 +289,44 @@ params! {
         /// Minimum spacing between plants, m.
         plant_min_spacing: f32 = 1.0, [0.1, 10], Live;
     }
+    "Trees" {
+        /// Most trees the world can hold. Tree seedlings count as plants until they turn woody.
+        tree_max_count: u32 = 400, [0, 5000], Live;
+        /// Height a tree grows to, m (each tree within a fifth of it either way).
+        tree_height: f32 = 10.0, [2, 40], Live;
+        /// Simulated seconds for a sapling to grow to nearly its full height on good ground
+        /// (slower on poor ground, faster in rain).
+        tree_growth_time: f32 = 3600.0, [60, 36000], Live;
+        /// Simulated seconds a tree lives (each within 30% of it) before it dies and falls.
+        tree_lifespan: f32 = 14400.0, [600, 360000], Live;
+        /// Share of the plants sprouting at random that are tree seedlings rather than grass.
+        tree_seedling_share: f32 = 0.05, [0, 1], Live;
+        /// Nearest to a tree that a seedling can take root, m: closer is too shady.
+        tree_min_spacing: f32 = 3.0, [0.5, 30], Live;
+        /// Seeds a full-grown tree sends off on the wind per minute.
+        tree_seed_rate: f32 = 0.5, [0, 30], Live;
+        /// How fast a seed falls, m/s. The wind carries it while it falls from the crown, so
+        /// a 10 m tree's seeds land about 15 m downwind in a breeze and across the island in a
+        /// storm.
+        seed_fall_speed: f32 = 1.5, [0.1, 20], Live;
+        /// Energy in the wood of a full-grown tree: what gnawing it down would take.
+        tree_wood: f32 = 2000.0, [1, 100000], Live;
+        /// Share of a bite a creature gets out of a woody tree. Wood is hard: a creature gets a
+        /// whole bite from grass, seedlings and fruit, and this much of one from a trunk.
+        wood_bite: f32 = 0.1, [0, 1], Live;
+        /// Fruit a full-grown tree bears per minute on good ground (trees bear from half their
+        /// full height, fewer while small).
+        fruit_rate: f32 = 1.0, [0, 60], Live;
+        /// Energy in a piece of fruit.
+        fruit_energy: f32 = 20.0, [0.5, 500], Live;
+        /// Seconds ripe fruit hangs in the crown, where only a mouth that reaches it can eat it,
+        /// before it falls to the ground.
+        fruit_hang_time: f32 = 180.0, [1, 7200], Live;
+        /// Seconds fallen fruit takes to rot away.
+        fruit_rot_time: f32 = 300.0, [5, 7200], Live;
+        /// Chance that fruit left to rot sprouts a tree seedling where it lies.
+        fruit_sprout: f32 = 0.2, [0, 1], Live;
+    }
     "Eating" {
         /// Energy eaten per second while biting (scaled by body size).
         bite_rate: f32 = 10.0, [0, 200], Live;

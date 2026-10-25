@@ -14,7 +14,8 @@ use crate::genome::Genome;
 use crate::grid::Grid;
 use crate::params::SimParams;
 use crate::math::{Quat, Vec3, heading_frame};
-use crate::sim::{Creature, Food, Sim, TICKS_PER_SECOND};
+use crate::forest::Fruit;
+use crate::sim::{Creature, Food, PlantKind, Sim, TICKS_PER_SECOND};
 
 pub(crate) const GRID_CELL: f32 = 5.0;
 /// Seconds between position samples for the distance-travelled tally.
@@ -24,6 +25,7 @@ struct SenseCtx<'a> {
     sim: &'a Sim,
     torso: Vec<Vec3>,
     plants: Grid,
+    fruit: Grid,
     meat: Grid,
     /// Loose stones and boulders (and their positions and masses), for the stone sense.
     stones: Grid,
@@ -55,6 +57,31 @@ pub(crate) fn food_grid(size: f32, food: &[Food]) -> Grid {
     let mut g = Grid::new(size, GRID_CELL);
     g.rebuild(food.iter().map(|f| f.pos));
     g
+}
+
+pub(crate) fn fruit_grid(size: f32, fruit: &[Fruit]) -> Grid {
+    let mut g = Grid::new(size, GRID_CELL);
+    g.rebuild(fruit.iter().map(|f| f.pos));
+    g
+}
+
+/// What a creature bites into: an index into plants, fruit, meat or trees.
+enum Bite {
+    Plant(usize),
+    Fruit(usize),
+    Meat(usize),
+    Wood(usize),
+}
+
+/// How far a creature's mouth reaches for food, m.
+fn mouth_reach(p: &SimParams, c: &Creature) -> f32 {
+    p.eat_reach + 0.35 + c.torso_half().y
+}
+
+/// Whether a fruit is food a mouth at height `y` can get at: fallen fruit always, hanging fruit
+/// only within `reach` of the mouth's height.
+fn fruit_within(f: &Fruit, y: f32, reach: f32) -> bool {
+    f.energy > 0.0 && (!f.hanging() || (f.pos.y - y).abs() < reach)
 }
 
 impl Sim {
@@ -182,6 +209,7 @@ impl Sim {
                 stones,
                 stone_at,
                 plants: food_grid(size, &self.plants),
+                fruit: fruit_grid(size, &self.fruit),
                 meat: food_grid(size, &self.meat),
                 creatures,
                 creature_reach,
@@ -374,6 +402,7 @@ impl Sim {
                 f.pos.y = self.terrain.height_at(f.pos.x, f.pos.z);
             }
         }
+        self.reseat_trees(Some((x0, x1, z0, z1)));
         // Ground can rise by meters at once (land raised, or thrown up by a quake or a meteor):
         // a stone it buried is set back on top, and so is a creature, by as much as its most
         // buried part needs.
@@ -413,9 +442,13 @@ impl Sim {
     fn eat(&mut self, bdt: f32) {
         let size = self.terrain.size;
         let pg = food_grid(size, &self.plants);
+        let fg = fruit_grid(size, &self.fruit);
         let mg = food_grid(size, &self.meat);
-        let reach_extra = self.params.eat_reach;
+        let mut tg = Grid::new(size, GRID_CELL);
+        tg.rebuild(self.trees.iter().map(|t| t.pos));
+        let tree_reach = self.trees.iter().map(|t| t.trunk_radius()).fold(0.0f32, f32::max);
         let bite_rate = self.params.bite_rate;
+        let wood_bite = self.params.wood_bite;
         let away = self.params.score_food_away;
         for c in &mut self.creatures {
             if c.dead.is_some() || c.output(output::EAT) <= 0.0 || c.energy >= c.max_energy {
@@ -426,7 +459,7 @@ impl Sim {
             };
             let half = c.torso_half();
             let mouth = torso.position().transform_point(Vec3::new(half.x, 0.0, 0.0));
-            let reach = reach_extra + 0.35 + half.y;
+            let reach = mouth_reach(&self.params, c);
             let near = |grid: &Grid, food: &[Food]| {
                 grid.nearest(
                     mouth,
@@ -438,25 +471,50 @@ impl Sim {
                     },
                 )
             };
-            let plant = near(&pg, &self.plants);
-            let meat = near(&mg, &self.meat);
+            let plant = near(&pg, &self.plants).map(|(k, d)| (Bite::Plant(k as usize), d));
+            let fruit = fg
+                .nearest(mouth, reach, |k| self.fruit[k as usize].pos, |k| fruit_within(&self.fruit[k as usize], mouth.y, reach))
+                .map(|(k, d)| (Bite::Fruit(k as usize), d));
+            let meat = near(&mg, &self.meat).map(|(k, _)| Bite::Meat(k as usize));
             let (pe, me) = (c.plant_efficiency(), c.meat_efficiency());
-            let (food, eff, is_meat) = match (plant, meat) {
-                (Some((k, _)), Some((m, _))) => {
-                    if me >= pe {
-                        (&mut self.meat[m as usize], me, true)
-                    } else {
-                        (&mut self.plants[k as usize], pe, false)
-                    }
-                }
-                (Some((k, _)), None) => (&mut self.plants[k as usize], pe, false),
-                (None, Some((m, _))) => (&mut self.meat[m as usize], me, true),
-                (None, None) => continue,
+            // Soft plant food first (the nearer of a plant and a fruit), or meat if it suits the
+            // creature better; wood only when there's nothing else.
+            let soft = match (plant, fruit) {
+                (Some(a), Some(b)) => Some(if a.1 <= b.1 { a.0 } else { b.0 }),
+                (a, b) => a.or(b).map(|f| f.0),
             };
-            let bite = bite_rate * bdt * c.genome.traits.size;
+            let wood = || {
+                tg.nearest(mouth, reach + tree_reach, |k| self.trees[k as usize].pos, |k| {
+                    let t = &self.trees[k as usize];
+                    let (dx, dz) = (t.pos.x - mouth.x, t.pos.z - mouth.z);
+                    t.standing()
+                        && t.wood > 0.0
+                        && (dx * dx + dz * dz).sqrt() < reach + t.trunk_radius()
+                        && mouth.y > t.pos.y - 0.5
+                        && mouth.y < t.pos.y + t.height
+                })
+                .map(|(k, _)| Bite::Wood(k as usize))
+            };
+            let target = match (soft, meat) {
+                (Some(_), Some(m)) if me >= pe => m,
+                (Some(v), _) => v,
+                (None, Some(m)) => m,
+                (None, None) => match wood() {
+                    Some(w) => w,
+                    None => continue,
+                },
+            };
+            let (left, eff, share) = match target {
+                Bite::Plant(k) => (&mut self.plants[k].energy, pe, 1.0),
+                Bite::Fruit(k) => (&mut self.fruit[k].energy, pe, 1.0),
+                Bite::Meat(k) => (&mut self.meat[k].energy, me, 1.0),
+                Bite::Wood(k) => (&mut self.trees[k].wood, pe, wood_bite),
+            };
+            let is_meat = matches!(target, Bite::Meat(_));
+            let bite = bite_rate * bdt * c.genome.traits.size * share;
             let room = c.max_energy - c.energy;
-            let amount = bite.min(food.energy).min(room / eff);
-            food.energy -= amount;
+            let amount = bite.min(*left).min(room / eff);
+            *left -= amount;
             let gain = amount * eff;
             c.energy += gain;
             if is_meat {
@@ -470,6 +528,7 @@ impl Sim {
 
         }
         self.plants.retain(|f| f.energy > 0.05);
+        self.fruit.retain(|f| f.energy > 0.05);
         self.meat.retain(|f| f.energy > 0.05);
     }
 
@@ -684,10 +743,12 @@ impl Sim {
         g
     }
 
-    /// Plants a seed if the spot is fertile, in bounds and not crowded.
-    pub(crate) fn try_plant_at(&mut self, pos: Vec3, energy: f32, grid: &mut Grid) -> bool {
+    /// Plants a seed if the spot is fertile, in bounds and not crowded (a tree seedling also
+    /// needs to be clear of the shade of trees).
+    pub(crate) fn try_plant_at(&mut self, pos: Vec3, energy: f32, kind: PlantKind, grid: &mut Grid) -> bool {
         if self.plants.len() as u32 >= self.params.plant_max_count
             || !self.terrain.contains(pos.x, pos.z, 1.0)
+            || (kind == PlantKind::Seedling && self.near_tree(pos, self.params.tree_min_spacing))
         {
             return false;
         }
@@ -711,7 +772,7 @@ impl Sim {
         if crowded {
             return false;
         }
-        if self.add_plant(pos, energy).is_some() {
+        if self.add_plant_of(pos, energy, kind).is_some() {
             grid.insert(pos, (self.plants.len() - 1) as u32);
             true
         } else {
@@ -719,14 +780,21 @@ impl Sim {
         }
     }
 
+    /// Grass, or now and then a tree seedling (`tree_seedling_share`), at a random spot.
     pub(crate) fn try_spawn_random_plant(&mut self, energy: f32, grid: &mut Grid) -> bool {
+        let p = &self.params;
+        let kind = if p.tree_max_count > 0 && p.tree_seedling_share > 0.0 && self.rng.chance(p.tree_seedling_share) {
+            PlantKind::Seedling
+        } else {
+            PlantKind::Grass
+        };
         let half = self.terrain.half() - 1.0;
         // Most of the world is sea, so look for land a few times before giving up.
         for _ in 0..6 {
             let x = self.rng.range(-half, half);
             let z = self.rng.range(-half, half);
             if self.terrain.height_at(x, z) > self.params.water_level {
-                return self.try_plant_at(Vec3::new(x, 0.0, z), energy, grid);
+                return self.try_plant_at(Vec3::new(x, 0.0, z), energy, kind, grid);
             }
         }
         false
@@ -804,7 +872,7 @@ impl Sim {
 
         let mut grid = self.plant_grid();
         let mut seeds = Vec::new();
-        for f in &self.plants {
+        for f in self.plants.iter().filter(|f| f.kind == PlantKind::Grass) {
             if f.energy > 0.5 * p.plant_max_energy && self.rng.chance(p.plant_spread_rate * dt) {
                 let a = self.rng.range(0.0, std::f32::consts::TAU);
                 let d = self
@@ -814,13 +882,15 @@ impl Sim {
             }
         }
         for s in seeds {
-            self.try_plant_at(s, 1.0, &mut grid);
+            self.try_plant_at(s, 1.0, PlantKind::Grass, &mut grid);
         }
         self.plant_spawn_acc += p.plant_spawn_rate * dt;
         while self.plant_spawn_acc >= 1.0 {
             self.plant_spawn_acc -= 1.0;
             self.try_spawn_random_plant(1.0, &mut grid);
         }
+
+        self.grow_forest(dt);
 
         for m in &mut self.meat {
             m.energy -= m.energy * p.meat_decay * dt + 0.02 * dt;
@@ -1031,8 +1101,20 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
         x[at + 1] = rel.dot(side) / d;
         x[at + 2] = (1.0 - d / r).clamp(0.0, 1.0);
     };
-    if let Some((k, _)) = cx.plants.nearest(pos, r, |k| sim.plants[k as usize].pos, |_| true) {
-        put_dir(&mut x, PLANT, sim.plants[k as usize].pos);
+    // The nearest plant food it could eat: grass, a seedling, fallen fruit, or fruit hanging
+    // within its reach (not wood).
+    let plant = cx.plants.nearest(pos, r, |k| sim.plants[k as usize].pos, |_| true).map(|(k, d)| (sim.plants[k as usize].pos, d));
+    let reach = mouth_reach(p, c);
+    let fruit = cx
+        .fruit
+        .nearest(pos, r, |k| sim.fruit[k as usize].pos, |k| fruit_within(&sim.fruit[k as usize], pos.y, reach))
+        .map(|(k, d)| (sim.fruit[k as usize].pos, d));
+    let food = match (plant, fruit) {
+        (Some(a), Some(b)) => Some(if a.1 <= b.1 { a.0 } else { b.0 }),
+        (a, b) => a.or(b).map(|f| f.0),
+    };
+    if let Some(at) = food {
+        put_dir(&mut x, PLANT, at);
     }
     if let Some((k, _)) = cx.meat.nearest(pos, r, |k| sim.meat[k as usize].pos, |_| true) {
         put_dir(&mut x, MEAT, sim.meat[k as usize].pos);
@@ -1106,7 +1188,7 @@ fn sense(cx: &SenseCtx, i: usize, c: &Creature) -> [f32; N_IN] {
             continue;
         }
         let not_self = move |_h: ColliderHandle, col: &Collider| match Tag::decode(col.user_data) {
-            Tag::Terrain | Tag::Wall => s == 0,
+            Tag::Terrain | Tag::Wall | Tag::Tree { .. } => s == 0,
             t => t.creature_id() != Some(own),
         };
         let qp = shard.world.query_pipeline_with_filter(QueryFilter::default().predicate(&not_self));

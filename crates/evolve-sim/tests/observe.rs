@@ -16,6 +16,7 @@ fn quiet_params() -> SimParams {
     SimParams {
         min_population: 0,
         stones: 0,
+        tree_max_count: 0,
         terrain_resolution: 65,
         parallel_worlds: 0,
         ..SimParams::default()

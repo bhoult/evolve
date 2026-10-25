@@ -167,7 +167,7 @@ impl Sim {
         self.log("A tsunami is coming");
     }
 
-    /// The tsunami sweeps away the plants and meat it covers deeply.
+    /// The tsunami sweeps away the plants, fallen fruit and meat it covers deeply (trees stand).
     pub(crate) fn wash_away(&mut self) {
         if self.acts.tsunami.is_none() {
             return;
@@ -176,6 +176,7 @@ impl Sim {
         let (acts, terrain) = (&self.acts, &self.terrain);
         let deep = |p: Vec3| acts.tsunami_surface(p.x, p.z, time, sea).is_some_and(|s| s - terrain.height_at(p.x, p.z) > 0.8);
         self.plants.retain(|f| !deep(f.pos));
+        self.fruit.retain(|f| f.hanging() || !deep(f.pos));
         self.meat.retain(|f| !deep(f.pos));
     }
 
@@ -428,6 +429,7 @@ impl Sim {
         };
         let ws = &self.acts.whirlwinds;
         self.plants.retain(|f| !tears(f.pos, ws));
+        self.fruit.retain(|f| !tears(f.pos, ws));
         self.meat.retain(|f| !tears(f.pos, ws));
     }
 
@@ -506,9 +508,14 @@ impl Sim {
                 }
             }
         }
-        // Plants near it burn, and meat at the heart of it is gone.
+        // Plants and trees near it burn, and meat at the heart of it is gone.
         let scorch = CRATER * 1.8;
         self.plants.retain(|f| f.pos.distance(center) > scorch);
+        self.fruit.retain(|f| f.pos.distance(center) > scorch);
+        let burnt: Vec<u64> = self.trees.iter().filter(|t| t.pos.distance(center) <= scorch).map(|t| t.id).collect();
+        for id in burnt {
+            self.remove_tree(id);
+        }
         self.meat.retain(|f| f.pos.distance(center) > CRATER);
         self.highlight_with(HighlightKind::Meteor, 0, None, center, BLAST);
         self.log("A meteor strikes");
