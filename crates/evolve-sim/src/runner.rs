@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::commands::Command;
 use crate::math::Vec3;
 use crate::zoo::{SharedZoo, Zoo, ZooMeta, store_best};
-use crate::islands::{Board, MAIN_THREADS, Pacer, WorkerCtl, Worker, WorldStatus, migrate, world_pool};
+use crate::islands::{Board, Pacer, WorkerCtl, Worker, WorldStatus, main_threads, migrate, world_pool};
 use crate::params::SimParams;
 use crate::save;
 use crate::sim::Sim;
@@ -167,7 +167,9 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     let mut speed = 1.0f32;
     let mut pacer = Pacer::new();
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
-    let pool = world_pool("evolve-sim", MAIN_THREADS.min(cores));
+    // Sized to what the background worlds leave, and made again when there are more or fewer.
+    let mut pool_for = sim.params.parallel_worlds;
+    let mut pool = world_pool("evolve-sim", main_threads(cores, pool_for as usize));
     let mut last_publish = Instant::now() - Duration::from_secs(1);
     let mut rate_window = (Instant::now(), 0u64);
     let mut steps_per_sec = 0.0f32;
@@ -425,6 +427,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             sim.step();
             rate_window.1 += 1;
             step_once = false;
+        }
+        if sim.params.parallel_worlds != pool_for {
+            pool_for = sim.params.parallel_worlds;
+            pool = world_pool("evolve-sim", main_threads(cores, pool_for as usize));
         }
         rate_window.1 += pacer.run(&mut sim, speed, paused, Duration::from_millis(30), Some(&pool));
         if reset_islands {
