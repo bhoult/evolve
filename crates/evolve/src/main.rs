@@ -5,6 +5,7 @@ mod audio;
 mod camera;
 mod director;
 mod env;
+mod flow;
 mod genome_view;
 mod help;
 mod miracles;
@@ -293,7 +294,7 @@ fn main() -> AppExit {
             audio::AudioPlugin,
             recording::RecordingPlugin,
         ))
-        .add_plugins((miracles::MiraclesPlugin, observatory::ObservatoryPlugin))
+        .add_plugins((miracles::MiraclesPlugin, observatory::ObservatoryPlugin, flow::FlowPlugin))
         .add_systems(PreUpdate, refresh_snapshot)
         .add_systems(Update, (auto_screenshot, load_after))
         .run()

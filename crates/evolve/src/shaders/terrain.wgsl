@@ -2,8 +2,9 @@
 // rain wetness and moving cloud shadows. The vertex color's red channel carries fertility, the
 // green channel how much creatures have dug or piled the ground there (0 untouched, 1 a lot),
 // the blue channel is 1 where it was dug out rather than piled up, and alpha is how trampled it
-// is. The UV carries water standing or running on the ground (m) and soil moisture (the material
-// has no textures to need it).
+// is. Water standing or running on the ground (m) and soil moisture come from the surface
+// buffer, interpolated smoothly per pixel. The surface of deep water is a second mesh whose UV is
+// (depth, -1).
 #import bevy_pbr::{
     pbr_fragment::pbr_input_from_standard_material,
     forward_io::{VertexOutput, FragmentOutput},
@@ -12,6 +13,56 @@
     mesh_view_bindings::{lights, view},
 }
 #import evolve::env::{env, vnoise, gnoise, fbm, cloud_shadow, sky_clear}
+
+// Water depth and soil moisture at each grid point, two half floats per u32 (scene.rs).
+@group(#{MATERIAL_BIND_GROUP}) @binding(101) var<storage, read> surface: array<u32>;
+
+fn surface_point(i: i32, j: i32, res: i32) -> vec2<f32> {
+    let ii = clamp(i, 0, res - 1);
+    let jj = clamp(j, 0, res - 1);
+    return unpack2x16float(surface[ii * res + jj]);
+}
+
+/// Catmull-Rom weights for the four points around a fraction t of the way between the middle two.
+fn catmull_rom(t: f32) -> vec4<f32> {
+    let t2 = t * t;
+    let t3 = t2 * t;
+    return vec4<f32>(-0.5 * t3 + t2 - 0.5 * t, 1.5 * t3 - 2.5 * t2 + 1.0, -1.5 * t3 + 2.0 * t2 + 0.5 * t, 0.5 * t3 - 0.5 * t2);
+}
+
+/// Water depth (m) and soil moisture at a spot, interpolated smoothly over the 4x4 grid points
+/// around it (bicubic), so stream banks curve instead of following the triangles. Kept within
+/// the four nearest points' range, so a stream's edge can't ring below zero or above its depth.
+fn surface_at(xz: vec2<f32>) -> vec2<f32> {
+    let size = env.world.y;
+    let res = i32(env.world.z);
+    if (res < 3 || arrayLength(&surface) < u32(res * res)) {
+        return vec2<f32>(0.0);
+    }
+    let n = f32(res - 1);
+    let g = clamp((xz / size + 0.5) * n, vec2<f32>(0.0), vec2<f32>(n));
+    let j = min(i32(floor(g.x)), res - 2);
+    let i = min(i32(floor(g.y)), res - 2);
+    let f = g - vec2<f32>(f32(j), f32(i));
+    let wx = catmull_rom(f.x);
+    let wz = catmull_rom(f.y);
+    var acc = vec2<f32>(0.0);
+    var lo = vec2<f32>(1e9);
+    var hi = vec2<f32>(-1e9);
+    for (var a = 0; a < 4; a++) {
+        var row = vec2<f32>(0.0);
+        for (var b = 0; b < 4; b++) {
+            let v = surface_point(i + a - 1, j + b - 1, res);
+            row += v * wx[b];
+            if (a == 1 || a == 2) && (b == 1 || b == 2) {
+                lo = min(lo, v);
+                hi = max(hi, v);
+            }
+        }
+        acc += row * wz[a];
+    }
+    return clamp(acc, lo, hi);
+}
 
 fn lin(c: vec3<f32>) -> vec3<f32> {
     return pow(c, vec3<f32>(2.2));
@@ -134,11 +185,19 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
 
     // Feet wear the grass to bare earth along well-used paths, and wet paths turn to mud.
     let worn = in.color.a;
-    var water = 0.0;
-    var soil_wet = 0.0;
+    let wet_here = surface_at(p.xz);
+    let water = wet_here.x;
+    let soil_wet = wet_here.y;
+    var lake = false;
 #ifdef VERTEX_UVS_A
-    water = in.uv.x;
-    soil_wet = in.uv.y;
+    lake = in.uv.y < -0.5;
+    // Debugging the terrain's detail levels (scene.rs, `lod_tint`): ground drawn at a coarser
+    // stride carries its level in UV x, tinted green, yellow, orange, red as it doubles.
+    if (!lake && in.uv.x > 0.5) {
+        let level = i32(in.uv.x + 0.5);
+        var tints = array<vec3<f32>, 4>(vec3<f32>(0.55, 1.0, 0.55), vec3<f32>(1.0, 1.0, 0.4), vec3<f32>(1.0, 0.6, 0.25), vec3<f32>(1.0, 0.3, 0.3));
+        col *= tints[clamp(level - 1, 0, 3)];
+    }
 #endif
     let on_land = smoothstep(0.0, 0.25, above);
     let path = smoothstep(0.08, 0.7, worn + (n1 - 0.5) * 0.15) * on_land * (1.0 - 0.7 * rockiness);
@@ -175,10 +234,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
 
     // The surface of deep water: a second mesh over lakes, ponds and deep streams (scene.rs),
-    // flagged by a negative moisture. Sky reflections and sun glints over a dark body, see-through
+    // flagged by a UV of -1. Sky reflections and sun glints over a dark body, see-through
     // where it thins out at the shore. Lakes lie level (their normal is up); streams follow their
     // bed and carry their ripples downstream.
-    if (soil_wet < -0.5) {
+    if (lake) {
         let fall = length(n.xz);
         let downhill = n.xz / max(fall, 1e-4);
         let drift = downhill * t * (0.3 + 5.0 * fall) + vec2<f32>(t * 0.05, 0.0);
@@ -199,9 +258,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let glint = pow(max(dot(wn_, hs), 0.0), 400.0) * 18.0 * step(0.0, env.sun.y) * cloud_shadow(p);
         let lake_col = body * (1.0 - fres) + sky_clear(rr, false) * fres + env.sun_color.rgb * glint;
         let alpha = smoothstep(0.1, 0.35, water) * clamp(0.55 + 0.35 * smoothstep(0.3, 3.0, water) + fres, 0.0, 0.97);
-        var lake: FragmentOutput;
-        lake.color = main_pass_post_lighting_processing(pbr, vec4<f32>(lake_col, alpha));
-        return lake;
+        var surface_out: FragmentOutput;
+        surface_out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(lake_col, alpha));
+        return surface_out;
     }
 
     let cover = smoothstep(0.005, 0.05, water) * on_land;

@@ -163,8 +163,9 @@ fn polar_grid() -> Mesh {
         .with_inserted_indices(Indices::U32(indices))
 }
 
-/// Copies changed heights into the buffer, or makes a new buffer (and tells the materials) when
-/// the terrain changes size.
+/// Copies changed heights into the buffer (only the rows that changed, for the same world: a
+/// terrain can be 100 MB of heights), or makes a new buffer (and tells the materials) when the
+/// terrain changes size.
 fn update_heights(
     snap: Res<Snap>,
     device: Res<RenderDevice>,
@@ -175,6 +176,18 @@ fn update_heights(
 ) {
     let t = &snap.0.terrain;
     if t.res < 3 || heights.from.as_ref().is_some_and(|f| Arc::ptr_eq(f, t)) {
+        return;
+    }
+    let n = t.res;
+    if let Some(old) = heights.from.clone().filter(|o| o.res == n && o.heights.len() == t.heights.len())
+        && heights.buffer.size() == (n * n * 4) as u64
+    {
+        let h = heights.bypass_change_detection();
+        let (was, now) = (&old.heights, &t.heights);
+        for (start, end) in crate::scene::changed_rows(n, |i| was[i * n..(i + 1) * n] != now[i * n..(i + 1) * n]) {
+            queue.write_buffer(&h.buffer, (start * n * 4) as u64, bytemuck::cast_slice(&t.heights[start * n..end * n]));
+        }
+        h.from = Some(t.clone());
         return;
     }
     let bytes = heights_bytes(t);

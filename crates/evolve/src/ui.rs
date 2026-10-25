@@ -643,6 +643,11 @@ fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: 
                     }
                     ui.checkbox(&mut gfx.soft_shadows, "soft (by weather)");
                 });
+                ui.horizontal_wrapped(|ui| {
+                    ui.checkbox(&mut gfx.flow, "flowing water");
+                    ui.checkbox(&mut gfx.lod_tint, "tint terrain detail levels")
+                        .on_hover_text("Ground drawn coarser far away is tinted green, yellow, orange and red as its detail halves");
+                });
             });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {

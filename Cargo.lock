@@ -2427,9 +2427,12 @@ version = "0.1.0"
 dependencies = [
  "bevy",
  "bevy_egui",
+ "bytemuck",
  "cpal",
  "egui_plot",
  "evolve-sim",
+ "half",
+ "rayon",
 ]
 
 [[package]]
