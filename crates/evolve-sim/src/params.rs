@@ -93,8 +93,10 @@ params! {
         stones: u32 = 150, [0, 2000], NewWorld;
         /// Width and depth of the square world, ocean included, in meters.
         world_size: f32 = 220.0, [60, 800], NewWorld;
-        /// Height samples along each side of the terrain grid.
-        terrain_resolution: u32 = 177, [33, 513], NewWorld;
+        /// Height samples along each side of the terrain grid. Every doubling is four times the
+        /// cells for drainage, erosion, the physics ground and the drawn mesh; past a thousand or
+        /// so expect the world to run and draw slowly.
+        terrain_resolution: u32 = 177, [33, 5000], NewWorld;
         /// Radius of the island as a fraction of half the world's width. Above about 1.3 the land
         /// reaches the edges and there is no ocean.
         island_size: f32 = 0.8, [0.2, 1.6], NewWorld;

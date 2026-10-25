@@ -80,7 +80,7 @@ impl Default for Terrain {
 
 impl Terrain {
     pub fn generate(p: &SimParams, version: u64) -> Self {
-        let res = p.terrain_resolution.clamp(9, 1025) as usize;
+        let res = p.terrain_resolution.clamp(9, 5000) as usize;
         let size = p.world_size.max(10.0);
         let perlin = Perlin::new(p.seed);
         let fert_noise = Perlin::new(p.seed ^ 0xF00D);
