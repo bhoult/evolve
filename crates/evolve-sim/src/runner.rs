@@ -174,7 +174,7 @@ const SLOW_PASS_MS: u64 = 120;
 fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo) {
     let mut paused = false;
     let mut speed = 1.0f32;
-    let mut pacer = Pacer::new();
+    let mut pacer = Pacer::steady();
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
     // Sized to what the background worlds leave, and made again when there are more or fewer.
     let mut pool_for = sim.params.parallel_worlds;
@@ -493,7 +493,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             for w in &workers {
                 w.send(WorkerCtl::BrainPrice(sim.brain_price, sim.gpu_headroom));
             }
-            steps_per_sec = rate_window.1 as f32 / window;
+            // Smoothed over a second or two, so the speed shown doesn't flicker with each
+            // half-second's luck.
+            let rate = rate_window.1 as f32 / window;
+            steps_per_sec = if steps_per_sec <= 0.0 { rate } else { steps_per_sec + (rate - steps_per_sec) * 0.3 };
             rate_window = (Instant::now(), 0);
             if let Some(now) = crate::process_cpu_seconds() {
                 let (at, before) = cpu_mark;

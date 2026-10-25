@@ -568,9 +568,11 @@ impl BrainGenes {
         for (i, s) in src.iter().enumerate() {
             w_in.extend_from_slice(&s.w_in.0[i * N_IN..(i + 1) * N_IN]);
             bias.push(s.bias[i]);
-            for j in 0..h {
-                w_rec.push(if j < s.h { s.w_rec.0[i * s.h + j] } else { f16::ZERO });
-            }
+            // A row at a time (a weight at a time took tens of ms for a 4096-neuron brain, and
+            // stalled the world whenever one fell from the sky).
+            let n = h.min(s.h);
+            w_rec.extend_from_slice(&s.w_rec.0[i * s.h..i * s.h + n]);
+            w_rec.resize(w_rec.len() + (h - n), f16::ZERO);
         }
         let mut w_out = Vec::with_capacity(N_OUT * h);
         for k in 0..N_OUT {

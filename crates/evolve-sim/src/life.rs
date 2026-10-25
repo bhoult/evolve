@@ -53,6 +53,9 @@ pub(crate) fn call_loudness(c: &Creature) -> f32 {
     ((c.output(output::CALL) - 0.2) / 0.8).max(0.0)
 }
 
+/// Pieces of the physics ground rebuilt at most in one settling of the ground.
+const TILES_PER_SETTLE: usize = 32;
+
 /// How far from water plants still grow faster for it, m (see `water_growth`).
 pub const WATER_REACH: f32 = 5.0;
 
@@ -466,6 +469,12 @@ impl Sim {
             .collect();
         tiles.sort_unstable();
         tiles.dedup();
+        // At most `TILES_PER_SETTLE` rebuilt at a time; the rest wait for the next settling (half
+        // a simulated second), so a burst of healing or erosion doesn't stall one step.
+        if tiles.len() > TILES_PER_SETTLE {
+            let n = self.terrain.tiles();
+            self.terrain.worn_tiles.extend(tiles.drain(TILES_PER_SETTLE..).map(|(ti, tj)| ti * n + tj));
+        }
         for (ti, tj) in tiles {
             let (_, shape) = self.terrain.tile_shape(ti, tj);
             for shard in &mut self.shards {

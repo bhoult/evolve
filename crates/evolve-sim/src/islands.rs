@@ -194,14 +194,35 @@ fn island_params(index: usize, p: &SimParams) -> SimParams {
 pub struct Pacer {
     pending: f64,
     last: Instant,
+    /// At Max, hold a steady pace (see `MAX_PACE`) rather than stepping flat out.
+    steady: bool,
+    /// Steps a second while stepping, lately (about the last 10 s of stepping time).
+    capacity: f64,
 }
+
+/// The share of what it can manage that a steady Max runs at: the rest absorbs slow steps (a
+/// creature with a huge brain falling from the sky, the water's turn), so the world goes at an
+/// even speed instead of lurching (flat out, it swung between 0.4x and 1.7x real time).
+const MAX_PACE: f64 = 0.85;
 
 impl Pacer {
     pub fn new() -> Self {
         Self {
             pending: 0.0,
             last: Instant::now(),
+            steady: false,
+            capacity: 0.0,
         }
+    }
+
+    /// For the world you watch: Max holds a steady pace.
+    pub fn steady() -> Self {
+        Self { steady: true, ..Self::new() }
+    }
+
+    /// The pace Max holds, steps a second (0 until it knows, or when it runs flat out).
+    pub fn max_pace(&self) -> f64 {
+        if self.steady { self.capacity * MAX_PACE } else { 0.0 }
     }
 
     /// Runs the steps that are due and returns how many ran. With a `pool`, all of the step's
@@ -230,13 +251,14 @@ impl Pacer {
         }
         let start = Instant::now();
         let mut steps = 0;
-        if speed <= 0.0 {
+        if speed <= 0.0 && (!self.steady || self.capacity <= 0.0) {
             while start.elapsed() < budget {
                 sim.step();
                 steps += 1;
             }
+            self.learn(steps, start.elapsed().as_secs_f64());
         } else {
-            let per_sec = TICKS_PER_SECOND as f64 * speed as f64;
+            let per_sec = if speed <= 0.0 { self.max_pace() } else { TICKS_PER_SECOND as f64 * speed as f64 };
             // Don't build up a backlog if the CPU can't keep up with the requested speed.
             self.pending = (self.pending + elapsed * per_sec).min(per_sec * 0.25 + 1.0);
             while self.pending >= 1.0 {
@@ -248,8 +270,21 @@ impl Pacer {
                     break;
                 }
             }
+            if steps > 0 {
+                self.learn(steps, start.elapsed().as_secs_f64());
+            }
         }
         steps
+    }
+
+    /// Folds `steps` taking `secs` of stepping into what the world can manage.
+    fn learn(&mut self, steps: u64, secs: f64) {
+        if steps == 0 || secs <= 0.0 {
+            return;
+        }
+        let rate = steps as f64 / secs;
+        let k = (secs / 10.0).min(1.0);
+        self.capacity = if self.capacity <= 0.0 { rate } else { self.capacity + (rate - self.capacity) * k };
     }
 }
 

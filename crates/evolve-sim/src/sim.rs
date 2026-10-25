@@ -392,6 +392,9 @@ unsafe impl Sync for Creatures {}
 
 /// The phases of a step, in order, as `Perf::phases` times them.
 pub const PHASES: usize = 17;
+/// Steps kept in `Sim::step_log`: half a minute at 60 a second.
+pub const STEP_LOG: usize = 1800;
+
 pub const PHASE_NAMES: [&str; PHASES] = [
     "weather and totems",
     "brain results",
@@ -491,6 +494,10 @@ pub struct Sim {
     pub index: HashMap<u64, usize>,
     #[serde(skip)]
     pub perf: Perf,
+    /// The last `STEP_LOG` steps' wall time and phase times (ms), for how even the steps are
+    /// (`Sim::step_spread`).
+    #[serde(skip)]
+    pub step_log: std::collections::VecDeque<(f32, [f32; PHASES])>,
     /// Each physics world's time to step, ms, smoothed like `perf`.
     #[serde(skip)]
     pub shard_ms: Vec<f32>,
@@ -600,6 +607,7 @@ impl Sim {
             acts: Default::default(),
             index: HashMap::new(),
             perf: Perf::default(),
+            step_log: Default::default(),
             shard_ms: Vec::new(),
             events: Vec::new(),
             species: Vec::new(),
@@ -1711,6 +1719,38 @@ impl Sim {
         for (x, v) in phases.iter_mut().zip(this_step.iter()) {
             *x += (v - *x) * k;
         }
+        if self.step_log.len() >= STEP_LOG {
+            self.step_log.pop_front();
+        }
+        self.step_log.push_back((ms(t0, Instant::now()), self.perf.this_step));
+    }
+
+    /// How even the last `STEP_LOG` steps were: their wall time at the median, 90th and 99th
+    /// percentiles and worst, and the phases that make the slowest twentieth slow (their time
+    /// there against the median step's).
+    pub fn step_spread(&self) -> Option<String> {
+        let n = self.step_log.len();
+        if n < 60 {
+            return None;
+        }
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| self.step_log[a].0.total_cmp(&self.step_log[b].0));
+        let at = |q: f32| self.step_log[order[((n - 1) as f32 * q) as usize]].0;
+        let slow = &order[n - (n / 20).max(1)..];
+        let typical = &order[n / 4..3 * n / 4];
+        let mean = |set: &[usize], k: usize| set.iter().map(|&i| self.step_log[i].1[k]).sum::<f32>() / set.len() as f32;
+        let mut extra: Vec<(f32, usize)> = (0..PHASES).map(|k| (mean(slow, k) - mean(typical, k), k)).collect();
+        extra.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let what: Vec<String> = extra.iter().take(4).filter(|e| e.0 > 0.05).map(|(d, k)| format!("{} +{d:.1}", PHASE_NAMES[*k])).collect();
+        Some(format!(
+            "Step times over the last {} steps: median {:.1} ms, 90th percentile {:.1}, 99th {:.1}, worst {:.1}; the slowest twentieth spend more than a typical step on {}.",
+            n,
+            at(0.5),
+            at(0.9),
+            at(0.99),
+            at(1.0),
+            if what.is_empty() { "nothing in particular".to_string() } else { what.join(", ") }
+        ))
     }
 
     /// Water buoyancy and drag, wind, plus the user's grab spring.

@@ -383,6 +383,9 @@ impl Sim {
             f.publish_ms,
             f.terrain_copy_ms
         );
+        if let Some(spread) = self.step_spread() {
+            let _ = writeln!(o, "{spread}");
+        }
 
         // The best of the living.
         let mut best: Vec<&Creature> = alive.iter().collect();
