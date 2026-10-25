@@ -607,8 +607,9 @@ At **Max** speed the program is built to keep the whole machine busy.
 - **Balancing CPU and GPU:** physics fills the CPU long before small brains fill the GPU, so brain
   size is steered to fill it.
   - *How it's steered:* at Max speed, the runner adds up every world's GPU time on brains and
-    compares it with `gpu_target` (65% by the GPU's own timer since 2026-10-24; 50% showed as
-    roughly 70% in nvidia-smi, and 70% as 84–97%).
+    compares it with `gpu_target` (55% by the GPU's own timer since 2026-10-25, so at least 10%
+    of the GPU stays free for the desktop; 50% showed as roughly 70% in nvidia-smi, and 70% as
+    84–97%).
   - *Below the target:* brains get cheaper to run (a floating energy price) and tend to grow
     when they mutate.
   - *Above it:* they get dearer and tend to shrink.

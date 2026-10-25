@@ -397,10 +397,11 @@ params! {
         /// Simulated seconds between migrations of the best genomes between worlds.
         migration_interval: f32 = 60.0, [5, 1200], Live;
         /// How busy the brains should keep the GPU at Max speed (0..1), by the GPU's own timer.
-        /// System monitors read higher: 0.5 showed as roughly 70% in nvidia-smi. Below the target
-        /// brains get cheaper and tend to grow; above it, dearer and tend to shrink. 0 turns the
-        /// steering off.
-        gpu_target: f32 = 0.65, [0, 1], Live;
+        /// System monitors read higher: 0.5 showed as roughly 70% in nvidia-smi and 0.7 as 84–97%,
+        /// so 0.55 keeps the whole GPU near 75%, leaving at least 10% for the desktop. Below the
+        /// target brains get cheaper and tend to grow; above it, dearer and tend to shrink. 0 turns
+        /// the steering off.
+        gpu_target: f32 = 0.55, [0, 1], Live;
         /// GPU memory for brains, shared by all worlds in proportion to their populations, in GB.
         /// Brains that don't fit are trimmed.
         gpu_memory_gb: f32 = 8.0, [0.5, 64], Live;
