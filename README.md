@@ -426,7 +426,8 @@ and the rest are random.
 A life is scored by what it achieved, in "plants' worth":
 - *Eating:* 1 per plant's worth of food or meat eaten at least `score_food_away` (4 m) from
   where it fell or was born.
-- *Hunting:* 3 per kill (`score_kill`) made that far away too.
+- *Hunting:* `score_kill` per kill made that far away too: 0 by default, so hunting pays through
+  the meat it brings (see "What tuning taught").
 - *Breeding:* 0.5 per child, plus 1 per plant's worth of energy given to children.
 - *Travelling:* 1 per 50 m of net progress, and 1 per `score_approach` (10) m closed on food while
   it has room to eat.
@@ -677,9 +678,20 @@ Motion now costs energy, so these conclusions may no longer hold and deserve re-
     pool creatures made 4–5 times as many kills as random ones while barely moving.
   - *Averaging three lives per genome* (`pool_retest`) made that worse: sitting and biting is
     heritable, so retests confirmed it (3.4 m a minute against 7). Off by default.
-  - *Kills only away too* (`score_kill`): pool creatures now eat and travel about as well as
-    random ones (7–10 and 5–6 m a minute, against 9.5 and 7), where before they fell to 3–7 and
-    3–5. Still not better: no creature closes in on food it can sense more than chance would.
+  - *Kills only away too:* kills were still a third to two thirds of what got lives into the
+    pool. A creature bounces a few meters on landing, and in the thick of the rain someone is
+    always near.
+  - *No score for kills* (`score_kill` 0): what gets lives into the pool is now food (about
+    three quarters) and travel. In five seeds, pool-bred creatures ate 1.2–1.8 times as much as
+    random ones in the same world, brought back 1.9 times as much from away, and travelled as
+    far. Comparing within one world matters: worlds drift (eating fell in an all-random world
+    too), so world against world hid the gain.
+  - *Cheaper metabolism* (0.004) on top: the pool's creatures paid half the muscle energy per
+    meter that random ones did, but more mouths per plant meant everyone ate less. Left at
+    0.012.
+  - Still nobody survives on what they find: the best pool creatures eat about 12 a minute
+    against 35 of resting burn, nobody is born, and none close in on food they can sense more
+    than chance would.
 - **One thread pool for many worlds wastes the machine.** With all worlds sharing one pool, eight
   of them ran about 4,000 steps per second. With a pool per world, seven ran about 7,400.
 

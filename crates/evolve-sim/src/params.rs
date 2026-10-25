@@ -199,8 +199,11 @@ params! {
         score_food_away: f32 = 4.0, [0, 50], Live;
         /// A kill's worth in the life score, in plants, when made at least `score_food_away` meters
         /// from where the killer fell or was born. Counting every kill rewarded heavy bodies that
-        /// sat still biting whatever landed against them.
-        score_kill: f32 = 3.0, [0, 50], Live;
+        /// sat still biting whatever landed against them, and even kills made away from there
+        /// (worth 3) were mostly luck in the thick of the rain: a third to two thirds of what got
+        /// lives into the gene pool. With 0, hunting pays only through the meat it brings, and
+        /// gene-pool creatures out-ate random ones by far more.
+        score_kill: f32 = 0.0, [0, 50], Live;
         /// Meters closed on food (while it has room to eat) worth as much in the life score as
         /// eating a plant.
         score_approach: f32 = 10.0, [0.1, 1000], Live;

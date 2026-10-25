@@ -162,7 +162,7 @@ fn only_food_a_creature_went_to_get_counts_toward_its_score() {
 
 #[test]
 fn only_kills_made_away_from_where_the_killer_landed_count_toward_its_score() {
-    let mut sim = Sim::new(quiet_params());
+    let mut sim = Sim::new(SimParams { score_kill: 3.0, ..quiet_params() });
     let mut rng = Rng::new(12);
     let at = sim.random_land_point(30.0);
     let killer = sim.spawn_creature(Genome::random(&mut rng, &sim.params), at, 0.0, f32::MAX, 0, None);
@@ -193,7 +193,7 @@ fn only_kills_made_away_from_where_the_killer_landed_count_toward_its_score() {
     kill(&mut sim, victims[1]);
     let c = sim.creature(killer).unwrap();
     assert_eq!((c.life.kills, c.life.kills_away), (2, 1));
-    assert_eq!(sim.score_parts(c)[1], sim.params.score_kill);
+    assert_eq!(sim.score_parts(c)[1], 3.0);
 }
 
 #[test]

@@ -632,13 +632,18 @@ fn fighting(ui: &mut egui::Ui, p: &SimParams) {
     sub(ui, "The victim");
     bullet(ui, "Feels pain (a sense its brain can learn to flee from) and a learning penalty in proportion to the damage. It can bite back on the same terms.");
     sub(ui, "A kill");
+    bullet(ui, "A creature whose health runs out within 5 s of a bite counts as killed by its last attacker.");
     bullet(
         ui,
-        format!(
-            "A creature whose health runs out within 5 s of a bite counts as killed by its last attacker, which scores {} points for it (score_kill, as much as eating that many plants) if the kill was made at least {} m from where the killer fell or was born (score_food_away).",
-            num(p.score_kill),
-            num(p.score_food_away)
-        ),
+        if p.score_kill > 0.0 {
+            format!(
+                "A kill adds {} to the killer's score (score_kill, as much as eating that many plants) if made at least {} m from where it fell or was born (score_food_away).",
+                num(p.score_kill),
+                num(p.score_food_away)
+            )
+        } else {
+            "A kill adds nothing to the killer's score by itself (score_kill): hunting pays through the meat. Scored kills were mostly luck in the thick of the rain, and bred creatures that sat biting whatever came near.".to_string()
+        },
     );
     bullet(ui, "The body leaves meat where it lay, for whoever gets to it first.");
     sub(ui, "Sizing each other up");
@@ -670,7 +675,7 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Hunting: {} per kill (score_kill) made that far away too. Counting every kill rewarded heavy bodies that sat still biting whatever landed against them.",
+            "Hunting: {} per kill (score_kill) made that far away too. Kills used to score 3, which bred heavy bodies that sat still biting whatever landed against them; now hunting pays through the meat it brings unless you raise it.",
             num(p.score_kill)
         ),
     );
