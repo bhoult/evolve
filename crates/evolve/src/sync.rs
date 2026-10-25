@@ -4,7 +4,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+use bevy::light::{NotShadowCaster, NotShadowReceiver};
 use bevy::prelude::*;
+use bevy::render::render_resource::Face;
 use evolve_sim::body::PartShape;
 use evolve_sim::genome::hsv_to_rgb;
 use evolve_sim::sim::ObstacleShape;
@@ -87,6 +89,7 @@ struct Shared3d {
     eye_mat: Handle<StandardMaterial>,
     rock_mat: Handle<StandardMaterial>,
     boulder_mat: Handle<StandardMaterial>,
+    outline_mat: Handle<StandardMaterial>,
     capsules: HashMap<(u32, u32), Handle<Mesh>>,
 }
 
@@ -122,7 +125,19 @@ struct Mirror {
     fruit: HashMap<u64, Entity>,
     meat: HashMap<u64, Entity>,
     obstacles: HashMap<u64, Entity>,
+    outline: Option<Outline>,
 }
+
+/// The gold rim round the selected creature: a shell on each body part (see `outline`).
+struct Outline {
+    creature: u64,
+    /// The creature's first part when the shells were made: a new one means the body was rebuilt.
+    root: Entity,
+    shells: Vec<Entity>,
+}
+
+/// How thick the selected creature's rim is, against the size of its biggest part.
+const OUTLINE: f32 = 0.15;
 
 impl Plugin for SyncPlugin {
     fn build(&self, app: &mut App) {
@@ -159,6 +174,13 @@ fn setup_assets(
         eye_mat: mat(&mut materials, Color::srgb(0.03, 0.03, 0.03), 0.2),
         rock_mat: mat(&mut materials, Color::srgb(0.42, 0.41, 0.40), 0.95),
         boulder_mat: mat(&mut materials, Color::srgb(0.55, 0.45, 0.35), 0.85),
+        // Unlit, and bright enough to bloom a little; only its inside faces are drawn.
+        outline_mat: materials.add(StandardMaterial {
+            base_color: Color::linear_rgb(1.6, 1.15, 0.15),
+            unlit: true,
+            cull_mode: Some(Face::Front),
+            ..default()
+        }),
         capsules: HashMap::new(),
     });
 }
@@ -379,6 +401,7 @@ fn sync_creatures(
             });
         }
     }
+    outline(&mut commands, &mut mirror, &shared, &mut meshes, &snap.creatures, selected);
     mirror.dying.retain(|d| {
         let t = ((now - d.since) / DEATH_FADE) as f32;
         if t >= 1.0 {
@@ -400,6 +423,49 @@ fn sync_creatures(
     });
 }
 
+/// Rings the selected creature in gold: each body part gets a slightly bigger copy of itself with
+/// only its inside drawn, so a rim shows round the body's outline (and at its joints). Unlit and
+/// casting no shadow, it shows in shade and at night. Made again when the selection changes or the
+/// body is rebuilt, and gone when the creature dies.
+fn outline(
+    commands: &mut Commands,
+    mirror: &mut Mirror,
+    shared: &Shared3d,
+    meshes: &mut Assets<Mesh>,
+    creatures: &[CreatureView],
+    selected: Option<u64>,
+) {
+    let want = selected.and_then(|id| Some((id, *mirror.creatures.get(&id)?.parts.first()?)));
+    if mirror.outline.as_ref().map(|o| (o.creature, o.root)) == want {
+        return;
+    }
+    if let Some(old) = mirror.outline.take() {
+        // Already gone if the body they hung on was despawned.
+        for e in old.shells {
+            commands.entity(e).try_despawn();
+        }
+    }
+    let Some((id, root)) = want else { return };
+    let Some(c) = creatures.iter().find(|c| c.id == id) else { return };
+    let roots = &mirror.creatures[&id].parts;
+    let w = (c.parts.iter().map(|p| p.shape.bounding_radius()).fold(0.0, f32::max) * OUTLINE).clamp(0.025, 0.1);
+    let mut shells = Vec::with_capacity(roots.len());
+    for (p, &part) in c.parts.iter().zip(roots) {
+        let (mesh, tf) = match p.shape {
+            PartShape::Box { half } => (shared.cube.clone(), Transform::from_scale(Vec3::from_array(half) * 2.0 + 2.0 * w)),
+            PartShape::Capsule { half_height, radius } => {
+                (meshes.add(Capsule3d::new(radius + w, half_height * 2.0)), Transform::IDENTITY)
+            }
+        };
+        let shell = commands
+            .spawn((Mesh3d(mesh), MeshMaterial3d(shared.outline_mat.clone()), tf, NotShadowCaster, NotShadowReceiver))
+            .id();
+        commands.entity(part).add_child(shell);
+        shells.push(shell);
+    }
+    mirror.outline = Some(Outline { creature: id, root, shells });
+}
+
 /// A loaded or new world reuses ids, so drop every mirrored entity and start over.
 fn reset_on_new_world(
     mut commands: Commands,
@@ -412,6 +478,7 @@ fn reset_on_new_world(
         return;
     }
     mirror.epoch = snap.0.world_epoch;
+    mirror.outline = None;
     // Every body size ever seen has a capsule mesh cached; start the new world's set afresh (the
     // meshes are freed once the despawned parts below let go of them).
     shared.capsules.clear();

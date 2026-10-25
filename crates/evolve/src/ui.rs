@@ -604,8 +604,25 @@ fn fmt_time(t: f64) -> String {
     }
 }
 
+/// A slider's label: the setting's name, said so that which way is faster can't be misread
+/// (`wear_recovery` up means slower healing), with the unit of a duration.
+fn param_label(info: &ParamInfo) -> String {
+    let name = match info.name {
+        "wear_recovery" => "wear heal time",
+        "earth_recovery" => "earth heal time",
+        "earth_rest" => "earth rest before healing",
+        n => n,
+    };
+    let unit = match info.doc.split_whitespace().next() {
+        Some("Minutes") => " (min)",
+        Some("Seconds") => " (s)",
+        _ => "",
+    };
+    format!("{}{unit}", name.replace('_', " "))
+}
+
 fn param_widget(ui: &mut egui::Ui, info: &ParamInfo, r: ParamRef<'_>, default: f64) -> bool {
-    let mut label = info.name.replace('_', " ");
+    let mut label = param_label(info);
     if info.kind == ParamKind::NewWorld {
         label.push_str(" ⟳");
     }
@@ -632,7 +649,7 @@ fn param_widget(ui: &mut egui::Ui, info: &ParamInfo, r: ParamRef<'_>, default: f
     if info.kind == ParamKind::NewWorld {
         tip.push_str("\n\n⟳ Takes effect when you press Regenerate terrain (or New world).");
     }
-    tip.push_str(&format!("\nDefault: {default}"));
+    tip.push_str(&format!("\nDefault: {default}  (setting: {})", info.name));
     resp.on_hover_text(tip).changed()
 }
 
