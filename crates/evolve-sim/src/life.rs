@@ -370,7 +370,9 @@ impl Sim {
                 // The angle the joint aims for moves at most this far per brain tick, so a limb
                 // swings rather than snapping between whatever the brain asks from tick to tick.
                 let len = c.plan.get(j.child).map_or(0.5, |s| s.shape.length()).max(0.05);
-                let step = p.max_joint_speed * (0.5 / len).sqrt().clamp(0.5, 1.5) * bdt;
+                // Like a pendulum's, down to segments of about 6 cm (capping it at 22 cm held legs of
+                // short segments to the stride of longer ones).
+                let step = p.max_joint_speed * (0.5 / len).sqrt().clamp(0.5, 3.0) * bdt;
                 for &(axis, d) in j.axes() {
                     if let Some(data) = body::axis_joint_mut(world, j, d) {
                         let want = mid + c.output(output::JOINTS + j.slot + d) * half;
@@ -387,13 +389,35 @@ impl Sim {
     }
 
     pub(crate) fn interact(&mut self, bdt: f32) {
+        // Each part timed; one that takes over a tenth of a second is logged by name (a slow one
+        // shows as a pause on screen).
+        let mut lap = std::time::Instant::now();
+        let mut slow: Vec<(&str, f32)> = Vec::new();
+        let mut time = |name: &'static str, lap: &mut std::time::Instant| {
+            let ms = lap.elapsed().as_secs_f32() * 1000.0;
+            if ms > 100.0 {
+                slow.push((name, ms));
+            }
+            *lap = std::time::Instant::now();
+        };
         self.grip();
+        time("gripping", &mut lap);
         self.trample(bdt);
+        time("trampling", &mut lap);
         self.eat(bdt);
+        time("eating", &mut lap);
         self.knock(bdt);
+        time("knocking", &mut lap);
         self.fight();
+        time("fighting", &mut lap);
         self.breed();
+        time("breeding", &mut lap);
+        let patches = self.terrain.dirty.len();
         self.earthworks(bdt);
+        time("digging and settling", &mut lap);
+        for (name, ms) in slow {
+            eprintln!("evolve: {name} took {ms:.0} ms ({patches} patches of changed ground, {} still sliding)", self.terrain.sliding.len());
+        }
     }
 
     /// Creatures digging earth out at their mouth (carrying it, up to a load set by their size)
