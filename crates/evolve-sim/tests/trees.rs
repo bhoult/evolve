@@ -188,6 +188,21 @@ fn overripe_fruit_falls_rots_and_sprouts() {
 }
 
 #[test]
+fn seedlings_take_root_on_land_full_of_grass() {
+    let mut sim = Sim::new(SimParams { plant_max_count: 20, tree_max_count: 10, tree_seedling_share: 0.0, ..bare_params() });
+    while sim.plants.len() < 20 {
+        let at = sim.random_land_point(5.0);
+        sim.add_plant(at, 10.0);
+    }
+    sim.params.tree_seedling_share = 1.0;
+    sim.params.plant_spawn_rate = 20.0;
+    run(&mut sim, 3.0);
+    let seedlings = sim.plants.iter().filter(|f| f.kind == PlantKind::Seedling).count();
+    assert!(seedlings > 0, "grass at its limit doesn't keep trees from seeding");
+    assert!(sim.plants.len() - seedlings <= 20 && seedlings + sim.trees.len() <= 10, "and each keeps to its own limit");
+}
+
+#[test]
 fn seeds_drift_downwind() {
     let mut sim = Sim::new(bare_params());
     let from = sim.random_land_point(20.0);

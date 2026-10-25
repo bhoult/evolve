@@ -441,7 +441,7 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Grown grass drops seeds up to {} m away (plant_spread_radius), and {} new plants a second sprout at random spots (plant_spawn_rate), {} of them tree seedlings (tree_seedling_share), up to {} plants in all (plant_max_count).",
+            "Grown grass drops seeds up to {} m away (plant_spread_radius), and {} new plants a second sprout at random spots (plant_spawn_rate), {} of them tree seedlings (tree_seedling_share), up to {} grass plants (plant_max_count).",
             num(p.plant_spread_radius),
             num(p.plant_spawn_rate),
             pct(p.tree_seedling_share),
@@ -452,7 +452,7 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "A seedling is soft and as easy to eat as grass, so grazing can stop a tree before it starts. One that grows full uneaten, at least {} m from any tree (tree_min_spacing), turns woody: a sapling that grows over about {} (tree_growth_time; slower on poor ground) to about {} m tall (tree_height, each within a fifth of it), up to {} trees (tree_max_count).",
+            "A seedling is soft and as easy to eat as grass, so grazing can stop a tree before it starts. One that grows full uneaten, at least {} m from any tree (tree_min_spacing), turns woody: a sapling that grows over about {} (tree_growth_time; slower on poor ground) to about {} m tall (tree_height, each within a fifth of it), up to {} trees and seedlings in all (tree_max_count).",
             num(p.tree_min_spacing),
             dur(p.tree_growth_time),
             num(p.tree_height),

@@ -743,13 +743,19 @@ impl Sim {
         g
     }
 
-    /// Plants a seed if the spot is fertile, in bounds and not crowded (a tree seedling also
-    /// needs to be clear of the shade of trees).
+    /// Plants a seed if the spot is fertile, in bounds and not crowded. A tree seedling also needs
+    /// to be clear of the shade of trees, and counts against the trees' limit rather than the
+    /// plants' (grass keeps that full, and would otherwise stop the forest renewing itself).
     pub(crate) fn try_plant_at(&mut self, pos: Vec3, energy: f32, kind: PlantKind, grid: &mut Grid) -> bool {
-        if self.plants.len() as u32 >= self.params.plant_max_count
-            || !self.terrain.contains(pos.x, pos.z, 1.0)
-            || (kind == PlantKind::Seedling && self.near_tree(pos, self.params.tree_min_spacing))
-        {
+        let seedlings = self.plants.iter().filter(|f| f.kind == PlantKind::Seedling).count();
+        let full = match kind {
+            PlantKind::Grass => (self.plants.len() - seedlings) as u32 >= self.params.plant_max_count,
+            PlantKind::Seedling => {
+                seedlings + self.trees.len() >= self.params.tree_max_count as usize
+                    || self.near_tree(pos, self.params.tree_min_spacing)
+            }
+        };
+        if full || !self.terrain.contains(pos.x, pos.z, 1.0) {
             return false;
         }
         let s = self.terrain.plant_suitability(

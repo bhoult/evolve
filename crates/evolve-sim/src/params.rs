@@ -274,7 +274,8 @@ params! {
         health_regen: f32 = 1.0, [0, 20], Live;
     }
     "Plants" {
-        /// Most plants the world can hold.
+        /// Most grass plants the world can hold (trees and their seedlings have their own limit,
+        /// `tree_max_count`).
         plant_max_count: u32 = 1600, [0, 20000], Live;
         /// Energy a plant gains per second on fully fertile ground.
         plant_growth: f32 = 0.4, [0, 10], Live;
@@ -290,7 +291,8 @@ params! {
         plant_min_spacing: f32 = 1.0, [0.1, 10], Live;
     }
     "Trees" {
-        /// Most trees the world can hold. Tree seedlings count as plants until they turn woody.
+        /// Most trees the world can hold, tree seedlings included (they're soft plants until they
+        /// turn woody, but don't count against `plant_max_count`, which grass keeps full).
         tree_max_count: u32 = 400, [0, 5000], Live;
         /// Height a tree grows to, m (each tree within a fifth of it either way).
         tree_height: f32 = 10.0, [2, 40], Live;
