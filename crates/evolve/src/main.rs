@@ -297,6 +297,7 @@ fn main() -> AppExit {
         .add_plugins((miracles::MiraclesPlugin, observatory::ObservatoryPlugin, flow::FlowPlugin))
         .add_systems(PreUpdate, refresh_snapshot)
         .add_systems(Update, (auto_screenshot, load_after))
+        .add_systems(Last, log_slow_frames)
         .run()
 }
 
@@ -319,6 +320,17 @@ fn refresh_snapshot(link: Res<SimLink>, time: Res<Time>, mut snap: ResMut<Snap>,
         .enumerate()
         .map(|(i, c)| (c.id, i))
         .collect();
+}
+
+/// A frame this slow shows as a pause: logged, with how long since the last one, so pauses can
+/// be told apart from the simulation's (the runner logs its own slow passes).
+fn log_slow_frames(time: Res<Time<Real>>, frames: Res<FrameCount>, mut last: Local<f64>) {
+    let dt = time.delta_secs_f64();
+    if dt > 0.1 && frames.0 > 120 {
+        let now = time.elapsed_secs_f64();
+        eprintln!("evolve: slow frame {:.0} ms (frame {}, {:.1} s since the last slow one)", dt * 1000.0, frames.0, now - *last);
+        *last = now;
+    }
 }
 
 fn load_after(args: Res<Args>, frames: Res<FrameCount>, link: Res<SimLink>) {

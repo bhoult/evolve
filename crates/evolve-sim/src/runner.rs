@@ -162,6 +162,9 @@ impl Caches {
     }
 }
 
+/// A pass of the runner's loop longer than this is logged with what it was spent on.
+const SLOW_PASS_MS: u64 = 120;
+
 fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo) {
     let mut paused = false;
     let mut speed = 1.0f32;
@@ -171,6 +174,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     let mut last_publish = Instant::now() - Duration::from_secs(1);
     let mut rate_window = (Instant::now(), 0u64);
     let mut steps_per_sec = 0.0f32;
+    // Time spent on the screen's copy of the terrain this pass.
+    let mut copying = Duration::ZERO;
     let mut cpu_percent = 0.0f32;
     let mut cpu_mark = (Instant::now(), crate::process_cpu_seconds().unwrap_or(0.0));
     let mut events: Vec<String> = Vec::new();
@@ -194,6 +199,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     // Background worlds whose thread stopped, already reported.
     let mut reported_stopped: Vec<usize> = Vec::new();
     loop {
+        let pass = Instant::now();
         // Background worlds must exist before commands that target them are handled.
         sync_workers(&mut workers, &sim, speed, paused, &board, &zoo);
         let mut reset_islands = false;
@@ -426,7 +432,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             rate_window.1 += 1;
             step_once = false;
         }
+        let (before_steps, before_tick) = (Instant::now(), sim.tick);
         rate_window.1 += pacer.run(&mut sim, speed, paused, Duration::from_millis(30), Some(&pool));
+        let stepping = before_steps.elapsed();
+        let stepped = before_tick..sim.tick;
         if reset_islands {
             next_zoo = sim.time + sim.params.zoo_interval as f64;
         }
@@ -501,7 +510,9 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 h.sort_by_key(|h| h.seq);
                 highlights = Arc::new(h);
             }
+            let before_copy = Instant::now();
             caches.refresh(&sim);
+            copying = before_copy.elapsed();
             let mut snap = sim.snapshot(caches.terrain.clone(), caches.history.clone());
             // The brain sketch is a little work for a big brain, so it's redone once a second.
             if let Some(sel) = snap.selected.as_mut() {
@@ -540,6 +551,27 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 *s = Arc::new(snap);
             }
         }
+        // A pass this slow shows as a pause on screen: say what it was spent on.
+        let took = pass.elapsed();
+        if took > Duration::from_millis(SLOW_PASS_MS) {
+            let ms = |d: Duration| d.as_secs_f32() * 1000.0;
+            let hydro = stepped.clone().any(|t| t % (crate::sim::TICKS_PER_SECOND * 2) == 0);
+            let p = &sim.perf;
+            eprintln!(
+                "evolve: slow pass {:.0} ms: stepping {:.0} ms ({} steps{}), copying the terrain {:.0} ms; per step lately think {:.1}, physics {:.1}, other {:.1} (interact {:.1}, water {:.1})",
+                ms(took),
+                ms(stepping),
+                stepped.end - stepped.start,
+                if hydro { ", with water" } else { "" },
+                ms(copying),
+                p.think_ms,
+                p.physics_ms,
+                p.other_ms,
+                p.other_parts[1],
+                p.other_parts[3]
+            );
+        }
+        copying = Duration::ZERO;
 
         if paused || speed > 0.0 {
             std::thread::sleep(Duration::from_millis(2));
