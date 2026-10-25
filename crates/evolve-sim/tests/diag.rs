@@ -754,7 +754,8 @@ fn economy() {
 
 /// The observatory's report on a world: a save (EVOLVE_DIAG_SAVE), or a new world seeded from a
 /// zoo (EVOLVE_ZOO_DIR, with EVOLVE_DIAG_MIN/MAX/SEED), run for EVOLVE_DIAG_SECS after a warm-up
-/// of EVOLVE_DIAG_WARM, with a summary line every minute. Extra params: EVOLVE_DIAG_SET="a=1,b=2".
+/// of EVOLVE_DIAG_WARM, with a summary line every minute (and a full report every
+/// EVOLVE_DIAG_REPORT_EVERY seconds, if set). Extra params: EVOLVE_DIAG_SET="a=1,b=2".
 /// `EVOLVE_ZOO_DIR=copy cargo test --release --test diag census -- --ignored --nocapture`
 #[test]
 #[ignore]
@@ -792,6 +793,8 @@ fn census() {
     let tps = evolve_sim::sim::TICKS_PER_SECOND as usize;
     let warm = env("EVOLVE_DIAG_WARM", 120.0) as usize;
     let secs = env("EVOLVE_DIAG_SECS", 300.0) as usize;
+    // A full report every this many seconds along the way too (0: only at the end).
+    let every = env("EVOLVE_DIAG_REPORT_EVERY", 0.0) as usize;
     for _ in 0..warm * tps {
         sim.step();
     }
@@ -801,6 +804,9 @@ fn census() {
         }
         if (s + 1) % 60 == 0 {
             println!("{}", sim.summary_line(60.0));
+        }
+        if every > 0 && (s + 1) % every == 0 && s + 1 < secs {
+            println!("\n{}", sim.report(every as f64));
         }
     }
     println!("\n{}", sim.report(secs as f64));
