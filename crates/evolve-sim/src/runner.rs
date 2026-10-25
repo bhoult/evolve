@@ -143,11 +143,11 @@ impl Caches {
     }
 
     fn refresh(&mut self, sim: &Sim) {
-        // The screen's copy of the ground: four times a second, less often on a big terrain,
-        // whose every copy is hundreds of MB (a second per 6 million points, so 4 s at 5000 a
-        // side).
+        // The screen's copy of the ground: four times a second, less often on a big terrain (a
+        // second at 5000 a side). The copy shares its layers with the world's until the world
+        // changes one, which then copies just that layer (`terrain::Layer`).
         let points = sim.terrain.heights.len() as f32;
-        let every = Duration::from_secs_f32((points / 6.0e6).max(0.25));
+        let every = Duration::from_secs_f32((points / 25.0e6).max(0.25));
         if sim.terrain.version != self.terrain_version && self.terrain_at.elapsed() >= every {
             self.terrain_version = sim.terrain.version;
             self.terrain = Arc::new(sim.terrain.clone());

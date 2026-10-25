@@ -193,7 +193,8 @@ impl Sim {
                 // Gnawed: it heals before it grows or bears again.
                 t.wood += whole * 0.002 * dt;
             } else {
-                let grow = (0.3 + 0.7 * s) * rain;
+                let wet = 1.0 + p.water_growth * terrain.near_water(t.pos.x, t.pos.z, crate::life::WATER_REACH);
+                let grow = (0.3 + 0.7 * s) * rain * wet;
                 let before = t.height;
                 t.height += (t.max_height - t.height) * rate * grow * dt;
                 t.wood += wood_for(&p, t.height) - wood_for(&p, before);

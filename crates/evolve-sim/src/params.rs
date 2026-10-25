@@ -306,6 +306,9 @@ params! {
         plant_spawn_rate: f32 = 2.0, [0, 100], Live;
         /// Minimum spacing between plants, m.
         plant_min_spacing: f32 = 1.0, [0.1, 10], Live;
+        /// Extra growth beside streams, ponds and lakes, for grass and trees: half again as fast
+        /// at 0.5 at the water's edge, less with distance, none `WATER_REACH` (5 m) away.
+        water_growth: f32 = 0.5, [0, 5], Live;
     }
     "Trees" {
         /// Most trees the world can hold, tree seedlings included (they're soft plants until they

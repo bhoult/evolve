@@ -83,7 +83,7 @@ pub fn drainage(t: &Terrain, water_level: f32) -> Drainage {
     let (n, h) = (t.res, &t.heights);
     let count = n * n;
     let mut receiver = vec![NONE; count];
-    let mut filled = h.clone();
+    let mut filled: Vec<f32> = h.to_vec();
     let mut seen = vec![false; count];
     let mut order = Vec::with_capacity(count);
     let mut heap = BinaryHeap::with_capacity(count / 4);
@@ -158,7 +158,7 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
     {
         let fine = &*t;
         let points: Vec<(f32, f32)> = (0..res * res).map(|k| c.point(k)).collect();
-        let sample = |src: &[f32]| points.par_iter().map(|&(x, z)| fine.sample(src, x, z).0).collect::<Vec<f32>>();
+        let sample = |src: &[f32]| points.par_iter().map(|&(x, z)| fine.sample(src, x, z).0).collect::<Vec<f32>>().into();
         c.heights = sample(&fine.heights);
         c.ground = sample(&fine.ground);
         c.eroded = sample(&fine.eroded);

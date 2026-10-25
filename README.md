@@ -497,7 +497,8 @@ A watch on a paused world waits until the world runs again.
 - *Terrain:* an island in an ocean. The coast follows the hills, with headlands and bays
   (`island_size`, `coast_roughness`). The terrain is a noise heightfield that is also the physics
   collider, with water at an adjustable level. Plants grow best just above the shoreline and
-  die when flooded.
+  die when flooded. Beside a stream, pond or lake they grow faster (`water_growth`: half again as
+  fast at the water's edge, less with distance, no faster 5 m away), grass and trees alike.
 - *Plants:* two kinds. Grass stays small and soft, seeds nearby, and fills open ground. Trees
   start as soft seedlings that grazing can stop. A seedling that grows full uneaten, clear of
   other trees, turns woody and grows over about an hour (`tree_growth_time`) into a tree 8–12 m

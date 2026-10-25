@@ -1,3 +1,6 @@
+use std::ops::{Deref, DerefMut};
+use std::sync::Arc;
+
 use rapier3d::prelude::{Array2, ColliderBuilder, SharedShape};
 use serde::{Deserialize, Serialize};
 
@@ -17,32 +20,32 @@ pub struct Terrain {
     pub size: f32,
     pub res: usize,
     /// Row-major: `heights[i * res + j]`.
-    pub heights: Vec<f32>,
+    pub heights: Layer,
     /// Patchiness of plant growth in [0, 1], same layout as `heights`.
-    pub fertility: Vec<f32>,
+    pub fertility: Layer,
     /// The ground as the world made it, before creatures dug or piled earth; empty in saves from
     /// before earthworks (then it's the current ground).
     #[serde(default)]
-    pub ground: Vec<f32>,
+    pub ground: Layer,
     /// How far running water has worn the ground down from `ground`, m. Kept apart from what
     /// creatures dug, so a stream bed isn't counted as their earthworks.
     #[serde(default)]
-    pub eroded: Vec<f32>,
+    pub eroded: Layer,
     /// Trampling: body mass times distance moved over each grid point, per m², fading as the
     /// ground recovers. See `worn`.
     #[serde(default)]
-    pub wear: Vec<f32>,
+    pub wear: Layer,
     /// Standing or running water on the ground (streams, lakes, ponds, puddles), m deep: the
     /// deeper of `pooled` and the stream running there.
     #[serde(default)]
-    pub water: Vec<f32>,
+    pub water: Layer,
     /// Water held in hollows (lakes, ponds, puddles), m deep. Unlike streams, which follow the
     /// rain, it stays until it evaporates or spills over (see `hydro`).
     #[serde(default)]
-    pub pooled: Vec<f32>,
+    pub pooled: Layer,
     /// How wet the soil is, 0 (dry) to 1 (soaked).
     #[serde(default)]
-    pub moisture: Vec<f32>,
+    pub moisture: Layer,
     /// Eternal springs, by grid point: each pours out water forever (see `hydro`).
     #[serde(default)]
     pub springs: Vec<u32>,
@@ -64,6 +67,9 @@ pub struct Terrain {
     /// at its deepest, m) since it was last rebuilt, and the pieces to rebuild for it.
     #[serde(skip)]
     pub erosion_drift: Vec<f32>,
+    /// Where the last `slump` left earth still sliding, to go on with next time.
+    #[serde(skip)]
+    pub sliding: Vec<(usize, usize, usize, usize)>,
     #[serde(skip)]
     pub worn_tiles: Vec<usize>,
 }
@@ -80,20 +86,81 @@ pub const ONE_PIECE: usize = 512;
 /// with a channel in it every 30 s stalled the world.
 pub const EROSION_REBUILD: f32 = 0.05;
 
+/// One layer of the grid (heights, water...), shared between copies of the terrain until one of
+/// them changes it, when that one gets its own. The screen takes a copy of the terrain several
+/// times a second, and copying every layer of a big one each time (800 MB at 5000 a side) paused
+/// the world.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Layer(Arc<Vec<f32>>);
+
+impl Layer {
+    /// Whether two copies still share this layer (neither has changed it since).
+    pub fn same(&self, other: &Layer) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Deref for Layer {
+    type Target = Vec<f32>;
+    fn deref(&self) -> &Vec<f32> {
+        &self.0
+    }
+}
+
+impl DerefMut for Layer {
+    fn deref_mut(&mut self) -> &mut Vec<f32> {
+        Arc::make_mut(&mut self.0)
+    }
+}
+
+impl<'a> IntoIterator for &'a Layer {
+    type Item = &'a f32;
+    type IntoIter = std::slice::Iter<'a, f32>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Layer {
+    type Item = &'a mut f32;
+    type IntoIter = std::slice::IterMut<'a, f32>;
+    fn into_iter(self) -> Self::IntoIter {
+        Arc::make_mut(&mut self.0).iter_mut()
+    }
+}
+
+impl From<Vec<f32>> for Layer {
+    fn from(v: Vec<f32>) -> Self {
+        Layer(Arc::new(v))
+    }
+}
+
+impl Serialize for Layer {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.0.as_slice().serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Layer {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Vec::<f32>::deserialize(d).map(Layer::from)
+    }
+}
+
 /// A placeholder 2x2 flat terrain, used before the first real snapshot arrives.
 impl Default for Terrain {
     fn default() -> Self {
         Terrain {
             size: 1.0,
             res: 2,
-            heights: vec![0.0; 4],
-            fertility: vec![0.0; 4],
-            ground: vec![0.0; 4],
-            eroded: vec![0.0; 4],
-            wear: vec![0.0; 4],
-            water: vec![0.0; 4],
-            pooled: vec![0.0; 4],
-            moisture: vec![0.0; 4],
+            heights: vec![0.0; 4].into(),
+            fertility: vec![0.0; 4].into(),
+            ground: vec![0.0; 4].into(),
+            eroded: vec![0.0; 4].into(),
+            wear: vec![0.0; 4].into(),
+            water: vec![0.0; 4].into(),
+            pooled: vec![0.0; 4].into(),
+            moisture: vec![0.0; 4].into(),
             springs: Vec::new(),
             spring_reach: Default::default(),
             dirty: Vec::new(),
@@ -101,6 +168,7 @@ impl Default for Terrain {
             coarse: None,
             erosion_drift: Vec::new(),
             worn_tiles: Vec::new(),
+            sliding: Vec::new(),
         }
     }
 }
@@ -145,14 +213,14 @@ impl Terrain {
         Self {
             size,
             res,
-            ground: heights.clone(),
-            heights,
-            fertility,
-            eroded: vec![0.0; n],
-            wear: vec![0.0; n],
-            water: vec![0.0; n],
-            pooled: vec![0.0; n],
-            moisture: vec![0.0; n],
+            ground: heights.clone().into(),
+            heights: heights.into(),
+            fertility: fertility.into(),
+            eroded: vec![0.0; n].into(),
+            wear: vec![0.0; n].into(),
+            water: vec![0.0; n].into(),
+            pooled: vec![0.0; n].into(),
+            moisture: vec![0.0; n].into(),
             springs: Vec::new(),
             spring_reach: Default::default(),
             version,
@@ -160,6 +228,7 @@ impl Terrain {
             coarse: None,
             erosion_drift: Vec::new(),
             worn_tiles: Vec::new(),
+            sliding: Vec::new(),
         }
     }
 
@@ -171,7 +240,7 @@ impl Terrain {
         }
         for layer in [&mut self.eroded, &mut self.wear, &mut self.water, &mut self.pooled, &mut self.moisture] {
             if layer.len() != n {
-                *layer = vec![0.0; n];
+                *layer = vec![0.0; n].into();
             }
         }
     }
@@ -218,7 +287,7 @@ impl Terrain {
         let mut t = Terrain { size: self.size, res, ..Terrain::default() };
         let n = res * res;
         let points: Vec<(f32, f32)> = (0..n).map(|k| t.point(k)).collect();
-        let layer = |src: &[f32]| points.iter().map(|&(x, z)| self.sample(src, x, z).0).collect::<Vec<f32>>();
+        let layer = |src: &[f32]| points.iter().map(|&(x, z)| self.sample(src, x, z).0).collect::<Vec<f32>>().into();
         t.heights = layer(&self.heights);
         t.ground = layer(&self.ground);
         t.eroded = layer(&self.eroded);
@@ -226,7 +295,7 @@ impl Terrain {
         t.water = layer(&self.water);
         t.pooled = layer(&self.pooled);
         t.moisture = layer(&self.moisture);
-        t.fertility = vec![0.0; n];
+        t.fertility = vec![0.0; n].into();
         t.springs = self.springs_on(&t);
         t
     }
@@ -244,6 +313,30 @@ impl Terrain {
         s.sort_unstable();
         s.dedup();
         s
+    }
+
+    /// How close a spot is to a stream, pond or lake (not the sea): 1 at the water's edge, down
+    /// to 0 at `reach` m or more. Looks about every metre, so it costs the same on any grid.
+    pub fn near_water(&self, x: f32, z: f32, reach: f32) -> f32 {
+        if self.water.len() != self.heights.len() || reach <= 0.0 {
+            return 0.0;
+        }
+        let (cell, n) = (self.cell(), self.res as isize);
+        let step = (1.0 / cell).ceil().max(1.0) as usize;
+        let r = (reach / cell).ceil() as isize;
+        let k = self.nearest(x, z) as isize;
+        let (i, j) = (k / n, k % n);
+        let mut best = f32::MAX;
+        for di in (-r..=r).step_by(step) {
+            for dj in (-r..=r).step_by(step) {
+                let (ii, jj) = (i + di, j + dj);
+                if ii < 0 || jj < 0 || ii >= n || jj >= n || self.water[(ii * n + jj) as usize] <= 0.03 {
+                    continue;
+                }
+                best = best.min((di * di + dj * dj) as f32);
+            }
+        }
+        (1.0 - best.sqrt() * cell / reach).max(0.0)
     }
 
     /// Water on the ground at a spot, m deep (streams, ponds, puddles; not the sea).
@@ -317,6 +410,7 @@ impl Terrain {
         if angle >= 90.0 || self.res < 2 {
             return true;
         }
+        self.sliding.clear();
         let mut settled = true;
         for patch in self.dirty.clone() {
             settled &= self.slump_patch(patch, angle, max_dig, max_pile, passes);
@@ -379,6 +473,7 @@ impl Terrain {
         }
         if let Some((a, b, c, d)) = moved_any {
             self.mark_dirty(a, b, c, d);
+            self.sliding.push((a, b, c, d));
         }
         false
     }
@@ -476,12 +571,14 @@ impl Terrain {
             }
         }
         self.dirty.push(r);
-        if self.dirty.len() > 256 {
-            // Too many to keep apart: merge those in the same 256-cell block.
+        if self.dirty.len() > 4096 {
+            // Too many to keep apart: merge those in the same 64-cell block. (Merging into bigger
+            // blocks, with hundreds of creatures digging, had slopes settle over millions of
+            // points twice a second.)
             let mut blocks: std::collections::BTreeMap<(usize, usize), (usize, usize, usize, usize)> = Default::default();
             for x in self.dirty.drain(..) {
                 blocks
-                    .entry((x.0 / 256, x.2 / 256))
+                    .entry((x.0 / 64, x.2 / 64))
                     .and_modify(|y| *y = (x.0.min(y.0), x.1.max(y.1), x.2.min(y.2), x.3.max(y.3)))
                     .or_insert(x);
             }

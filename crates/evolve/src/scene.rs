@@ -748,8 +748,8 @@ mod tests {
     #[test]
     fn packed_water_unpacks_to_what_it_was() {
         let mut t = terrain(65, 100.0);
-        t.water = vec![0.0; t.res * t.res];
-        t.moisture = vec![0.0; t.res * t.res];
+        t.water = vec![0.0; t.res * t.res].into();
+        t.moisture = vec![0.0; t.res * t.res].into();
         t.water[10] = 0.37;
         t.moisture[10] = 0.8;
         let v = pack_surface(&t, 10);
@@ -788,12 +788,12 @@ mod tests {
             let count = t.res * t.res;
             let mid = count / 2;
             let mut was = t.clone();
-            was.moisture = vec![0.3005; count];
-            was.water = vec![0.0; count];
+            was.moisture = vec![0.3005; count].into();
+            was.water = vec![0.0; count].into();
             let mut changed = t.clone();
             changed.heights[mid] += 0.1;
-            changed.moisture = vec![0.3; count];
-            changed.water = vec![0.0; count];
+            changed.moisture = vec![0.3; count].into();
+            changed.water = vec![0.0; count].into();
             changed.water[mid + 5] = 0.2;
             let started = Instant::now();
             let marks: Vec<(bool, bool)> = chunks.par_iter().map(|c| chunk_changes(&was, &changed, (c.i0, c.j0, c.ni, c.nj))).collect();

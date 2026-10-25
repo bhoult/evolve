@@ -53,6 +53,9 @@ pub(crate) fn call_loudness(c: &Creature) -> f32 {
     ((c.output(output::CALL) - 0.2) / 0.8).max(0.0)
 }
 
+/// How far from water plants still grow faster for it, m (see `water_growth`).
+pub const WATER_REACH: f32 = 5.0;
+
 pub(crate) fn food_grid(size: f32, food: &[Food]) -> Grid {
     let mut g = Grid::new(size, GRID_CELL);
     g.rebuild(food.iter().map(|f| f.pos));
@@ -373,13 +376,13 @@ impl Sim {
         self.settled_at = self.time;
         // Steep loose earth slides first; what's still sliding goes on next time.
         let p = &self.params;
-        let settled = self.terrain.slump(p.slump_angle, p.dig_depth, p.pile_height, 24);
+        self.terrain.slump(p.slump_angle, p.dig_depth, p.pile_height, 24);
         let patches = self.terrain.take_dirty();
         let worn = std::mem::take(&mut self.terrain.worn_tiles);
-        if !settled {
-            for &(i0, i1, j0, j1) in &patches {
-                self.terrain.mark_dirty(i0, i1, j0, j1);
-            }
+        // Only where earth is still sliding goes on next time (carrying every patch over while
+        // any slid had them pile up into the hundreds).
+        for (i0, i1, j0, j1) in std::mem::take(&mut self.terrain.sliding) {
+            self.terrain.mark_dirty(i0, i1, j0, j1);
         }
         // The same ground in every physics world: the pieces of it that changed.
         let n = self.terrain.tiles();
@@ -402,7 +405,22 @@ impl Sim {
         let at = |k: usize| (k as f32 / n - 0.5) * size;
         let areas: Vec<(f32, f32, f32, f32)> =
             patches.iter().map(|&(i0, i1, j0, j1)| (at(j0) - 1.0, at(j1) + 1.0, at(i0) - 1.0, at(i1) + 1.0)).collect();
-        let inside = |pos: Vec3| areas.iter().any(|&(x0, x1, z0, z1)| pos.x >= x0 && pos.x <= x1 && pos.z >= z0 && pos.z <= z1);
+        // The changed areas on a map of 2 m squares, so checking a spot costs the same however
+        // many patches there are (with hundreds of creatures digging, testing every plant and
+        // body part against every patch was most of the work).
+        const SQUARE: f32 = 2.0;
+        let squares = (size / SQUARE).ceil() as usize + 1;
+        let to_square = |v: f32| (((v + size * 0.5) / SQUARE).floor().max(0.0) as usize).min(squares - 1);
+        let mut changed = vec![false; squares * squares];
+        for &(x0, x1, z0, z1) in &areas {
+            for i in to_square(z0)..=to_square(z1) {
+                changed[i * squares + to_square(x0)..=i * squares + to_square(x1)].fill(true);
+            }
+        }
+        let inside = |pos: Vec3| {
+            changed[to_square(pos.z) * squares + to_square(pos.x)]
+                && areas.iter().any(|&(x0, x1, z0, z1)| pos.x >= x0 && pos.x <= x1 && pos.z >= z0 && pos.z <= z1)
+        };
         for k in 0..self.plants.len() {
             let pos = self.plants[k].pos;
             if inside(pos) {
@@ -874,7 +892,8 @@ impl Sim {
         }
     }
 
-    pub(crate) fn ecology(&mut self, dt: f32) {
+    /// Plants grow (and wither where they can't), seed and sprout, for `dt` simulated seconds.
+    pub fn ecology(&mut self, dt: f32) {
         let p = self.params.clone();
         let rain = 1.0 + p.rain_plant_growth * self.weather.rain;
         for f in &mut self.plants {
@@ -885,7 +904,8 @@ impl Sim {
                 // Flooded or on bare rock: wither.
                 f.energy -= p.plant_max_energy * 0.1 * dt;
             } else {
-                f.energy = (f.energy + p.plant_growth * rain * (0.2 + 0.8 * s) * dt).min(p.plant_max_energy);
+                let wet = 1.0 + p.water_growth * self.terrain.near_water(f.pos.x, f.pos.z, WATER_REACH);
+                f.energy = (f.energy + p.plant_growth * rain * wet * (0.2 + 0.8 * s) * dt).min(p.plant_max_energy);
             }
         }
         self.plants.retain(|f| f.energy > 0.0);

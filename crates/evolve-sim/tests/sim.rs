@@ -700,7 +700,7 @@ fn a_meteor_digs_a_crater_kills_what_it_hits_and_throws_what_is_near() {
 /// The ground height at (x, z) in a copy of the heights from before.
 fn before_height(before: &[f32], sim: &Sim, x: f32, z: f32) -> f32 {
     let mut t = sim.terrain.clone();
-    t.heights = before.to_vec();
+    t.heights = before.to_vec().into();
     t.height_at(x, z)
 }
 

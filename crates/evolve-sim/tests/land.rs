@@ -522,3 +522,36 @@ fn a_big_terrain_has_its_physics_ground_in_pieces() {
     assert!(!changed.is_empty() && changed.len() <= 4, "pieces rebuilt: {changed:?}");
     assert!(changed.iter().all(|&k| (1..=2).contains(&(k / 8)) && (1..=2).contains(&(k % 8))), "pieces rebuilt: {changed:?}");
 }
+
+/// Plants grow faster beside water (`water_growth`), less so farther off, and not at all
+/// faster `WATER_REACH` away.
+#[test]
+fn plants_grow_faster_beside_water() {
+    // 1 m between grid points.
+    let p = SimParams { terrain_resolution: 221, plant_spawn_rate: 0.0, plant_spread_rate: 0.0, ..quiet_params() };
+    let mut sim = Sim::new(p);
+    sim.plants.clear();
+    let at = sim.random_land_point(30.0);
+    // A stream 4 m wide along x = at.x.
+    let t = &mut sim.terrain;
+    for k in 0..t.water.len() {
+        let (x, _) = t.point(k);
+        t.water[k] = if (x - at.x).abs() < 2.0 { 0.2 } else { 0.0 };
+    }
+    let (near, away) = (at.x + 3.0, at.x + 20.0);
+    let beside = sim.add_plant(evolve_sim::math::Vec3::new(near, 0.0, at.z), 1.0).unwrap();
+    let far = sim.add_plant(evolve_sim::math::Vec3::new(away, 0.0, at.z), 1.0).unwrap();
+    assert!(sim.terrain.near_water(near, at.z, 5.0) > 0.5, "{}", sim.terrain.near_water(near, at.z, 5.0));
+    assert_eq!(sim.terrain.near_water(away, at.z, 5.0), 0.0);
+    let energy = |sim: &Sim, id: u64| sim.plants.iter().find(|f| f.id == id).map_or(0.0, |f| f.energy);
+    let suit = |sim: &Sim, x: f32| sim.terrain.plant_suitability(x, at.z, sim.params.water_level, sim.params.terrain_height);
+    let (s1, s2) = (suit(&sim, near), suit(&sim, away));
+    assert!(s1 > 0.0 && s2 > 0.0, "both on ground plants can grow on: {s1} {s2}");
+    for _ in 0..10 {
+        sim.ecology(1.0);
+    }
+    // Growth per second is plant_growth * (0.2 + 0.8 * suitability), times the water's boost.
+    let per = |s: f32| 0.2 + 0.8 * s;
+    let (g1, g2) = ((energy(&sim, beside) - 1.0) / per(s1), (energy(&sim, far) - 1.0) / per(s2));
+    assert!(g1 > 1.2 * g2, "beside water {g1:.3} vs away {g2:.3} (per unit of suitability)");
+}

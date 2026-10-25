@@ -431,10 +431,11 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Grass and tree seedlings hold up to {} energy and gain up to {} a second (plant_max_energy, plant_growth), {} faster in a downpour (rain_plant_growth).",
+            "Grass and tree seedlings hold up to {} energy and gain up to {} a second (plant_max_energy, plant_growth), {} faster in a downpour (rain_plant_growth) and up to {} faster beside a stream, pond or lake, less with distance, none 5 m away (water_growth; trees too).",
             num(p.plant_max_energy),
             num(p.plant_growth),
-            pct(p.rain_plant_growth)
+            pct(p.rain_plant_growth),
+            pct(p.water_growth)
         ),
     );
     bullet(ui, "They grow best on gentle, fertile slopes just above the shore, and poorly toward the peaks, on steep ground and on trampled paths. Nothing grows in a stream or a pond, and flooded plants wither.");
