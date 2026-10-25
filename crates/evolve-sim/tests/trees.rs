@@ -275,6 +275,25 @@ fn a_forest_saves_and_loads() {
 }
 
 #[test]
+fn a_world_saved_before_trees_grows_its_forest_when_loaded() {
+    let mut sim = Sim::new(SimParams { tree_max_count: 40, plant_max_count: 200, ..bare_params() });
+    // As a save from before trees would be.
+    sim.trees.clear();
+    sim.fruit.clear();
+    sim.sync_trunks();
+    sim.forest_planted = false;
+    let dir = std::env::temp_dir().join(format!("evolve-treeless-{}", std::process::id()));
+    let path = dir.join("old.evo");
+    save::save(&mut sim, &path).unwrap();
+    let loaded = save::load(&path).unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(loaded.trees.len() >= 10, "it has a forest of every age at once: {} trees", loaded.trees.len());
+    assert!(loaded.forest_planted);
+    let solid = loaded.trees.iter().filter(|t| t.solid()).map(|t| t.id).collect::<Vec<_>>();
+    assert!(!solid.is_empty() && loaded.shards.iter().all(|s| solid.iter().all(|id| s.trunks.contains_key(id))));
+}
+
+#[test]
 fn plants_saved_before_trees_load_as_grass() {
     #[derive(serde::Serialize)]
     struct OldFood {

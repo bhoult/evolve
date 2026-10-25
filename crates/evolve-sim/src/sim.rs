@@ -335,6 +335,9 @@ pub struct Sim {
     /// Fruit hanging in the trees and lying under them.
     #[serde(default)]
     pub fruit: Vec<crate::forest::Fruit>,
+    /// Whether the world has had its first trees (false in saves from before trees).
+    #[serde(default)]
+    pub forest_planted: bool,
     pub obstacles: Vec<Obstacle>,
     pub rng: Rng,
     pub tick: u64,
@@ -445,6 +448,7 @@ impl Sim {
             meat: Vec::new(),
             trees: Vec::new(),
             fruit: Vec::new(),
+            forest_planted: true,
             obstacles: Vec::new(),
             rng,
             tick: 0,
@@ -539,6 +543,11 @@ impl Sim {
         self.init_brains();
         // (Also gives worlds loaded from a save their threads.)
         self.resize_shards();
+        // A world saved before trees grows its forest now, rather than over hours from seedlings.
+        if !self.forest_planted {
+            self.plant_forest();
+            self.forest_planted = true;
+        }
     }
 
     /// Opens the GPU for brains (unless `EVOLVE_CPU_BRAINS` is set or there is none) and uploads

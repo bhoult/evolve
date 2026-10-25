@@ -502,7 +502,7 @@ A watch on a paused world waits until the world runs again.
   - *Old trees* die after about four hours (`tree_lifespan`) and fall, dropping their fruit.
   - The plant sense points at the nearest food a creature could eat (grass, seedlings, fallen
     fruit, fruit within reach), never at wood. Saves from before trees load with their plants as
-    grass; trees then grow from seedlings.
+    grass, and get a forest of mixed ages planted the first time they load.
 - *Day and weather:* the sun rises and sets over `day_length` (15 simulated minutes; nights take
   about a third of it). Clouds, rain and storms come and go on their own (`weather_period`,
   `storminess`).
