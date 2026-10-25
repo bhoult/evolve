@@ -326,9 +326,105 @@ pub struct Perf {
     /// time shows how well the worlds run in parallel).
     pub shard_slowest_ms: f32,
     pub shard_total_ms: f32,
-    /// "Other" by part, ms per step: after physics (senses of the ground, eyes, breath...),
-    /// interacting and metabolism, ecology (plants, trees), water, and the rest (rain, deaths).
-    pub other_parts: [f32; 5],
+    /// Each phase of the step (named in `PHASE_NAMES`), ms per step, smoothed. Phases that run
+    /// only now and then (brains, ecology, water) count as their cost spread over the steps
+    /// between.
+    pub phases: [f32; PHASES],
+    /// This step's phases so far, before smoothing.
+    pub this_step: [f32; PHASES],
+    /// The runner's work for the screen, ms each time (smoothed): building a snapshot, and taking
+    /// a fresh copy of the terrain when it has changed.
+    pub publish_ms: f32,
+    pub terrain_copy_ms: f32,
+}
+
+/// Runs `f` on every creature together with the physics world it's in, the worlds in parallel
+/// (all of a creature's bodies are in its own world, so their work never overlaps), and returns
+/// what `f` gave for each creature, in creature order. Each world takes its creatures in creature
+/// order, so the outcome is the same however many threads there are.
+pub(crate) fn in_shards<R: Send>(
+    creatures: &mut [Creature],
+    shards: &mut [Shard],
+    f: impl Fn(&mut Creature, &mut PhysicsWorld) -> R + Sync,
+) -> Vec<R> {
+    use rayon::prelude::*;
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); shards.len()];
+    for (i, c) in creatures.iter().enumerate() {
+        groups[c.shard].push(i);
+    }
+    let all = Creatures(creatures.as_mut_ptr());
+    let done: Vec<Vec<(usize, R)>> = shards
+        .par_iter_mut()
+        .zip(groups.par_iter())
+        .map(|(shard, group)| {
+            group
+                .iter()
+                .map(|&i| {
+                    // SAFETY: every creature index is in exactly one world's group and each group
+                    // is run by one task, so no two tasks reach the same creature; the slice
+                    // outlives the tasks, which end before this function returns.
+                    let c = unsafe { &mut *all.at(i) };
+                    (i, f(c, &mut shard.world))
+                })
+                .collect()
+        })
+        .collect();
+    let mut slots: Vec<Option<R>> = std::iter::repeat_with(|| None).take(creatures.len()).collect();
+    for (i, r) in done.into_iter().flatten() {
+        slots[i] = Some(r);
+    }
+    slots.into_iter().map(|r| r.expect("every creature is in a world")).collect()
+}
+
+/// The creatures, shared between the worlds' tasks in `in_shards`, each task taking only its own.
+struct Creatures(*mut Creature);
+
+impl Creatures {
+    fn at(&self, i: usize) -> *mut Creature {
+        // SAFETY: `i` is an index into the slice the pointer was taken from (see `in_shards`).
+        unsafe { self.0.add(i) }
+    }
+}
+
+// SAFETY: the tasks that share it never touch the same creature (see `in_shards`).
+unsafe impl Send for Creatures {}
+unsafe impl Sync for Creatures {}
+
+/// The phases of a step, in order, as `Perf::phases` times them.
+pub const PHASES: usize = 17;
+pub const PHASE_NAMES: [&str; PHASES] = [
+    "weather and totems",
+    "brain results",
+    "calls and lookup grids",
+    "senses",
+    "brains",
+    "muscles",
+    "regrouping",
+    "forces",
+    "physics",
+    "after physics",
+    "interacting",
+    "metabolism",
+    "ecology",
+    "water",
+    "history",
+    "rain",
+    "deaths",
+];
+
+impl Perf {
+    /// The phases of a step in a line, e.g. "senses 1.20, physics 12.4, ... ms".
+    pub fn phases_line(&self) -> String {
+        let parts: Vec<String> = PHASE_NAMES.iter().zip(&self.phases).map(|(n, ms)| format!("{n} {ms:.2}")).collect();
+        format!("{} ms per step", parts.join(", "))
+    }
+
+    /// Adds the time since `since` to this step's phase `k`, and moves `since` on to now.
+    pub(crate) fn lap(&mut self, k: usize, since: &mut Instant) {
+        let now = Instant::now();
+        self.this_step[k] += (now - *since).as_secs_f32() * 1000.0;
+        *since = now;
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1504,18 +1600,25 @@ impl Sim {
         let bdt = brain_every as f32 * DT;
 
         let t0 = Instant::now();
+        self.perf.this_step = [0.0; PHASES];
+        let mut lap = t0;
         if self.tick % 6 == 0 {
             self.acts.expire(self.time);
             self.refresh_weather();
         }
         if brain_tick {
             self.totem_urges();
+            self.perf.lap(0, &mut lap);
             self.think(bdt);
+        } else {
+            self.perf.lap(0, &mut lap);
         }
         let t1 = Instant::now();
+        lap = t1;
         if self.tick % REGROUP_EVERY == 0 {
             self.regroup();
         }
+        self.perf.lap(6, &mut lap);
         self.move_whirlwinds(DT);
         if self.tick % 30 == 0 {
             self.wash_away();
@@ -1523,6 +1626,7 @@ impl Sim {
         self.environment_forces();
         self.carry();
         let t_forces = Instant::now();
+        self.perf.lap(7, &mut lap);
         // The physics worlds step in parallel: rapier solves a world's articulations on one
         // thread.
         let times: Vec<f32> = {
@@ -1537,6 +1641,7 @@ impl Sim {
                 .collect()
         };
         let t2 = Instant::now();
+        self.perf.lap(8, &mut lap);
         let k = 0.05;
         let slowest = times.iter().copied().fold(0.0, f32::max);
         let total: f32 = times.iter().sum();
@@ -1544,31 +1649,35 @@ impl Sim {
         self.perf.shard_total_ms += (total - self.perf.shard_total_ms) * k;
         self.perf.forces_ms += ((t_forces - t1).as_secs_f32() * 1000.0 - self.perf.forces_ms) * k;
         self.after_physics();
-        let ta = Instant::now();
+        self.perf.lap(9, &mut lap);
         if brain_tick {
             self.interact(bdt);
+            self.perf.lap(10, &mut lap);
             self.metabolism(bdt);
+            self.perf.lap(11, &mut lap);
         }
-        let ti = Instant::now();
         if self.tick % TICKS_PER_SECOND == 0 {
             self.ecology(1.0);
+            self.perf.lap(12, &mut lap);
         }
-        let te = Instant::now();
         if self.tick % (TICKS_PER_SECOND * HYDROLOGY_EVERY) == 0 {
             self.hydrology(HYDROLOGY_EVERY as f32);
+            self.perf.lap(13, &mut lap);
         }
-        let th = Instant::now();
         if self.tick % (TICKS_PER_SECOND * 2) == 0 {
             self.sample_history();
         }
-        self.rain(DT);
         if !self.watches.is_empty() && self.tick % 6 == 0 {
             self.sample_watches();
         }
+        self.perf.lap(14, &mut lap);
+        self.rain(DT);
+        self.perf.lap(15, &mut lap);
         self.process_deaths();
         self.tick += 1;
         self.time += DT as f64;
         let t3 = Instant::now();
+        self.perf.lap(16, &mut lap);
 
         // Smoothed per-step timings for the UI.
         let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
@@ -1576,9 +1685,8 @@ impl Sim {
         self.perf.think_ms += (ms(t0, t1) - self.perf.think_ms) * k;
         self.perf.physics_ms += (ms(t1, t2) - self.perf.physics_ms) * k;
         self.perf.other_ms += (ms(t2, t3) - self.perf.other_ms) * k;
-        // What "other" is made of, per step (ecology and water run now and then, so these are
-        // their cost spread over the steps between).
-        for (x, v) in self.perf.other_parts.iter_mut().zip([ms(t2, ta), ms(ta, ti), ms(ti, te), ms(te, th), ms(th, t3)]) {
+        let Perf { phases, this_step, .. } = &mut self.perf;
+        for (x, v) in phases.iter_mut().zip(this_step.iter()) {
             *x += (v - *x) * k;
         }
     }
@@ -1615,8 +1723,10 @@ impl Sim {
                 }
             }
         }
-        for c in &mut self.creatures {
-            let world = &mut self.shards[c.shard].world;
+        // Each creature's parts, its world's creatures together, the worlds in parallel.
+        let (acts, terrain, time, kicks) = (&self.acts, &self.terrain, self.time, &kicks);
+        let creature_splashes = in_shards(&mut self.creatures, &mut self.shards, |c, world| {
+            let mut splash = None;
             for (k, part) in c.parts.iter().enumerate() {
                 let Some(b) = world.bodies.get_mut(part.body) else {
                     continue;
@@ -1634,16 +1744,16 @@ impl Sim {
                     b.add_force(c.urge_push * m, true);
                 }
                 // An earthquake shakes every part (the same for a whole creature).
-                let shake = self.acts.shaking(b.translation().x, b.translation().z, self.time, (c.id % 97) as f32 * 0.37);
+                let shake = acts.shaking(b.translation().x, b.translation().z, time, (c.id % 97) as f32 * 0.37);
                 if shake != Vec3::ZERO {
                     let m = b.mass();
                     b.add_force(shake * m, true);
                 }
                 // A whirlwind drags each part toward its air (over about half a second), and
                 // holds up some of its weight in the core, so it lifts heavy bodies too.
-                for w in &self.acts.whirlwinds {
+                for w in &acts.whirlwinds {
                     let pos = b.translation();
-                    let air = w.wind_at(pos, || self.terrain.height_at(pos.x, pos.z), self.time);
+                    let air = w.wind_at(pos, || terrain.height_at(pos.x, pos.z), time);
                     if air != Vec3::ZERO {
                         let m = b.mass();
                         let pull = ((air - b.linvel()) / 0.6).clamp_length_max(40.0);
@@ -1655,12 +1765,12 @@ impl Sim {
                 let pos = b.translation();
                 let vr = shape.vertical_radius().max(0.02);
                 // The sea, or a lake, pond or stream standing higher than it here, or a tsunami.
-                let wave = self.acts.tsunami_surface(pos.x, pos.z, self.time, sea);
-                let wl = self.terrain.water_surface(pos.x, pos.z, sea).max(wave.unwrap_or(f32::MIN));
+                let wave = acts.tsunami_surface(pos.x, pos.z, time, sea);
+                let wl = terrain.water_surface(pos.x, pos.z, sea).max(wave.unwrap_or(f32::MIN));
                 let frac = ((wl - (pos.y - vr)) / (2.0 * vr)).clamp(0.0, 1.0);
                 if k == 0 {
                     if c.in_water < 0.3 && frac >= 0.3 && b.linvel().y < -1.5 {
-                        splashes.push((c.id, pos));
+                        splash = Some((c.id, pos));
                     }
                     c.in_water = frac;
                 }
@@ -1679,7 +1789,7 @@ impl Sim {
                 b.add_force(Vec3::Y * buoy / DT, false);
                 // A tsunami's water rushes on with it: drag is against the moving water, so it
                 // carries what it covers.
-                let flow = match (&self.acts.tsunami, wave) {
+                let flow = match (&acts.tsunami, wave) {
                     (Some(t), Some(_)) => Vec3::new(t.dir[0], 0.0, t.dir[1]) * crate::acts::TSUNAMI_SPEED,
                     _ => Vec3::ZERO,
                 };
@@ -1713,7 +1823,9 @@ impl Sim {
                 let w = b.angvel();
                 b.add_torque(-w * (spin_inertia(b) * ang_damp / DT), false);
             }
-        }
+            splash
+        });
+        splashes.extend(creature_splashes.into_iter().flatten());
         for (id, at) in splashes {
             self.highlight(HighlightKind::Splash, id, None, at);
         }
@@ -1759,13 +1871,15 @@ impl Sim {
         let terrain = &self.terrain;
         let rain = self.weather.rain;
         let wl = p.water_level;
-        let mut drowned = Vec::new();
-        let mut impacts = Vec::new();
-        for c in &mut self.creatures {
+        let (acts, time) = (&self.acts, self.time);
+        // Each creature on its own world's thread (see `in_shards`): whether it began to drown,
+        // and the parts that hit the ground hard.
+        let results = in_shards(&mut self.creatures, &mut self.shards, |c, world| {
+            let mut drowned = None;
+            let mut impacts = Vec::new();
             if c.dead.is_some() {
-                continue;
+                return (drowned, impacts);
             }
-            let world = &mut self.shards[c.shard].world;
             let mut work = 0.0;
             for j in &c.joints {
                 let w = body::muscle_work(world, &c.parts, j, DT);
@@ -1809,7 +1923,7 @@ impl Sim {
             }
             if bad {
                 c.dead = Some(DeathCause::Glitch);
-                continue;
+                return (drowned, impacts);
             }
             // Over the speed or spin cap: the whole creature slows together (its joints stay
             // together; slowing one part alone would wrench them).
@@ -1833,7 +1947,7 @@ impl Sim {
             if pos.y < terrain.height_at(pos.x, pos.z) - 3.0 || !terrain.contains(pos.x, pos.z, -3.0) {
                 // Tunneled through the ground or out of the world.
                 c.dead = Some(DeathCause::Glitch);
-                continue;
+                return (drowned, impacts);
             }
 
             // Breathing: muscles burn oxygen in proportion to their power per kg of body; the
@@ -1845,7 +1959,7 @@ impl Sim {
             let power = work / DT / c.mass.max(0.1);
             c.exertion += (power - c.exertion) * (DT / 1.0);
             let exertion = p.exertion_oxygen * power;
-            let wave = self.acts.tsunami_surface(mouth.x, mouth.z, self.time, p.water_level);
+            let wave = acts.tsunami_surface(mouth.x, mouth.z, time, p.water_level);
             let surface = terrain.water_surface(mouth.x, mouth.z, p.water_level).max(wave.unwrap_or(f32::MIN));
             let head_under = mouth.y < surface - 0.05 || c.in_water >= 0.95;
             if head_under {
@@ -1857,7 +1971,7 @@ impl Sim {
             c.oxygen = c.oxygen.min(1.0);
             let suffocating = head_under && c.oxygen <= 0.0;
             if !c.drowning && suffocating {
-                drowned.push((c.id, pos));
+                drowned = Some((c.id, pos));
             }
             c.drowning = suffocating;
             if c.oxygen <= 0.0 {
@@ -1879,12 +1993,15 @@ impl Sim {
             if c.hydration <= 0.0 {
                 c.health -= p.dehydration_damage * DT;
             }
-        }
-        for (id, at) in drowned {
-            self.highlight(HighlightKind::Drowning, id, None, at);
-        }
-        for (id, at, strength) in impacts {
-            self.highlight_with(HighlightKind::Impact, id, None, at, strength);
+            (drowned, impacts)
+        });
+        for (drowned, impacts) in results {
+            if let Some((id, at)) = drowned {
+                self.highlight(HighlightKind::Drowning, id, None, at);
+            }
+            for (id, at, strength) in impacts {
+                self.highlight_with(HighlightKind::Impact, id, None, at, strength);
+            }
         }
     }
 

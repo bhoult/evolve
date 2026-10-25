@@ -142,16 +142,21 @@ impl Caches {
         }
     }
 
-    fn refresh(&mut self, sim: &Sim) {
+    /// Takes fresh copies of what changed; returns how long copying the terrain took, ms, if it
+    /// was copied.
+    fn refresh(&mut self, sim: &Sim) -> Option<f32> {
         // The screen's copy of the ground: four times a second, less often on a big terrain (a
         // second at 5000 a side). The copy shares its layers with the world's until the world
         // changes one, which then copies just that layer (`terrain::Layer`).
         let points = sim.terrain.heights.len() as f32;
         let every = Duration::from_secs_f32((points / 25.0e6).max(0.25));
+        let mut copied = None;
         if sim.terrain.version != self.terrain_version && self.terrain_at.elapsed() >= every {
+            let start = Instant::now();
             self.terrain_version = sim.terrain.version;
             self.terrain = Arc::new(sim.terrain.clone());
             self.terrain_at = Instant::now();
+            copied = Some(start.elapsed().as_secs_f32() * 1000.0);
         }
         let last = sim.history.last().map(|s| s.time).unwrap_or(-1.0);
         if sim.history.len() != self.history_len || last != self.history_time {
@@ -159,6 +164,7 @@ impl Caches {
             self.history_time = last;
             self.history = Arc::new(sim.history.clone());
         }
+        copied
     }
 }
 
@@ -510,10 +516,14 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 h.sort_by_key(|h| h.seq);
                 highlights = Arc::new(h);
             }
-            let before_copy = Instant::now();
-            caches.refresh(&sim);
-            copying = before_copy.elapsed();
+            let publish = Instant::now();
+            if let Some(ms) = caches.refresh(&sim) {
+                sim.perf.terrain_copy_ms += (ms - sim.perf.terrain_copy_ms) * 0.2;
+            }
+            copying = publish.elapsed();
             let mut snap = sim.snapshot(caches.terrain.clone(), caches.history.clone());
+            let ms = publish.elapsed().as_secs_f32() * 1000.0;
+            sim.perf.publish_ms += (ms - sim.perf.publish_ms) * 0.05;
             // The brain sketch is a little work for a big brain, so it's redone once a second.
             if let Some(sel) = snap.selected.as_mut() {
                 let stale = wiring.as_ref().is_none_or(|(w, at): &(Arc<Wiring>, Instant)| {
@@ -556,19 +566,18 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         if took > Duration::from_millis(SLOW_PASS_MS) {
             let ms = |d: Duration| d.as_secs_f32() * 1000.0;
             let hydro = stepped.clone().any(|t| t % (crate::sim::TICKS_PER_SECOND * 2) == 0);
-            let p = &sim.perf;
+            // The costliest phases of a step lately (see `PHASE_NAMES`).
+            let mut phases: Vec<(f32, &str)> = sim.perf.phases.iter().copied().zip(crate::sim::PHASE_NAMES).collect();
+            phases.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let top: Vec<String> = phases.iter().take(4).map(|(t, n)| format!("{n} {t:.1}")).collect();
             eprintln!(
-                "evolve: slow pass {:.0} ms: stepping {:.0} ms ({} steps{}), copying the terrain {:.0} ms; per step lately think {:.1}, physics {:.1}, other {:.1} (interact {:.1}, water {:.1})",
+                "evolve: slow pass {:.0} ms: stepping {:.0} ms ({} steps{}), copying the terrain {:.0} ms; per step lately {}",
                 ms(took),
                 ms(stepping),
                 stepped.end - stepped.start,
                 if hydro { ", with water" } else { "" },
                 ms(copying),
-                p.think_ms,
-                p.physics_ms,
-                p.other_ms,
-                p.other_parts[1],
-                p.other_parts[3]
+                top.join(", ")
             );
         }
         copying = Duration::ZERO;

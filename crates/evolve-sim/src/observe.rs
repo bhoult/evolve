@@ -372,6 +372,17 @@ impl Sim {
             p.gpu_target * 100.0,
             self.brain_backend
         );
+        let f = &self.perf;
+        let _ = writeln!(
+            o,
+            "Step: {}. Physics: the slowest of its {} worlds {:.2} ms, all of them {:.1} ms. For the screen: a snapshot {:.2} ms, copying the terrain {:.2} ms when it changed.",
+            f.phases_line(),
+            self.shards.len(),
+            f.shard_slowest_ms,
+            f.shard_total_ms,
+            f.publish_ms,
+            f.terrain_copy_ms
+        );
 
         // The best of the living.
         let mut best: Vec<&Creature> = alive.iter().collect();

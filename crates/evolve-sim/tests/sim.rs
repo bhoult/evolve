@@ -968,3 +968,30 @@ fn rain_fills_to_the_minimum_and_eases_off_before_the_maximum() {
     assert!(most <= 45, "it rained past the maximum: {most}");
     assert!(sim.stats.deaths() > 30, "they did die: {}", sim.stats.deaths());
 }
+
+/// The step spreads creatures' work over threads (senses, muscles, forces, after physics), but
+/// the world comes out the same however many threads there are: two worlds stepped side by side,
+/// one on a single thread and one on eight, match to the bit.
+#[test]
+fn the_world_is_the_same_on_one_thread_or_many() {
+    let params = SimParams { min_population: 24, max_population: 40, rain_fill_time: 2.0, ..quiet_params() };
+    let run = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new().num_threads(threads).build().unwrap();
+        pool.install(|| {
+            let mut sim = Sim::new(params.clone());
+            for _ in 0..600 {
+                sim.step();
+            }
+            sim.creatures
+                .iter()
+                .map(|c| {
+                    let t = sim.torso_of(c).unwrap().translation();
+                    (c.id, c.energy.to_bits(), c.health.to_bits(), [t.x.to_bits(), t.y.to_bits(), t.z.to_bits()])
+                })
+                .collect::<Vec<_>>()
+        })
+    };
+    let (one, many) = (run(1), run(8));
+    assert!(one.len() >= 20, "a world full of creatures: {}", one.len());
+    assert_eq!(one, many);
+}

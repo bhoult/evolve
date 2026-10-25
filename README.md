@@ -305,6 +305,13 @@ angles, motors, every velocity). Eyes see into every world. With 790 creatures t
 4x faster than one world (71 steps a second on a Core Ultra 9 285K, about 1.2x real time).
 Background worlds run at `background_population` (a quarter) of this world's population and at a
 lower CPU priority, so they use spare cores without starving this one.
+- *The rest of a step on many cores too:* senses, muscles, forces (water, wind, whirlwinds) and
+  the checks after physics (speed caps, breath, impacts) run each physics world's creatures on
+  its own thread; eating, trampling and fighting work out what each creature does in parallel
+  and then apply it in creature order. A world comes out the same on one thread or many (a test
+  checks it to the bit). On a 400 m world with 500 creatures this cut those phases from about
+  3.2 to 1.3 ms a step (2026-10-25). The Performance panel and the MCP world report (its Step:
+  line) time every phase of a step.
 - *Speed:* the angle a joint aims for moves at most `max_joint_speed` (8 rad/s for a half-meter
   segment; longer segments slower, shorter ones faster, like pendulums). The brain can change its
   mind 30 times a second, but a limb swings rather than snapping back and forth in a blur.

@@ -804,9 +804,18 @@ fn stats_panel(
                         format!("{total_steps:.0} steps/s ({} worlds)", snap.worlds.len().max(1)),
                     );
                     row("This world", format!("{:.0} steps/s", snap.steps_per_sec));
-                    row("  physics", format!("{:.2} ms/step", p.physics_ms));
-                    row("  senses + brains (CPU)", format!("{:.3} ms/step", p.think_ms));
-                    row("  ecology", format!("{:.3} ms/step", p.other_ms));
+                    // Every phase of a step, so the slow parts show.
+                    for (name, ms) in evolve_sim::sim::PHASE_NAMES.iter().zip(&p.phases) {
+                        row(&format!("  {name}"), format!("{ms:.2} ms/step"));
+                    }
+                    row(
+                        "  physics worlds",
+                        format!("slowest {:.2} ms, all {:.1} ms", p.shard_slowest_ms, p.shard_total_ms),
+                    );
+                    row(
+                        "  for the screen",
+                        format!("snapshot {:.2} ms, terrain copy {:.2} ms", p.publish_ms, p.terrain_copy_ms),
+                    );
                     row("Brains run on", snap.brain_backend.clone());
                     if snap.brain_memory_bytes > 0 {
                         let all_busy: f32 = snap.worlds.iter().map(|w| w.gpu_busy).sum();
