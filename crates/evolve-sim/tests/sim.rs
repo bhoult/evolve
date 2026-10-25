@@ -938,3 +938,32 @@ fn worlds_take_a_sample_of_the_zoo_to_rain_from() {
     assert_eq!(sim.zoo_sample.len(), 4, "the zoo changed, so the sample is taken again");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The rain brings the population up to the minimum however fast creatures die, eases off past
+/// it, and never takes it past the maximum.
+#[test]
+fn rain_fills_to_the_minimum_and_eases_off_before_the_maximum() {
+    let mut sim = Sim::new(SimParams {
+        min_population: 30,
+        max_population: 45,
+        // Creatures that starve within seconds: the rain has to keep replacing them.
+        start_energy: 15.0,
+        terrain_resolution: 65,
+        weather: false,
+        stones: 0,
+        ..SimParams::default()
+    });
+    let mut most = 0;
+    for s in 0..60 {
+        for _ in 0..60 {
+            sim.step();
+            most = most.max(sim.creatures.len());
+        }
+        if s == 40 {
+            assert!(sim.creatures.len() >= 30, "at 40 s only {} alive", sim.creatures.len());
+        }
+    }
+    assert!(sim.creatures.len() >= 30, "{} alive at the end", sim.creatures.len());
+    assert!(most <= 45, "it rained past the maximum: {most}");
+    assert!(sim.stats.deaths() > 30, "they did die: {}", sim.stats.deaths());
+}

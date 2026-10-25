@@ -656,10 +656,12 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
     para(
         ui,
         format!(
-            "Whenever fewer than {} creatures are alive (min_population), a new one falls from {} m every {} s (rain_height, rain_interval). They come from three sources, in proportion to three weights: {} are bred from this world's gene pool (rain_from_world), {} are mutated copies of zoo creatures, so kinds that died out here come back (rain_from_zoo), and {} are random (rain_from_random).",
-            p.min_population,
+            "Creatures fall from {} m (rain_height) to bring the population up to {} (min_population): as fast as they die, plus the gaps up to the minimum and the maximum divided by {} (rain_fill_time), at most one every {} s (rain_interval). Past the minimum the rain eases off, smoothly at both ends, and it stops at {} (max_population), so the population settles between the two. A minimum of 0 turns the rain off. They come from three sources, in proportion to three weights: {} are bred from this world's gene pool (rain_from_world), {} are mutated copies of zoo creatures, so kinds that died out here come back (rain_from_zoo), and {} are random (rain_from_random).",
             num(p.rain_height),
+            p.min_population,
+            dur(p.rain_fill_time),
             num(p.rain_interval),
+            p.max_population,
             pct(sky_share(p)[0]),
             pct(sky_share(p)[1]),
             pct(sky_share(p)[2])

@@ -327,6 +327,14 @@ pub struct Sim {
     pub selected: Option<u64>,
     pub grab: Option<Grab>,
     pub rain_timer: f32,
+    /// Creatures owed to the rain so far (it falls when this reaches one), the death count net
+    /// of births when last looked, and the deaths net of births per second lately.
+    #[serde(default)]
+    pub rain_due: f32,
+    #[serde(skip, default = "not_seen")]
+    pub rain_seen: f32,
+    #[serde(default)]
+    pub rain_net_deaths: f32,
     pub plant_spawn_acc: f32,
     /// Multiplies the energy cost of brains; the runner steers it toward `gpu_target`.
     #[serde(default = "full")]
@@ -443,6 +451,9 @@ impl Sim {
             selected: None,
             grab: None,
             rain_timer: 0.0,
+            rain_due: 0.0,
+            rain_seen: f32::NAN,
+            rain_net_deaths: 0.0,
             plant_spawn_acc: 0.0,
             brain_price: 1.0,
             gpu_headroom: 0.0,
@@ -1859,10 +1870,37 @@ impl Sim {
         }
     }
 
+    /// Creatures fall at the rate that replaces the dead (net of births, averaged over the last
+    /// 10 s or so) plus a share of the gap up to `max_population` (`rain_fill_time`), all of
+    /// it below `min_population` and easing off smoothly from there to nothing at
+    /// `max_population`; below the minimum, the gap up to it besides. So the population climbs to the minimum however fast creatures die
+    /// (with a fixed rate it settled wherever deaths matched the rain: about 200 against a
+    /// minimum of 790), then settles in the band, where the rain just replaces the dead.
     fn rain(&mut self, dt: f32) {
+        let p = &self.params;
+        // Deaths net of births, per second, averaged (from the second look on: a loaded world's
+        // counts go back to its start).
+        let net = self.stats.deaths() as f32 - self.stats.births as f32;
+        let seen = std::mem::replace(&mut self.rain_seen, net);
+        if !seen.is_nan() {
+            let k = (dt / 10.0).min(1.0);
+            self.rain_net_deaths += ((net - seen) / dt - self.rain_net_deaths) * k;
+        }
+        if p.min_population == 0 {
+            self.rain_due = 0.0;
+            return;
+        }
+        let n = self.creatures.len() as f32;
+        let (lo, hi) = (p.min_population as f32, (p.max_population as f32).max(p.min_population as f32 + 1.0));
+        let t = ((n - lo) / (hi - lo)).clamp(0.0, 1.0);
+        let ease = 1.0 - t * t * (3.0 - 2.0 * t);
+        let fill = p.rain_fill_time.max(1.0);
+        let rate = (self.rain_net_deaths.max(0.0) + (hi - n).max(0.0) / fill) * ease + (lo - n).max(0.0) / fill;
+        self.rain_due = (self.rain_due + rate * dt).min(8.0);
         self.rain_timer -= dt;
-        if (self.creatures.len() as u32) < self.params.min_population && self.rain_timer <= 0.0 {
-            self.rain_timer = self.params.rain_interval;
+        if self.rain_due >= 1.0 && self.rain_timer <= 0.0 && n < p.max_population as f32 {
+            self.rain_due -= 1.0;
+            self.rain_timer = p.rain_interval;
             self.rain_creature(None);
         }
     }
@@ -2161,4 +2199,8 @@ pub(crate) fn obstacle_radius(shape: ObstacleShape) -> f32 {
         ObstacleShape::Box { half } => (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt(),
         ObstacleShape::Ball { radius } => radius,
     }
+}
+
+fn not_seen() -> f32 {
+    f32::NAN
 }

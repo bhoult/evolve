@@ -24,7 +24,7 @@ fn quiet_params() -> SimParams {
 
 #[test]
 fn the_census_counts_lives_by_where_they_came_from() {
-    let mut sim = Sim::new(SimParams { min_population: 6, rain_interval: 0.1, ..quiet_params() });
+    let mut sim = Sim::new(SimParams { min_population: 6, max_population: 6, rain_fill_time: 1.0, rain_interval: 0.1, ..quiet_params() });
     for _ in 0..60 {
         sim.step();
     }

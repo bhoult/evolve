@@ -183,12 +183,20 @@ params! {
         swivel_energy_cost: f32 = 2.0, [1, 10], Live;
     }
     "Population" {
-        /// When fewer creatures than this are alive, new ones rain from the sky.
+        /// Creatures rain from the sky to bring the population up to this, replacing the dead as
+        /// fast as they die and closing the gap besides. 0 turns the rain off.
         min_population: u32 = 50, [0, 1000], Live;
-        /// No births beyond this many creatures.
+        /// The rain eases off between `min_population` and this, smoothly at both ends, and stops
+        /// here. No births beyond this many creatures either.
         max_population: u32 = 300, [1, 3000], Live;
-        /// Seconds between raindrops while the population is under the minimum.
-        rain_interval: f32 = 0.25, [0, 10], Live;
+        /// How fast the rain grows the population on top of replacing the dead: each second it
+        /// adds the gap up to `min_population` and the gap up to `max_population` (eased off past
+        /// the minimum) divided by this. So it climbs past the minimum within about this long,
+        /// then ever more slowly, settling between the limits where the rain just replaces the
+        /// dead.
+        rain_fill_time: f32 = 20.0, [1, 3600], Live;
+        /// Fewest seconds between raindrops: the fastest it can rain.
+        rain_interval: f32 = 0.02, [0, 10], Live;
         /// Height above the ground at which raining creatures appear.
         rain_height: f32 = 10.0, [1, 60], Live;
         /// Creatures falling from the sky come from three sources, in proportion to these three

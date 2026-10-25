@@ -430,8 +430,13 @@ against `meat_per_mass`, 0.5, for a body born here, which can't leave more than 
 hunting it pays, but one that starved, drowned or died of age leaves nothing. (When every such body left meat, the population floor rained free
 carcasses, and huge limbless carrion-eaters that never moved took over.)
 
-**Rain and the gene pool.** When the population drops below `min_population`, creatures fall
-from the sky, from three sources in proportion to three weights: bred from this world's hall of
+**Rain and the gene pool.** Creatures fall from the sky to bring the population up to
+`min_population`: as fast as creatures die (net of births, over the last 10 s or so), plus the
+gaps up to the minimum and up to `max_population` divided by `rain_fill_time` (20 s). Past the
+minimum the rain eases off, smoothly at both ends, and it stops at the maximum, so the population
+settles between the two. (Until 2026-10-25 it rained at most four a second, only below the
+minimum: creatures lived about 50 s, so the population settled near 200 against a minimum of
+790.) A minimum of 0 turns the rain off. They come from three sources in proportion to three weights: bred from this world's hall of
 fame of the most successful genomes seen recently (`rain_from_world`, 0.5), mutated copies of
 zoo creatures, so kinds that died out here come back (`rain_from_zoo`, 0.2; each world keeps 16
 to hand, taken again whenever the zoo changes), and random (`rain_from_random`, 0.3). The
