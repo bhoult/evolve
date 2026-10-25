@@ -486,7 +486,11 @@ impl Terrain {
         }
         let keep = (-dt * std::f32::consts::LN_2 / half_life.max(1.0)).exp();
         let n = self.res;
-        let (mut i0, mut i1, mut j0, mut j1) = (usize::MAX, 0, usize::MAX, 0);
+        // Healing only eases ground back toward the land as made, so nothing need slide after
+        // it: the physics ground is rebuilt where it healed, piece by piece. (One box around
+        // every dug spot, marked as reshaped, had slopes settle over most of a big island.)
+        let (tiles, cells) = (self.tiles(), self.tile_cells());
+        let mut healed = vec![false; tiles * tiles];
         for k in 0..self.heights.len() {
             let natural = self.natural(k);
             let off = self.heights[k] - natural;
@@ -495,13 +499,15 @@ impl Terrain {
             }
             // The last millimeters go at once, so healed ground stops counting as dug.
             self.heights[k] = if off.abs() * keep < 0.002 { natural } else { natural + off * keep };
-            let (i, j) = (k / n, k % n);
-            (i0, i1, j0, j1) = (i0.min(i), i1.max(i), j0.min(j), j1.max(j));
+            let (i, j) = ((k / n) / cells, (k % n) / cells);
+            healed[i.min(tiles - 1) * tiles + j.min(tiles - 1)] = true;
         }
-        if i0 == usize::MAX {
+        let before = self.worn_tiles.len();
+        self.worn_tiles.extend(healed.iter().enumerate().filter(|(_, h)| **h).map(|(t, _)| t));
+        if self.worn_tiles.len() == before {
             return false;
         }
-        self.mark_dirty(i0, i1, j0, j1);
+        self.version += 1;
         true
     }
 
