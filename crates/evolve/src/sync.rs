@@ -1,5 +1,6 @@
 //! Mirrors the simulation snapshot into Bevy entities: one entity per body part, plant, piece of
-//! meat and obstacle, created and destroyed as things are born and die.
+//! meat and obstacle, created as things are born and destroyed as they die (a dead creature
+//! fades out where it fell first).
 
 use std::collections::{HashMap, HashSet};
 
@@ -81,8 +82,22 @@ struct Shared3d {
 struct CreatureEnt {
     /// Root entity of each part, positioned from the physics pose.
     parts: Vec<Entity>,
+    /// The entities carrying `PartOf`, which clicks find, and the eyes.
+    tagged: Vec<Entity>,
+    eyes: Vec<Entity>,
     material: Handle<StandardMaterial>,
     look: ([f32; 3], [f32; 3]),
+}
+
+/// Seconds a dead creature's body stays, greying and fading, before it's gone.
+const DEATH_FADE: f64 = 3.0;
+
+/// The body of a creature that just died, left where it fell while it fades out.
+struct Dying {
+    parts: Vec<Entity>,
+    material: Handle<StandardMaterial>,
+    color: [f32; 3],
+    since: f64,
 }
 
 #[derive(Resource, Default)]
@@ -90,6 +105,7 @@ struct Mirror {
     /// Ids are only unique within one world, so everything is rebuilt when the world changes.
     epoch: u64,
     creatures: HashMap<u64, CreatureEnt>,
+    dying: Vec<Dying>,
     plants: HashMap<u64, Entity>,
     meat: HashMap<u64, Entity>,
     obstacles: HashMap<u64, Entity>,
@@ -224,6 +240,7 @@ fn sync_creatures(
             ..default()
         });
         let mut parts = Vec::with_capacity(c.parts.len());
+        let (mut tagged, mut eyes) = (Vec::with_capacity(c.parts.len()), Vec::new());
         for (k, p) in c.parts.iter().enumerate() {
             let root = Transform::from_translation(Vec3::from_array(p.pos))
                 .with_rotation(Quat::from_array(p.rot));
@@ -244,18 +261,24 @@ fn sync_creatures(
                     commands
                         .spawn((root, Visibility::default()))
                         .with_children(|b| {
-                            b.spawn((
-                                Mesh3d(shared.cube.clone()),
-                                MeshMaterial3d(material.clone()),
-                                Transform::from_scale(h * 2.0),
-                                tag,
-                            ));
-                            for side in [-1.0, 1.0] {
+                            tagged.push(
                                 b.spawn((
-                                    Mesh3d(shared.eye.clone()),
-                                    MeshMaterial3d(shared.eye_mat.clone()),
-                                    eye_at(side),
-                                ));
+                                    Mesh3d(shared.cube.clone()),
+                                    MeshMaterial3d(material.clone()),
+                                    Transform::from_scale(h * 2.0),
+                                    tag,
+                                ))
+                                .id(),
+                            );
+                            for side in [-1.0, 1.0] {
+                                eyes.push(
+                                    b.spawn((
+                                        Mesh3d(shared.eye.clone()),
+                                        MeshMaterial3d(shared.eye_mat.clone()),
+                                        eye_at(side),
+                                    ))
+                                    .id(),
+                                );
                             }
                         })
                         .id()
@@ -263,12 +286,15 @@ fn sync_creatures(
                 PartShape::Box { half } => commands
                     .spawn((root, Visibility::default()))
                     .with_children(|b| {
-                        b.spawn((
-                            Mesh3d(shared.cube.clone()),
-                            MeshMaterial3d(material.clone()),
-                            Transform::from_scale(Vec3::from_array(half) * 2.0),
-                            tag,
-                        ));
+                        tagged.push(
+                            b.spawn((
+                                Mesh3d(shared.cube.clone()),
+                                MeshMaterial3d(material.clone()),
+                                Transform::from_scale(Vec3::from_array(half) * 2.0),
+                                tag,
+                            ))
+                            .id(),
+                        );
                     })
                     .id(),
                 PartShape::Capsule { half_height, radius } => {
@@ -280,9 +306,11 @@ fn sync_creatures(
                             meshes.add(Capsule3d::new(key.1 as f32 / 200.0, key.0 as f32 / 100.0))
                         })
                         .clone();
-                    commands
+                    let e = commands
                         .spawn((root, Mesh3d(mesh), MeshMaterial3d(material.clone()), tag))
-                        .id()
+                        .id();
+                    tagged.push(e);
+                    e
                 }
             };
             parts.push(e);
@@ -291,6 +319,8 @@ fn sync_creatures(
             c.id,
             CreatureEnt {
                 parts,
+                tagged,
+                eyes,
                 material,
                 look,
             },
@@ -308,14 +338,48 @@ fn sync_creatures(
         .filter(|id| !alive.contains(id))
         .copied()
         .collect();
+    // A dead creature doesn't just vanish: its body stays where it fell, no longer clickable,
+    // and greys and fades out.
+    let now = time.elapsed_secs_f64();
     for id in gone {
         if let Some(ent) = mirror.creatures.remove(&id) {
-            for e in ent.parts {
+            for &e in &ent.eyes {
                 commands.entity(e).despawn();
             }
-            materials.remove(&ent.material);
+            for &e in &ent.tagged {
+                commands.entity(e).remove::<PartOf>();
+            }
+            if let Some(m) = materials.get_mut(&ent.material) {
+                m.emissive = LinearRgba::BLACK;
+                m.alpha_mode = AlphaMode::Blend;
+            }
+            mirror.dying.push(Dying {
+                parts: ent.parts,
+                material: ent.material,
+                color: ent.look.0,
+                since: now,
+            });
         }
     }
+    mirror.dying.retain(|d| {
+        let t = ((now - d.since) / DEATH_FADE) as f32;
+        if t >= 1.0 {
+            for &e in &d.parts {
+                commands.entity(e).despawn();
+            }
+            materials.remove(&d.material);
+            return false;
+        }
+        if let Some(m) = materials.get_mut(&d.material) {
+            // Grey within the first third, transparent by the end.
+            let [r, g, b] = d.color;
+            let grey = 0.5 * (0.3 * r + 0.59 * g + 0.11 * b);
+            let k = (3.0 * t).min(1.0);
+            let mix = |c: f32| c + (grey - c) * k;
+            m.base_color = Color::srgba(mix(r), mix(g), mix(b), 1.0 - t);
+        }
+        true
+    });
 }
 
 /// A loaded or new world reuses ids, so drop every mirrored entity and start over.
@@ -338,6 +402,12 @@ fn reset_on_new_world(
             commands.entity(e).despawn();
         }
         materials.remove(&c.material);
+    }
+    for d in mirror.dying.drain(..) {
+        for e in d.parts {
+            commands.entity(e).despawn();
+        }
+        materials.remove(&d.material);
     }
     let mirror = &mut *mirror;
     for (_, e) in mirror
