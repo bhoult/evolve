@@ -27,6 +27,8 @@ pub enum Control {
     StepOnce,
     Save(PathBuf),
     Load(PathBuf),
+    /// Load a world, then set these parameters on it (by name, as `--set` gives them).
+    LoadWith(PathBuf, Vec<(String, String)>),
     NewWorld(Box<SimParams>),
     /// Put a living creature of this world in the zoo (pinned).
     ZooAdd(u64),
@@ -58,6 +60,17 @@ pub const LOG_EVERY: f64 = 600.0;
 
 struct Shared {
     snapshot: Mutex<Arc<Snapshot>>,
+    /// What the world is doing that holds it up (saving, loading), and since when, so the screen
+    /// can say so rather than look frozen.
+    busy: Mutex<Option<(String, Instant)>>,
+}
+
+impl Shared {
+    fn busy(&self, what: Option<&str>) {
+        if let Ok(mut b) = self.busy.lock() {
+            *b = what.map(|w| (w.to_string(), Instant::now()));
+        }
+    }
 }
 
 pub struct Runner {
@@ -71,6 +84,7 @@ impl Runner {
         let (tx, rx) = mpsc::channel();
         let shared = Arc::new(Shared {
             snapshot: Mutex::new(Arc::new(Snapshot::default())),
+            busy: Mutex::new(None),
         });
         let s2 = shared.clone();
         let thread = std::thread::Builder::new()
@@ -95,6 +109,11 @@ impl Runner {
     /// Another way in to the simulation thread, e.g. for the MCP server.
     pub fn sender(&self) -> Sender<Control> {
         self.tx.clone()
+    }
+
+    /// What holds the world up just now (saving, loading), and for how long so far.
+    pub fn busy(&self) -> Option<(String, Duration)> {
+        self.shared.busy.lock().ok()?.as_ref().map(|(w, t)| (w.clone(), t.elapsed()))
     }
 
     pub fn snapshot(&self) -> Arc<Snapshot> {
@@ -237,23 +256,48 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     workers.iter().for_each(|w| w.send(WorkerCtl::Speed(speed)));
                 }
                 Ok(Control::StepOnce) => step_once = true,
-                Ok(Control::Save(path)) => match save::save(&mut sim, &path) {
-                    Ok(bytes) => sim.log(format!(
-                        "Saved {} ({:.1} MB)",
-                        path.display(),
-                        bytes as f64 / 1e6
-                    )),
-                    Err(e) => sim.log(format!("Save failed: {e}")),
-                },
-                Ok(Control::Load(path)) => match save::load(&path) {
-                    Ok(loaded) => {
-                        sim = loaded;
-                        caches = Caches::new(&sim);
-                        reset_islands = true;
-                        sim.log(format!("Loaded {}", path.display()));
+                Ok(Control::Save(path)) => {
+                    shared.busy(Some("Saving the world"));
+                    match save::save(&mut sim, &path) {
+                        Ok(bytes) => sim.log(format!("Saved {} ({:.1} MB)", path.display(), bytes as f64 / 1e6)),
+                        Err(e) => sim.log(format!("Save failed: {e}")),
                     }
-                    Err(e) => sim.log(format!("Load failed: {e}")),
-                },
+                    shared.busy(None);
+                }
+                Ok(Control::Load(path)) => {
+                    shared.busy(Some("Loading the world"));
+                    match save::load(&path) {
+                        Ok(loaded) => {
+                            sim = loaded;
+                            caches = Caches::new(&sim);
+                            reset_islands = true;
+                            sim.log(format!("Loaded {}", path.display()));
+                        }
+                        Err(e) => sim.log(format!("Load failed: {e}")),
+                    }
+                    shared.busy(None);
+                }
+                Ok(Control::LoadWith(path, sets)) => {
+                    shared.busy(Some("Loading the world"));
+                    match save::load(&path) {
+                        Ok(mut loaded) => {
+                            // Settings given with it override the loaded world's own.
+                            let mut p = loaded.params.clone();
+                            for (k, v) in &sets {
+                                if let Err(e) = p.set_by_name(k, v) {
+                                    loaded.log(format!("{k}: {e}"));
+                                }
+                            }
+                            loaded.set_params(p);
+                            sim = loaded;
+                            caches = Caches::new(&sim);
+                            reset_islands = true;
+                            sim.log(format!("Loaded {}", path.display()));
+                        }
+                        Err(e) => sim.log(format!("Load failed: {e}")),
+                    }
+                    shared.busy(None);
+                }
                 Ok(Control::NewWorld(p)) => new_world = Some(p),
                 Ok(Control::ZooAdd(cid)) => {
                     if let Some(c) = sim.creature(cid) {
@@ -379,8 +423,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             let _ = reply.send(Ok("starting a new world with the current settings".into()));
                         }
                         Ask::Save(path) => {
+                            shared.busy(Some("Saving the world"));
                             let r = save::save(&mut sim, &path)
                                 .map(|bytes| format!("saved {} ({:.1} MB)", path.display(), bytes as f64 / 1e6));
+                            shared.busy(None);
                             let _ = reply.send(r);
                         }
                         ask if world == 0 => sim.answer(ask, reply),

@@ -230,7 +230,7 @@ impl Plugin for UiPlugin {
         app.init_resource::<UiState>()
             .add_systems(
                 EguiPrimaryContextPass,
-                ui_system.run_if(|args: Res<crate::Args>| !args.no_ui),
+                (ui_system.run_if(|args: Res<crate::Args>| !args.no_ui), busy_banner),
             )
             .add_systems(Startup, |args: Res<crate::Args>, mut st: ResMut<UiState>| {
                 st.show_zoo = args.zoo;
@@ -330,6 +330,38 @@ fn shortcuts(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// While the world is held up (saving, loading, or anything else keeping new pictures of it from
+/// coming), says so across the top of the screen, so a still picture doesn't look like a broken
+/// app.
+fn busy_banner(
+    mut contexts: EguiContexts,
+    link: Res<SimLink>,
+    snap: Res<crate::Snap>,
+    time: Res<Time<Real>>,
+    mut seen: Local<(usize, f64)>,
+) -> Result {
+    let now = time.elapsed_secs_f64();
+    let latest = std::sync::Arc::as_ptr(&snap.0) as usize;
+    if latest != seen.0 {
+        *seen = (latest, now);
+    }
+    let still = now - seen.1;
+    let text = match link.0.busy() {
+        Some((what, for_)) => format!("{what}… {:.0} s", for_.as_secs_f32()),
+        None if still > 1.5 && !snap.0.paused => format!("The simulation is busy… {still:.0} s"),
+        None => return Ok(()),
+    };
+    let ctx = contexts.ctx_mut()?;
+    egui::Area::new(egui::Id::new("busy banner"))
+        .anchor(egui::Align2::CENTER_TOP, [0.0, 48.0])
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                ui.label(egui::RichText::new(text).size(20.0));
+            });
+        });
+    Ok(())
+}
+
 fn ui_system(
     mut contexts: EguiContexts,
     snap: Res<Snap>,

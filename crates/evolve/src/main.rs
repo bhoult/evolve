@@ -33,7 +33,7 @@ use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_dis
 use bevy::window::{PresentMode, WindowResolution};
 use bevy_egui::EguiPlugin;
 use evolve_sim::params::ParamRef;
-use evolve_sim::{Control, Runner, Sim, SimParams, Snapshot, save};
+use evolve_sim::{Control, Runner, Sim, SimParams, Snapshot};
 
 /// The link to the simulation thread.
 #[derive(Resource)]
@@ -203,30 +203,34 @@ fn main() -> AppExit {
     }
 
     evolve_sim::init_thread_pool();
+    // A world to load is loaded by the runner once the window is up (a big one takes a minute,
+    // which with no window looked like the app had died); it starts from a tiny empty island,
+    // and the screen says what it's doing meanwhile. A loaded world keeps its own settings
+    // except those given with --set.
     let sim = match &load {
         Some(p) => {
-            let mut sim = save::load(p).unwrap_or_else(|e| {
-                eprintln!("evolve: {e}");
+            if !p.exists() {
+                eprintln!("evolve: no such file {}", p.display());
                 std::process::exit(1)
-            });
-            // A loaded world keeps its own settings except those given with --set (one that
-            // shapes a new world, like terrain_resolution, applies to the background worlds and
-            // to the next terrain made).
-            if !sets.is_empty() {
-                let mut p = sim.params.clone();
-                for (k, v) in &sets {
-                    p.set_by_name(k, v).unwrap_or_else(|e| {
-                        eprintln!("evolve: {e}");
-                        usage()
-                    });
-                }
-                sim.set_params(p);
             }
-            sim
+            Sim::new(SimParams {
+                world_size: 60.0,
+                terrain_resolution: 33,
+                min_population: 0,
+                stones: 0,
+                plant_max_count: 0,
+                plant_spawn_rate: 0.0,
+                tree_max_count: 0,
+                parallel_worlds: 0,
+                ..params.clone()
+            })
         }
         None => Sim::new(params),
     };
     let runner = Runner::start(sim);
+    if let Some(p) = &load {
+        runner.send(Control::LoadWith(p.clone(), sets.clone()));
+    }
     if let Some(s) = speed {
         runner.send(Control::Speed(s));
     }
