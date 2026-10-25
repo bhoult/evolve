@@ -123,7 +123,7 @@ fn creatures_die_and_leave_meat() {
 /// `a_child_killed_at_birth_leaves_no_more_meat_than_it_cost`.) Otherwise the population floor
 /// rains free carcasses, and big carrion-eaters that never move win.
 #[test]
-fn a_body_from_the_sky_leaves_only_half_its_energy_as_meat() {
+fn a_killed_body_from_the_sky_leaves_sky_meat_and_half_its_energy() {
     let mut sim = Sim::new(quiet_params());
     let mut rng = Rng::new(3);
     let g = Genome::random(&mut rng, &sim.params);
@@ -138,8 +138,8 @@ fn a_body_from_the_sky_leaves_only_half_its_energy_as_meat() {
     let before = meat(&sim);
     sim.step();
     let left = meat(&sim) - before;
-    assert!(left <= held * 0.5 + 1e-3, "left {left} of meat, holding {held}");
-    assert!(left < mass * sim.params.meat_per_mass * 0.5, "no meat from its {mass} kg body");
+    let want = mass * sim.params.sky_meat_per_mass + held * 0.5;
+    assert!(left <= want + 1e-3 && left > 0.9 * want, "left {left} of meat, want {want} ({mass} kg, holding {held})");
 }
 
 #[test]
@@ -848,4 +848,93 @@ fn a_tsunami_carries_creatures_inland_washes_plants_away_and_passes() {
     assert!(farthest > 3.0, "and carry it inland: {farthest:.1} m");
     assert!(sim.plants.iter().all(|f| f.pos.distance(shore) > 3.0), "the plant by the shore is washed away");
     assert!(sim.acts.tsunami.is_none(), "and the wave is spent");
+}
+
+/// Worlds offer the zoo their best of each kind: a creature much like one already there takes
+/// its place only if it scored better, a different one joins as a new kind, and over the cap the
+/// weaker of the two most alike goes.
+#[test]
+fn the_zoo_keeps_the_best_of_each_kind() {
+    use evolve_sim::zoo::Zoo;
+    let dir = std::env::temp_dir().join(format!("evolve-zoo-kinds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let p = SimParams::default();
+    let kind = p.zoo_kind_distance;
+    let mut rng = Rng::new(31);
+    let a = Genome::random(&mut rng, &p);
+    let mut a2 = a.clone();
+    a2.torso.half[0] *= 1.02;
+    assert!(a.distance(&a2) < kind);
+    let b = Genome::random(&mut rng, &p);
+    assert!(a.distance(&b) > kind, "two random genomes are different kinds: {}", a.distance(&b));
+    // Like b, but just past the line: a kind of its own, though the nearest one to b.
+    let mut c = b.clone();
+    c.traits.diet = if b.traits.diet < 0.5 { 1.0 } else { 0.0 };
+    c.traits.armor = if b.traits.armor < 0.5 { 1.0 } else { 0.0 };
+    c.traits.aggression = -b.traits.aggression.signum();
+    let bc = b.distance(&c);
+    assert!(bc > kind && bc < a.distance(&b) && bc < a.distance(&c), "c is its own kind, nearest b: {bc}");
+
+    let mut zoo = Zoo::open(dir.clone());
+    assert!(zoo.offer(&a, 5.0, 1, "test", 10, kind).unwrap().is_some());
+    assert!(zoo.offer(&a2, 4.0, 1, "test", 10, kind).unwrap().is_none(), "a weaker one of the same kind is turned away");
+    assert!(zoo.offer(&a2, 6.0, 1, "test", 10, kind).unwrap().is_some(), "a better one of the same kind gets in");
+    assert_eq!(zoo.entries.len(), 1, "in place of the one it's like");
+    assert_eq!(zoo.entries[0].score, 6.0);
+    assert!(zoo.offer(&b, 1.0, 1, "test", 10, kind).unwrap().is_some(), "a different kind joins, however it scored");
+    assert_eq!(zoo.entries.len(), 2);
+    // Over a cap of two, the weaker of the two most alike (b and c) goes, not the weakest kind.
+    assert!(zoo.offer(&c, 3.0, 1, "test", 2, kind).unwrap().is_some());
+    let scores: Vec<f32> = zoo.entries.iter().map(|e| e.score).collect();
+    assert_eq!(scores, vec![6.0, 3.0], "b went: {scores:?}");
+    drop(zoo);
+    let zoo = Zoo::open(dir.clone());
+    assert!(zoo.entries.iter().all(|e| e.shape.is_some()), "shapes are kept in the index");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Creatures fall from the zoo in proportion to `rain_from_zoo`, as mutated copies of the
+/// zoo creatures a world was handed; without any, the gene pool stands in and says so.
+#[test]
+fn creatures_fall_from_the_zoo_when_asked() {
+    use evolve_sim::sim::Origin;
+    let p = SimParams { rain_from_world: 0.0, rain_from_zoo: 1.0, rain_from_random: 0.0, ..quiet_params() };
+    let mut sim = Sim::new(p);
+    let g = Genome::random(&mut Rng::new(8), &sim.params);
+    sim.zoo_sample = vec![(g.clone(), 3)];
+    let ids: Vec<u64> = (0..8).map(|_| sim.rain_creature(None)).collect();
+    for id in ids {
+        let c = sim.creature(id).unwrap();
+        assert_eq!(c.origin, Origin::Zoo);
+        assert_eq!(c.generation, 4);
+        assert!(c.genome.distance(&g) < sim.params.species_threshold, "a copy, mutated a little");
+    }
+    assert_eq!(sim.stats.rain_without_zoo, 0);
+    sim.zoo_sample.clear();
+    let id = sim.rain_creature(None);
+    assert_ne!(sim.creature(id).unwrap().origin, Origin::Zoo);
+    assert_eq!(sim.stats.rain_without_zoo, 1, "counted, for the report");
+    assert!(sim.report(60.0).contains("came from the gene pool instead"));
+}
+
+/// A world takes its sample of zoo creatures to rain from out of the zoo, and again when the
+/// zoo changes.
+#[test]
+fn worlds_take_a_sample_of_the_zoo_to_rain_from() {
+    use evolve_sim::zoo::{Zoo, refresh_rain_sample};
+    let dir = std::env::temp_dir().join(format!("evolve-zoo-sample-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let zoo = Zoo::shared(dir.clone());
+    let p = SimParams::default();
+    let mut rng = Rng::new(5);
+    for k in 0..3 {
+        zoo.lock().unwrap().offer(&Genome::random(&mut rng, &p), k as f32, 1, "test", 100, p.zoo_kind_distance).unwrap();
+    }
+    let mut sim = Sim::new(SimParams { rain_from_zoo: 0.5, ..quiet_params() });
+    refresh_rain_sample(&zoo, &mut sim);
+    assert_eq!(sim.zoo_sample.len(), 3);
+    zoo.lock().unwrap().offer(&Genome::random(&mut rng, &p), 9.0, 1, "test", 100, p.zoo_kind_distance).unwrap();
+    refresh_rain_sample(&zoo, &mut sim);
+    assert_eq!(sim.zoo_sample.len(), 4, "the zoo changed, so the sample is taken again");
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -461,8 +461,9 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "A dead creature leaves a piece of meat at each body part: {} energy per kg of body (meat_per_mass) plus half the energy it still held. One that fell from the sky cost nothing to make, so it leaves meat only if something killed it; starved, drowned or old, it leaves nothing.",
-            num(p.meat_per_mass)
+            "A dead creature leaves a piece of meat at each body part: {} energy per kg of body (meat_per_mass) plus half the energy it still held. One that fell from the sky cost nothing to make, so it leaves meat only if something killed it, {} per kg (sky_meat_per_mass); starved, drowned or old, it leaves nothing.",
+            num(p.meat_per_mass),
+            num(p.sky_meat_per_mass)
         ),
     );
     bullet(
@@ -655,11 +656,13 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
     para(
         ui,
         format!(
-            "Whenever fewer than {} creatures are alive (min_population), a new one falls from {} m every {} s (rain_height, rain_interval). {} of them are bred from the gene pool, the rest are random (rain_from_pool).",
+            "Whenever fewer than {} creatures are alive (min_population), a new one falls from {} m every {} s (rain_height, rain_interval). They come from three sources, in proportion to three weights: {} are bred from this world's gene pool (rain_from_world), {} are mutated copies of zoo creatures, so kinds that died out here come back (rain_from_zoo), and {} are random (rain_from_random).",
             p.min_population,
             num(p.rain_height),
             num(p.rain_interval),
-            pct(p.rain_from_pool)
+            pct(sky_share(p)[0]),
+            pct(sky_share(p)[1]),
+            pct(sky_share(p)[2])
         ),
     );
     sub(ui, "The gene pool and scores");
@@ -847,8 +850,10 @@ fn worlds(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Keeps the best creatures across sessions. Every {} (zoo_interval) each world stores its best genome; past {} entries (zoo_max_entries) the weakest unpinned ones go to the zoo's trash folder.",
+            "Keeps different creatures across sessions. Every {} (zoo_interval) each world offers the zoo the best of each kind in its gene pool. One at least {} from every creature there (genetic distance of body and traits; species split at {}) joins as a new kind (zoo_kind_distance); one closer takes the place of the most alike only if it scored better. Past {} entries (zoo_max_entries) the weaker of the two most alike goes to the zoo's trash folder, so every kind keeps its best.",
             dur(p.zoo_interval),
+            num(p.zoo_kind_distance),
+            num(p.species_threshold),
             p.zoo_max_entries
         ),
     );
@@ -872,4 +877,11 @@ fn worlds(ui: &mut egui::Ui, p: &SimParams) {
             p.physics_shards
         ),
     );
+}
+
+/// The share of creatures from the sky that each source gives: world, zoo, random.
+fn sky_share(p: &SimParams) -> [f32; 3] {
+    let w = [p.rain_from_world, p.rain_from_zoo, p.rain_from_random].map(|x| x.max(0.0));
+    let total: f32 = w.iter().sum();
+    if total > 0.0 { w.map(|x| x / total) } else { [0.0, 0.0, 1.0] }
 }

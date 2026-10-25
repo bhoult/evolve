@@ -30,6 +30,10 @@ pub struct Stats {
     pub admitted_parts: [f32; 4],
     #[serde(default)]
     pub admitted_mainly: [u64; 4],
+    /// Creatures meant to fall from the zoo that came from the world's gene pool instead, there
+    /// being no zoo to copy (a headless run, a test).
+    #[serde(default)]
+    pub rain_without_zoo: u64,
 }
 
 impl Stats {
@@ -133,6 +137,19 @@ impl GenePool {
             },
         );
         self.entries.truncate(POOL_SIZE);
+    }
+
+    /// The pool's entries grouped by kind, best first: each group's best entry (the entries are
+    /// kept best first) and how many are within `distance` of it (see `Genome::distance`).
+    pub fn kinds(&self, distance: f32) -> Vec<(usize, usize)> {
+        let mut kinds: Vec<(usize, usize)> = Vec::new();
+        for (i, e) in self.entries.iter().enumerate() {
+            match kinds.iter_mut().find(|(k, _)| self.entries[*k].genome.distance(&e.genome) < distance) {
+                Some(k) => k.1 += 1,
+                None => kinds.push((i, 1)),
+            }
+        }
+        kinds
     }
 
     /// An exact copy of a genome the pool has judged on too few lives, to live again (and its

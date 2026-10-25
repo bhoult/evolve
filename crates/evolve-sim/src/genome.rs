@@ -215,6 +215,25 @@ pub struct Genome {
     pub brain: BrainGenes,
 }
 
+/// What a creature is apart from its brain: body plan and traits, all that `Genome::distance`
+/// compares. Small enough to keep beside every creature in the zoo.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Shape {
+    pub torso: TorsoGene,
+    #[serde(default)]
+    pub spine: SpineGene,
+    pub limbs: Vec<LimbGene>,
+    pub traits: Traits,
+}
+
+impl Shape {
+    pub fn distance(&self, other: &Shape) -> f32 {
+        body_distance((&self.torso, &self.spine, &self.limbs, &self.traits), (&other.torso, &other.spine, &other.limbs, &other.traits))
+    }
+}
+
+type BodyRef<'a> = (&'a TorsoGene, &'a SpineGene, &'a [LimbGene], &'a Traits);
+
 fn rand_in(rng: &mut Rng, rg: Range) -> f32 {
     rng.range(rg.lo, rg.hi)
 }
@@ -503,34 +522,16 @@ impl Genome {
 
     /// Rough genetic distance from body plan and traits (not brain weights), 0 for identical.
     pub fn distance(&self, other: &Genome) -> f32 {
-        let mut d = 0.0;
-        let mut n = 0.0;
-        for k in 0..3 {
-            d += norm_diff(self.torso.half[k], other.torso.half[k], TORSO_HALF[k]);
-            n += 1.0;
+        body_distance((&self.torso, &self.spine, &self.limbs, &self.traits), (&other.torso, &other.spine, &other.limbs, &other.traits))
+    }
+
+    pub fn shape(&self) -> Shape {
+        Shape {
+            torso: self.torso.clone(),
+            spine: self.spine.clone(),
+            limbs: self.limbs.clone(),
+            traits: self.traits.clone(),
         }
-        for (a, b) in self.limbs.iter().zip(&other.limbs) {
-            n += 1.0;
-            d += a.distance(b);
-        }
-        let (sa, sb) = (&self.spine, &other.spine);
-        n += 1.0;
-        d += ((sa.segments as f32 - sb.segments as f32).abs() * 0.3
-            + norm_diff(sa.length, sb.length, SPINE_LENGTH)
-            + if sa.swivel != sb.swivel { 0.2 } else { 0.0 })
-        .min(1.0);
-        let (ta, tb) = (&self.traits, &other.traits);
-        let hue = (ta.hue - tb.hue).abs();
-        let hue = hue.min(1.0 - hue) * 2.0;
-        d += norm_diff(ta.size, tb.size, SIZE)
-            + norm_diff(ta.diet, tb.diet, ZERO_ONE)
-            + norm_diff(ta.aggression, tb.aggression, UNIT)
-            + norm_diff(ta.libido, tb.libido, UNIT)
-            + norm_diff(ta.cpg_freq, tb.cpg_freq, CPG_FREQ)
-            + norm_diff(ta.armor, tb.armor, ZERO_ONE)
-            + hue;
-        n += 7.0;
-        d / n
     }
 
     /// A hash identifying this exact genome (cheap: samples a few hundred values).
@@ -605,4 +606,35 @@ pub fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
     };
     let m = v - c;
     [r + m, g + m, b + m]
+}
+
+fn body_distance(a: BodyRef, b: BodyRef) -> f32 {
+    let mut d = 0.0;
+    let mut n = 0.0;
+    for k in 0..3 {
+        d += norm_diff(a.0.half[k], b.0.half[k], TORSO_HALF[k]);
+        n += 1.0;
+    }
+    for (la, lb) in a.2.iter().zip(b.2) {
+        n += 1.0;
+        d += la.distance(lb);
+    }
+    let (sa, sb) = (a.1, b.1);
+    n += 1.0;
+    d += ((sa.segments as f32 - sb.segments as f32).abs() * 0.3
+        + norm_diff(sa.length, sb.length, SPINE_LENGTH)
+        + if sa.swivel != sb.swivel { 0.2 } else { 0.0 })
+    .min(1.0);
+    let (ta, tb) = (a.3, b.3);
+    let hue = (ta.hue - tb.hue).abs();
+    let hue = hue.min(1.0 - hue) * 2.0;
+    d += norm_diff(ta.size, tb.size, SIZE)
+        + norm_diff(ta.diet, tb.diet, ZERO_ONE)
+        + norm_diff(ta.aggression, tb.aggression, UNIT)
+        + norm_diff(ta.libido, tb.libido, UNIT)
+        + norm_diff(ta.cpg_freq, tb.cpg_freq, CPG_FREQ)
+        + norm_diff(ta.armor, tb.armor, ZERO_ONE)
+        + hue;
+    n += 7.0;
+    d / n
 }

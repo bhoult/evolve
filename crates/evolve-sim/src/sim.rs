@@ -48,6 +48,8 @@ pub enum Origin {
     Dropped,
     /// Fell from the sky, an exact copy of a gene-pool genome, living again to check its score.
     Retest,
+    /// Fell from the sky, a mutated copy of a creature in the zoo.
+    Zoo,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -367,6 +369,12 @@ pub struct Sim {
     /// The sky right now; a function of the clock, so not saved.
     #[serde(skip)]
     pub weather: crate::weather::Weather,
+    /// Zoo creatures (and their generations) for creatures falling from the sky to be copied
+    /// from (`rain_from_zoo`). Whoever holds the zoo refills it (see `zoo::refresh_rain_sample`).
+    #[serde(skip)]
+    pub zoo_sample: Vec<(Genome, u32)>,
+    #[serde(skip)]
+    pub zoo_sample_version: u64,
     /// Notable moments since the runner last collected them.
     #[serde(skip)]
     pub highlights: Vec<Highlight>,
@@ -430,6 +438,8 @@ impl Sim {
             stats: Stats::default(),
             history: Vec::new(),
             pool: GenePool::default(),
+            zoo_sample: Vec::new(),
+            zoo_sample_version: 0,
             selected: None,
             grab: None,
             rain_timer: 0.0,
@@ -1170,7 +1180,26 @@ impl Sim {
 
     /// A creature dropped from the sky: bred from the gene pool or entirely random.
     pub fn rain_creature(&mut self, at: Option<Vec3>) -> u64 {
-        let from_pool = self.rng.chance(self.params.rain_from_pool);
+        // Which of the three sources (`rain_from_world`, `rain_from_zoo`, `rain_from_random`).
+        let p = &self.params;
+        let (world, zoo) = (p.rain_from_world.max(0.0), p.rain_from_zoo.max(0.0));
+        let total = world + zoo + p.rain_from_random.max(0.0);
+        let roll = self.rng.f32() * total;
+        let from_zoo = roll >= world && roll < world + zoo;
+        let zoo_pick = if from_zoo && !self.zoo_sample.is_empty() {
+            let (g, n) = &self.zoo_sample[self.rng.below(self.zoo_sample.len())];
+            let mut g = g.clone();
+            let p = self.breeding_params();
+            g.mutate(&mut self.rng, &p);
+            Some((g, n + 1))
+        } else {
+            None
+        };
+        if from_zoo && zoo_pick.is_none() {
+            // No zoo here (a headless run, a test): the world stands in for it.
+            self.stats.rain_without_zoo += 1;
+        }
+        let from_pool = zoo_pick.is_none() && (roll < world || from_zoo);
         let retest = if from_pool && self.rng.chance(self.params.pool_retest) {
             self.pool.retest(&mut self.rng)
         } else {
@@ -1183,15 +1212,16 @@ impl Sim {
             None
         };
         let from_pool = retest.is_some() || bred.is_some();
-        let origin = match (&retest, &bred) {
-            (Some(_), _) => Origin::Retest,
-            (_, Some((_, _, true))) => Origin::PoolCross,
-            (_, Some(_)) => Origin::PoolClone,
+        let origin = match (&retest, &bred, &zoo_pick) {
+            (_, _, Some(_)) => Origin::Zoo,
+            (Some(_), _, _) => Origin::Retest,
+            (_, Some((_, _, true)), _) => Origin::PoolCross,
+            (_, Some(_), _) => Origin::PoolClone,
             _ => Origin::Random,
         };
         let retest_of = retest.as_ref().map(|r| r.2);
-        let (genome, generation) = retest
-            .map(|(g, n, _)| (g, n))
+        let (genome, generation) = zoo_pick
+            .or(retest.map(|(g, n, _)| (g, n)))
             .or(bred.map(|(g, n, _)| (g, n)))
             .unwrap_or_else(|| (Genome::random(&mut self.rng, &self.params), 0));
         let near_kin = (from_pool && self.rng.chance(self.params.rain_near_kin))
@@ -1925,15 +1955,19 @@ impl Sim {
                     None => self.pool.consider(score, c.generation, &c.genome),
                 }
                 self.stats.record_life(c.life.food(), c.life.distance, c.life.children as f32, c.age);
-                // Meat where each body part lay: `meat_per_mass` per kg plus half the energy it
-                // still held. A body born in the world was paid for by its parents
-                // (`life::birth_cost`), so it always leaves that. One that fell from the sky cost
-                // nothing, so it leaves meat only when something killed it: hunting pays, but
+                // Meat where each body part lay, plus half the energy it still held. A body born
+                // in the world was paid for by its parents (`life::birth_cost`), so it leaves that,
+                // `meat_per_mass` a kg. One that fell from the sky cost nothing, so it leaves meat
+                // (`sky_meat_per_mass` a kg) only when something killed it: hunting pays, but
                 // starving, drowning and old age leave nothing. Otherwise the population floor
                 // rains free carcasses, and big carrion-eaters that never move win.
-                let meaty = !c.rained || cause == DeathCause::Killed;
-                let body_meat = if meaty { self.params.meat_per_mass } else { 0.0 };
-                let leftover = if meaty { c.energy.max(0.0) * 0.5 } else { 0.0 };
+                let killed = cause == DeathCause::Killed;
+                let body_meat = match (c.rained, killed) {
+                    (false, _) => self.params.meat_per_mass,
+                    (true, true) => self.params.sky_meat_per_mass,
+                    (true, false) => 0.0,
+                };
+                let leftover = if !c.rained || killed { c.energy.max(0.0) * 0.5 } else { 0.0 };
                 // Shares by volume of the body as it was built (the density param may have
                 // changed since).
                 let volume: f32 = c.plan.iter().map(|s| s.shape.volume()).sum::<f32>().max(1e-6);

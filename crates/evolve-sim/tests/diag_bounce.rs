@@ -964,7 +964,8 @@ fn motor_load() {
     use evolve_sim::body;
     let mut p = params();
     p.min_population = 40;
-    p.rain_from_pool = 0.0;
+    p.rain_from_world = 0.0;
+    p.rain_from_zoo = 0.0;
     p.thirst_time = 0.0;
     let mut sim = Sim::new(p);
     for _ in 0..(10 * TICKS_PER_SECOND) {

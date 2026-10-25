@@ -548,7 +548,7 @@ fn a_body_from_the_sky_leaves_meat_only_when_killed() {
     sim.creature_mut(b).unwrap().dead = Some(DeathCause::Killed);
     sim.step();
     let left = meat(&sim);
-    let want = mass * sim.params.meat_per_mass;
+    let want = mass * sim.params.sky_meat_per_mass;
     assert!(left >= 0.9 * want, "a killed one leaves its body's meat: {left} of at least {want}");
 }
 

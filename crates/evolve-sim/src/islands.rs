@@ -260,6 +260,7 @@ fn worker_loop(
     let pool = self::pool(&format!("evolve-world-{index}"), BACKGROUND_THREADS, true);
     let mut sim = pool.install(|| Sim::new_background(island_params(index, &params)));
     pool.install(|| crate::zoo::seed_world(&zoo, &mut sim));
+    crate::zoo::refresh_rain_sample(&zoo, &mut sim);
     // Start from the best genomes known so far rather than from nothing.
     migrate(&mut sim.pool, &board, 0.0);
     let mut pacer = Pacer::new();
@@ -292,6 +293,7 @@ fn worker_loop(
         sim.highlights.clear();
         if sim.time >= next_migration {
             migrate(&mut sim.pool, &board, 0.0);
+            crate::zoo::refresh_rain_sample(&zoo, &mut sim);
             next_migration = sim.time + sim.params.migration_interval as f64;
         }
         if sim.time >= next_log {

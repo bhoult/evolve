@@ -397,6 +397,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         if sim.time >= next_migration {
             let interval = sim.params.migration_interval;
             migrate(&mut sim.pool, &board, interval);
+            crate::zoo::refresh_rain_sample(&zoo, &mut sim);
             next_migration = sim.time + interval as f64;
         }
 

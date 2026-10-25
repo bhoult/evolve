@@ -654,6 +654,13 @@ fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: 
                 });
                 let filter = st.params_filter.to_lowercase();
                 let defaults = &st.defaults;
+                // The three sources of creatures from the sky are weights; show the share each gets.
+                let sky = {
+                    let p = &st.params;
+                    let w = [p.rain_from_world, p.rain_from_zoo, p.rain_from_random].map(|x| x.max(0.0));
+                    let total: f32 = w.iter().sum();
+                    if total > 0.0 { w.map(|x| x / total) } else { [0.0, 0.0, 1.0] }
+                };
                 for group in groups {
                     let open = !filter.is_empty() || matches!(group, "World" | "Population" | "Brain");
                     egui::CollapsingHeader::new(group)
@@ -672,6 +679,15 @@ fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: 
                                 }
                                 let d = defaults.get(info.name).copied().unwrap_or(0.0);
                                 changed |= param_widget(ui, info, r, d);
+                                let share = match info.name {
+                                    "rain_from_world" => Some(sky[0]),
+                                    "rain_from_zoo" => Some(sky[1]),
+                                    "rain_from_random" => Some(sky[2]),
+                                    _ => None,
+                                };
+                                if let Some(x) = share {
+                                    ui.label(format!("    = {:.0}% of creatures from the sky", 100.0 * x));
+                                }
                             });
                         });
                 }

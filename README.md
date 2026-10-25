@@ -215,10 +215,15 @@ line on what it does to this creature.
 bodies, brains, learning, energy, food, water, breeding, fighting, evolution, land, weather,
 voices and worlds. Its numbers are the current parameters, so it follows your changes.
 
-**The zoo** (toolbar button, or start with `--zoo`) keeps the best creatures from every world
+**The zoo** (toolbar button, or start with `--zoo`) keeps different creatures from every world
 across sessions, in `~/.local/share/evolve/zoo`. Every `zoo_interval` simulated seconds (default
-5 minutes), each world, background worlds included, stores its current best genome, and the
-weakest unpinned ones are pruned past `zoo_max_entries`. **Add to zoo** in a creature's inspector
+5 minutes), each world, background worlds included, offers it the best of each kind in its gene
+pool. A creature at least `zoo_kind_distance` (0.1) from every one there, by the genetic distance
+of body and traits that also splits species (at 0.35), joins as a new kind; one closer takes the
+place of the most alike only if it scored better. Past `zoo_max_entries` the weaker of the two
+most alike goes, so every kind keeps its best. (Until 2026-10-25 each world stored its single
+best genome: a zoo of 390 held 10 species, 87% of it in two, and most entries were all but
+copies of another.) **Add to zoo** in a creature's inspector
 stores (and pins) one by hand. From the Zoo window you can **Drop** copies from the sky into this
 world, a background world or every world, or **Place** them where you click. Like every creature
 that appears in a world, each copy is a slightly mutated variant (a child of the zoo creature).
@@ -420,13 +425,17 @@ interbreed. Breeding alone is an optional parameter.
 and wants to attack bites it. Damage depends on the size ratio and the target's armor. Biting
 costs energy and has a cooldown, and the target can bite back. The dead leave meat where their
 body parts were, and the meat rots over time. A creature that fell from the sky cost nothing, so
-it leaves meat only if something killed it: hunting it pays, but one that starved, drowned or
-died of age leaves nothing. (When every such body left meat, the population floor rained free
+it leaves meat only if something killed it, and then more of it (`sky_meat_per_mass`, 1 per kg,
+against `meat_per_mass`, 0.5, for a body born here, which can't leave more than its parents paid):
+hunting it pays, but one that starved, drowned or died of age leaves nothing. (When every such body left meat, the population floor rained free
 carcasses, and huge limbless carrion-eaters that never moved took over.)
 
 **Rain and the gene pool.** When the population drops below `min_population`, creatures fall
-from the sky. Most are bred from a hall of fame of the most successful genomes seen recently,
-and the rest are random.
+from the sky, from three sources in proportion to three weights: bred from this world's hall of
+fame of the most successful genomes seen recently (`rain_from_world`, 0.5), mutated copies of
+zoo creatures, so kinds that died out here come back (`rain_from_zoo`, 0.2; each world keeps 16
+to hand, taken again whenever the zoo changes), and random (`rain_from_random`, 0.3). The
+settings panel shows the share each gets.
 
 A life is scored by what it achieved, in "plants' worth":
 - *Eating:* 1 per plant's worth of food or meat eaten at least `score_food_away` (4 m) from

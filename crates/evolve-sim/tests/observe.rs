@@ -228,7 +228,7 @@ fn the_gene_pool_crosses_only_genomes_that_could_interbreed() {
 /// again, do no better; a retested copy is never let in a second time as a new entry.
 #[test]
 fn the_gene_pool_retests_genomes_judged_on_one_life() {
-    let mut sim = Sim::new(SimParams { rain_from_pool: 1.0, pool_retest: 1.0, ..quiet_params() });
+    let mut sim = Sim::new(SimParams { rain_from_world: 1.0, rain_from_zoo: 0.0, rain_from_random: 0.0, pool_retest: 1.0, ..quiet_params() });
     let mut rng = Rng::new(31);
     let lucky = Genome::random(&mut rng, &sim.params);
     let steady = Genome::random(&mut rng, &sim.params);

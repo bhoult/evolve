@@ -191,8 +191,15 @@ params! {
         rain_interval: f32 = 0.25, [0, 10], Live;
         /// Height above the ground at which raining creatures appear.
         rain_height: f32 = 10.0, [1, 60], Live;
-        /// Fraction of raining creatures bred from the gene pool of past successes (the rest are random).
-        rain_from_pool: f32 = 0.7, [0, 1], Live;
+        /// Creatures falling from the sky come from three sources, in proportion to these three
+        /// weights (each source's share is its weight over their sum; all 0 means random). From
+        /// the world: bred from this world's gene pool of recent successes.
+        rain_from_world: f32 = 0.5, [0, 1], Live;
+        /// From the zoo: a mutated copy of a creature kept in the zoo, picked across its kinds,
+        /// so kinds that have died out here come back. Without a zoo these come from the world.
+        rain_from_zoo: f32 = 0.2, [0, 1], Live;
+        /// Random: made from scratch.
+        rain_from_random: f32 = 0.3, [0, 1], Live;
         /// Fraction of those pool-bred raindrops that land near a living relative they could breed
         /// with, instead of at a random spot. More births, but in tests walking failed to evolve
         /// in 2 of 3 worlds (breeding without moving gets rewarded), so it's off by default.
@@ -299,6 +306,11 @@ params! {
         /// the sky cost nothing, so they leave only the half. (At 0.8 a child cost its parents
         /// so much of a full-size body that what was left for it to live on was a crumb.)
         meat_per_mass: f32 = 0.5, [0, 10], Live;
+        /// Energy in each kg of a creature that fell from the sky and was killed (one that
+        /// starved, drowned or died of age leaves no meat). Its body cost nothing, so this can be
+        /// more than `meat_per_mass` without making energy from nothing; a born body can't leave
+        /// more than its parents paid, or meat-eaters could live on their own children.
+        sky_meat_per_mass: f32 = 1.0, [0, 10], Live;
         /// Fraction of meat energy lost per second to rot.
         meat_decay: f32 = 0.01, [0, 0.5], Live;
     }
@@ -418,8 +430,15 @@ params! {
         /// Share of a new world's starting population that comes from the zoo (pairs of randomly
         /// chosen creatures, so they can breed); the rest are random.
         zoo_seed_fraction: f32 = 0.7, [0, 1], Live;
-        /// Most creatures the zoo keeps (pinned ones don't count); the weakest go first.
+        /// Most creatures the zoo keeps (pinned ones don't count). Over it, the most redundant
+        /// go first: the weaker of the two most alike.
         zoo_max_entries: u32 = 500, [10, 5000], Live;
+        /// How different a creature must be from every one in the zoo to join it as a new kind
+        /// (genetic distance of body and traits, as for species; 0.35 splits species). One closer
+        /// than this to a creature already there takes its place only if it scored better, so the
+        /// zoo collects different creatures rather than copies of a few. At 0.1, a zoo of 390
+        /// built without it held 79 kinds in 39 body plans. 0 lets every new genome in.
+        zoo_kind_distance: f32 = 0.1, [0, 1], Live;
     }
     "Combat" {
         /// Health removed by one bite of an attack.

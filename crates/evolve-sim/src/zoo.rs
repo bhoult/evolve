@@ -12,7 +12,7 @@ use flate2::write::GzEncoder;
 use serde::{Deserialize, Serialize};
 
 use crate::body;
-use crate::genome::Genome;
+use crate::genome::{Genome, Shape};
 use crate::params::SimParams;
 
 /// EVOZOO02 genomes have multi-jointed bodies; EVOZOO01 ones are upgraded as they're read.
@@ -40,6 +40,10 @@ pub struct ZooMeta {
     /// don't compare.
     #[serde(default)]
     pub score_version: u32,
+    /// Body plan and traits, to tell kinds apart without reading the genome (filled in from the
+    /// genome file for entries stored before it was kept).
+    #[serde(default)]
+    pub shape: Option<Shape>,
 }
 
 /// 6: as 5, with food counted only when eaten at least `score_food_away` (4 m) from where the
@@ -217,6 +221,116 @@ impl Zoo {
         Ok(Some(id))
     }
 
+    /// Offers a genome from a world. It joins as a new kind if its body and traits are at least
+    /// `kind_distance` from every unpinned creature here (see `Genome::distance`); otherwise it
+    /// takes the place of the most alike one if it scored better (or that one was scored the old
+    /// way), and is turned away if not. Over `max_entries`, the most redundant go first (see
+    /// `prune_alike`), so the zoo fills with different creatures rather than copies of a few.
+    /// Returns the new entry's id, if it got in.
+    pub fn offer(
+        &mut self,
+        genome: &Genome,
+        score: f32,
+        generation: u32,
+        source: &str,
+        max_entries: usize,
+        kind_distance: f32,
+    ) -> Result<Option<u64>, String> {
+        self.writable()?;
+        let score = if score.is_finite() { score } else { 0.0 };
+        if self.entries.iter().any(|e| e.fingerprint == genome.fingerprint()) {
+            return self.add(genome, score, generation, source, false, max_entries);
+        }
+        self.fill_shapes();
+        let shape = genome.shape();
+        let alike = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| !e.pinned)
+            .filter_map(|(i, e)| Some((i, e.shape.as_ref()?.distance(&shape))))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((i, d)) = alike
+            && d < kind_distance
+        {
+            let e = &self.entries[i];
+            if e.score_version == SCORE_VERSION && e.score >= score {
+                return Ok(None);
+            }
+            let old = self.entries.remove(i).id;
+            self.trash([old]);
+        }
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("create {}: {e}", self.dir.display()))?;
+        let id = self.next_id;
+        self.next_id += 1;
+        write_genome(&genome_path(&self.dir, id), genome)?;
+        self.entries.push(meta_for(id, genome, score, generation, source, SCORE_VERSION));
+        self.prune_alike(max_entries);
+        self.version += 1;
+        self.save_index()?;
+        Ok(Some(id))
+    }
+
+    /// Reads the shape of every entry stored without one (once; it's kept in the index after).
+    fn fill_shapes(&mut self) {
+        let mut filled = false;
+        for e in self.entries.iter_mut().filter(|e| e.shape.is_none()) {
+            if let Ok(g) = read_genome(&genome_path(&self.dir, e.id)) {
+                e.shape = Some(g.shape());
+                filled = true;
+            }
+        }
+        if filled {
+            let _ = self.save_index();
+        }
+    }
+
+    /// Drops unpinned creatures beyond `max` entries: those scored the old way first (weakest
+    /// first), then the weaker of the two most alike, so every kind keeps its best.
+    fn prune_alike(&mut self, max: usize) {
+        let mut gone = Vec::new();
+        while self.entries.iter().filter(|e| !e.pinned).count() > max.max(1) {
+            let old = self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| !e.pinned && e.score_version < SCORE_VERSION)
+                .min_by(|a, b| a.1.score.total_cmp(&b.1.score))
+                .map(|(i, _)| i);
+            let i = old.or_else(|| {
+                // Each unpinned entry's nearest neighbour; of the closest pair, the weaker goes
+                // (or the unpinned one, beside a pinned creature).
+                let n = self.entries.len();
+                let mut best: Option<(f32, usize)> = None;
+                for i in (0..n).filter(|&i| !self.entries[i].pinned) {
+                    let Some(si) = &self.entries[i].shape else { continue };
+                    for j in (0..n).filter(|&j| j != i) {
+                        let Some(sj) = &self.entries[j].shape else { continue };
+                        let d = si.distance(sj);
+                        let weaker = self.entries[j].pinned || self.entries[i].score <= self.entries[j].score;
+                        if weaker && best.is_none_or(|(bd, _)| d < bd) {
+                            best = Some((d, i));
+                        }
+                    }
+                }
+                best.map(|(_, i)| i)
+            });
+            let Some(i) = i.or_else(|| {
+                // No shapes to compare: the weakest.
+                self.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| !e.pinned)
+                    .min_by(|a, b| a.1.score.total_cmp(&b.1.score))
+                    .map(|(i, _)| i)
+            }) else {
+                break;
+            };
+            gone.push(self.entries.remove(i).id);
+        }
+        self.trash(gone);
+    }
+
     pub fn genome(&self, id: u64) -> Result<Genome, String> {
         read_genome(&genome_path(&self.dir, id))
     }
@@ -381,6 +495,7 @@ fn meta_for(id: u64, genome: &Genome, score: f32, generation: u32, source: &str,
         pinned: false,
         fingerprint: fp,
         score_version,
+        shape: Some(genome.shape()),
     }
 }
 
@@ -448,20 +563,56 @@ pub fn seed_world(zoo: &SharedZoo, sim: &mut crate::Sim) {
     sim.log(format!("{placed} creatures from the zoo"));
 }
 
-/// Puts a world's current best genome (the top of its gene pool) in the zoo.
-pub fn store_best(zoo: &SharedZoo, sim: &crate::Sim, world: usize) {
-    let Some(best) = sim.pool.entries.first() else {
+/// Zoo creatures a world keeps to hand for creatures falling from the zoo (`rain_from_zoo`).
+const RAIN_SAMPLE: usize = 16;
+
+/// Refills a world's sample of zoo creatures to rain from (`Sim::zoo_sample`) when the zoo has
+/// changed since: `RAIN_SAMPLE` picked at random, which spreads across kinds since the zoo keeps
+/// one of each (see `Zoo::offer`). Only creatures scored under today's rules, as for
+/// `seed_world`. Cheap when nothing changed, so it can be called often.
+pub fn refresh_rain_sample(zoo: &SharedZoo, sim: &mut crate::Sim) {
+    if sim.params.rain_from_zoo <= 0.0 {
         return;
+    }
+    let (dir, mut ids, version) = match zoo.lock() {
+        Ok(z) if z.version != sim.zoo_sample_version || sim.zoo_sample.is_empty() => (
+            z.dir.clone(),
+            z.entries.iter().filter(|e| e.score_version == SCORE_VERSION).map(|e| (e.id, e.generation)).collect::<Vec<_>>(),
+            z.version,
+        ),
+        _ => return,
     };
+    sim.zoo_sample_version = version;
+    // Its own random numbers, so when the zoo changes doesn't change the world's.
+    let mut rng = crate::rng::Rng::new(version ^ sim.tick);
+    let mut sample = Vec::with_capacity(RAIN_SAMPLE);
+    while sample.len() < RAIN_SAMPLE && !ids.is_empty() {
+        let (id, generation) = ids.swap_remove(rng.below(ids.len()));
+        if let Ok(g) = load_genome(&dir, id) {
+            sample.push((g, generation));
+        }
+    }
+    sim.zoo_sample = sample;
+}
+
+/// Offers the zoo the best genome of each kind in a world's gene pool (see `Zoo::offer`).
+pub fn store_best(zoo: &SharedZoo, sim: &crate::Sim, world: usize) {
+    if sim.pool.entries.is_empty() {
+        return;
+    }
     let source = if world == 0 {
         format!("seed {}, {:.0} min", sim.params.seed, sim.time / 60.0)
     } else {
         format!("background world {world} (seed {}), {:.0} min", sim.params.seed, sim.time / 60.0)
     };
+    let p = &sim.params;
     if let Ok(mut z) = zoo.lock() {
-        let max = sim.params.zoo_max_entries as usize;
-        if let Err(e) = z.add(&best.genome, best.score, best.generation, &source, false, max) {
-            eprintln!("evolve: zoo: {e}");
+        for (best, _) in sim.pool.kinds(p.zoo_kind_distance) {
+            let e = &sim.pool.entries[best];
+            if let Err(e) = z.offer(&e.genome, e.score, e.generation, &source, p.zoo_max_entries as usize, p.zoo_kind_distance) {
+                eprintln!("evolve: zoo: {e}");
+                break;
+            }
         }
     }
 }

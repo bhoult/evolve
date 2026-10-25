@@ -200,6 +200,7 @@ impl Sim {
             ("From the sky, a mutated copy of a gene-pool genome", Origin::PoolClone),
             ("From the sky, a cross of two gene-pool genomes", Origin::PoolCross),
             ("From the sky, an exact copy of a gene-pool genome, retesting it", Origin::Retest),
+            ("From the sky, a mutated copy of a zoo creature", Origin::Zoo),
             ("Dropped in from the zoo or by hand", Origin::Dropped),
             ("Born in the world", Origin::Born),
             ("Of unknown origin (from an older save)", Origin::Unknown),
@@ -301,6 +302,25 @@ impl Sim {
                 mainly(1),
                 mainly(2),
                 mainly(3)
+            );
+        }
+        let kinds = self.pool.kinds(self.params.zoo_kind_distance);
+        if !kinds.is_empty() {
+            let _ = writeln!(
+                o,
+                "The gene pool's {} genomes are {} kinds (apart by at least {}, zoo_kind_distance): {}.",
+                self.pool.entries.len(),
+                kinds.len(),
+                self.params.zoo_kind_distance,
+                kinds.iter().map(|k| k.1.to_string()).collect::<Vec<_>>().join(", ")
+            );
+        }
+        if st.rain_without_zoo > 0 {
+            let _ = writeln!(
+                o,
+                "{} creatures meant to fall from the zoo came from the gene pool instead: this world has no zoo to copy ({} zoo creatures to hand).",
+                st.rain_without_zoo,
+                self.zoo_sample.len()
             );
         }
 
