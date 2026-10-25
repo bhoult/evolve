@@ -144,8 +144,15 @@ fn main() {
     }
     let s = &sim.stats;
     println!(
-        "# physics: forces {:.2} ms, slowest world {:.2} ms, all worlds {:.2} ms",
-        sim.perf.forces_ms, sim.perf.shard_slowest_ms, sim.perf.shard_total_ms
+        "# other: after physics {:.2} ms, interact {:.2} ms, ecology {:.2} ms, water {:.2} ms, rest {:.2} ms\n# physics: forces {:.2} ms, slowest world {:.2} ms, all worlds {:.2} ms",
+        sim.perf.other_parts[0],
+        sim.perf.other_parts[1],
+        sim.perf.other_parts[2],
+        sim.perf.other_parts[3],
+        sim.perf.other_parts[4],
+        sim.perf.forces_ms,
+        sim.perf.shard_slowest_ms,
+        sim.perf.shard_total_ms
     );
     // Loose stones and boulders: how many are still moving (or never settled), and how many
     // ended up under the ground.

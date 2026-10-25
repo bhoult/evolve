@@ -326,6 +326,9 @@ pub struct Perf {
     /// time shows how well the worlds run in parallel).
     pub shard_slowest_ms: f32,
     pub shard_total_ms: f32,
+    /// "Other" by part, ms per step: after physics (senses of the ground, eyes, breath...),
+    /// interacting and metabolism, ecology (plants, trees), water, and the rest (rain, deaths).
+    pub other_parts: [f32; 5],
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1541,16 +1544,20 @@ impl Sim {
         self.perf.shard_total_ms += (total - self.perf.shard_total_ms) * k;
         self.perf.forces_ms += ((t_forces - t1).as_secs_f32() * 1000.0 - self.perf.forces_ms) * k;
         self.after_physics();
+        let ta = Instant::now();
         if brain_tick {
             self.interact(bdt);
             self.metabolism(bdt);
         }
+        let ti = Instant::now();
         if self.tick % TICKS_PER_SECOND == 0 {
             self.ecology(1.0);
         }
+        let te = Instant::now();
         if self.tick % (TICKS_PER_SECOND * HYDROLOGY_EVERY) == 0 {
             self.hydrology(HYDROLOGY_EVERY as f32);
         }
+        let th = Instant::now();
         if self.tick % (TICKS_PER_SECOND * 2) == 0 {
             self.sample_history();
         }
@@ -1569,6 +1576,11 @@ impl Sim {
         self.perf.think_ms += (ms(t0, t1) - self.perf.think_ms) * k;
         self.perf.physics_ms += (ms(t1, t2) - self.perf.physics_ms) * k;
         self.perf.other_ms += (ms(t2, t3) - self.perf.other_ms) * k;
+        // What "other" is made of, per step (ecology and water run now and then, so these are
+        // their cost spread over the steps between).
+        for (x, v) in self.perf.other_parts.iter_mut().zip([ms(t2, ta), ms(ta, ti), ms(ti, te), ms(te, th), ms(th, t3)]) {
+            *x += (v - *x) * k;
+        }
     }
 
     /// Water buoyancy and drag, wind, plus the user's grab spring.
