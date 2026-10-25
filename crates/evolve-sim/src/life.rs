@@ -517,7 +517,7 @@ impl Sim {
                 && inside(b.translation())
             {
                 let t = b.translation();
-                let ground = terrain.height_at(t.x, t.z);
+                let ground = terrain.collision_height_at(t.x, t.z);
                 if t.y < ground {
                     b.set_translation(Vec3::new(t.x, ground + crate::sim::obstacle_lift(o.shape), t.z), true);
                     b.set_linvel(Vec3::ZERO, true);
@@ -534,7 +534,7 @@ impl Sim {
                 .zip(&c.plan)
                 .filter_map(|(q, spec)| {
                     let t = world.bodies.get(q.body)?.translation();
-                    let ground = self.terrain.height_at(t.x, t.z);
+                    let ground = self.terrain.collision_height_at(t.x, t.z);
                     (inside(t) && t.y < ground).then(|| ground + spec.shape.bounding_radius() - t.y)
                 })
                 .fold(0.0f32, f32::max);

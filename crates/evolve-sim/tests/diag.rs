@@ -1074,3 +1074,53 @@ fn zoo_diversity() {
         common.iter().take(8).map(|((l, s, p), c)| format!("{l}/{s}/{p}: {c}")).collect::<Vec<_>>().join(", ")
     );
 }
+
+/// How far a coarser physics ground would be from the drawn one: the ground's height sampled
+/// every 2nd, 4th and 8th grid point (as the physics pieces would) against the full grid, over
+/// random land points and under the body parts of the creatures in a saved world
+/// (EVOLVE_DIAG_SAVE).
+#[test]
+#[ignore]
+fn ground_stride_mismatch() {
+    let Ok(path) = std::env::var("EVOLVE_DIAG_SAVE") else {
+        return;
+    };
+    let sim = evolve_sim::save::load(path.as_ref()).unwrap();
+    let t = &sim.terrain;
+    let sea = sim.params.water_level;
+    let mut rng = Rng::new(3);
+    let land: Vec<(f32, f32)> = (0..200_000)
+        .map(|_| (rng.range(-t.half(), t.half()), rng.range(-t.half(), t.half())))
+        .filter(|&(x, z)| t.height_at(x, z) > sea)
+        .collect();
+    let sim = &sim;
+    let feet: Vec<(f32, f32)> = sim
+        .creatures
+        .iter()
+        .flat_map(|c| c.parts.iter().filter_map(move |q| sim.world_of(c).bodies.get(q.body)))
+        .map(|b| b.translation())
+        .filter(|p| p.y - t.height_at(p.x, p.z) < 0.5)
+        .map(|p| (p.x, p.z))
+        .collect();
+    println!("terrain {} a side over {} m ({:.3} m apart); {} land points, {} body parts near the ground", t.res, t.size, t.cell(), land.len(), feet.len());
+    for stride in [2usize, 4, 8] {
+        let coarse = t.resampled((t.res - 1).div_ceil(stride) + 1);
+        let gaps = |pts: &[(f32, f32)]| {
+            let mut d: Vec<f32> = pts.iter().map(|&(x, z)| (t.height_at(x, z) - coarse.height_at(x, z)).abs()).collect();
+            d.sort_by(f32::total_cmp);
+            let q = |f: f32| d[((d.len() - 1) as f32 * f) as usize];
+            (q(0.5), q(0.99), d.last().copied().unwrap_or(0.0))
+        };
+        let (a, b) = (gaps(&land), gaps(&feet));
+        println!(
+            "every {stride} points ({:.2} m): land gap p50 {:.3} p99 {:.3} max {:.3} m; under bodies p50 {:.3} p99 {:.3} max {:.3} m",
+            coarse.cell(),
+            a.0,
+            a.1,
+            a.2,
+            b.0,
+            b.1,
+            b.2
+        );
+    }
+}

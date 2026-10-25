@@ -87,6 +87,10 @@ pub struct Terrain {
     /// update (see `hydro::update`).
     #[serde(skip)]
     pub water_job: Option<crate::hydro::WaterJob>,
+    /// The physics ground samples every this many grid points (see `set_collision_cell`); 0 or
+    /// 1 is every one.
+    #[serde(skip)]
+    pub collision_stride: usize,
     #[serde(skip)]
     pub worn_tiles: Vec<usize>,
 }
@@ -195,6 +199,7 @@ impl Default for Terrain {
             stripe: 0,
             stripe_age: Vec::new(),
             water_job: None,
+            collision_stride: 1,
         }
     }
 }
@@ -260,6 +265,7 @@ impl Terrain {
             stripe: 0,
             stripe_age: Vec::new(),
             water_job: None,
+            collision_stride: 1,
         }
     }
 
@@ -725,7 +731,52 @@ impl Terrain {
 
     /// Cells along a side of each piece of the physics ground (see `GROUND_TILE`).
     pub fn tile_cells(&self) -> usize {
-        if self.res - 1 <= ONE_PIECE { self.res - 1 } else { GROUND_TILE }
+        let stride = self.stride();
+        if (self.res - 1).div_ceil(stride) <= ONE_PIECE { self.res - 1 } else { GROUND_TILE * stride }
+    }
+
+    /// How many grid points apart the physics ground's samples are.
+    pub fn stride(&self) -> usize {
+        self.collision_stride.max(1)
+    }
+
+    /// Spaces the physics ground's samples `cell` m apart, or as close as the grid allows (every
+    /// point, at `cell` 0 or below the grid's spacing): a part resting on ground sampled every
+    /// 0.16 m has many more triangles under it to collide with than one on ground every 0.5 m,
+    /// for detail no body can feel. The drawn ground keeps every point.
+    pub fn set_collision_cell(&mut self, cell: f32) {
+        self.collision_stride = if cell > 0.0 { (cell / self.cell()).ceil().max(1.0) as usize } else { 1 };
+    }
+
+    /// Height of the physics ground at a spot: the grid's own (`height_at`) unless the physics
+    /// ground is sampled coarser (`set_collision_cell`), when it's that surface's.
+    pub fn collision_height_at(&self, x: f32, z: f32) -> f32 {
+        let stride = self.stride();
+        if stride == 1 {
+            return self.height_at(x, z);
+        }
+        let (n, cells, last) = (self.res - 1, self.tile_cells(), self.tiles() - 1);
+        let c = self.cell();
+        let gx = ((x + self.half()) / c).clamp(0.0, n as f32);
+        let gz = ((z + self.half()) / c).clamp(0.0, n as f32);
+        let (ti, tj) = (((gz as usize) / cells).min(last), ((gx as usize) / cells).min(last));
+        let (i0, j0) = (ti * cells, tj * cells);
+        let (i1, j1) = ((i0 + cells).min(n), (j0 + cells).min(n));
+        let (mi, mj) = ((i1 - i0).div_ceil(stride), (j1 - j0).div_ceil(stride));
+        // Where in the piece's own grid of samples, as `tile_shape` lays them out.
+        let u = (gx - j0 as f32) / (j1 - j0) as f32 * mj as f32;
+        let v = (gz - i0 as f32) / (i1 - i0) as f32 * mi as f32;
+        let (b, a) = ((u.floor() as usize).min(mj - 1), (v.floor() as usize).min(mi - 1));
+        let (fx, fz) = (u - b as f32, v - a as f32);
+        let at = |a: usize, b: usize| {
+            self.height_at(j0 as f32 * c - self.half() + (j1 - j0) as f32 * c * b as f32 / mj as f32, i0 as f32 * c - self.half() + (i1 - i0) as f32 * c * a as f32 / mi as f32)
+        };
+        let (h00, h01, h10, h11) = (at(a, b), at(a, b + 1), at(a + 1, b), at(a + 1, b + 1));
+        if fx + fz <= 1.0 {
+            h00 + fx * (h01 - h00) + fz * (h10 - h00)
+        } else {
+            h11 + (1.0 - fx) * (h10 - h11) + (1.0 - fz) * (h01 - h11)
+        }
     }
 
     /// How many pieces the physics ground is split into along each side.
@@ -733,17 +784,25 @@ impl Terrain {
         (self.res - 1).div_ceil(self.tile_cells())
     }
 
-    /// Piece (ti, tj) of the physics surface: a heightfield over grid rows ti*GROUND_TILE to
-    /// (ti+1)*GROUND_TILE and the same columns (neighbours share their edge), and where its
-    /// center sits. A terrain of one piece gets exactly `shape()`.
+    /// Piece (ti, tj) of the physics surface: a heightfield over grid rows ti*cells to
+    /// (ti+1)*cells (`tile_cells`) and the same columns (neighbours share their edge), sampled
+    /// every `stride` points, and where its center sits. A terrain of one piece sampled at every
+    /// point gets exactly `shape()`.
     pub fn tile_shape(&self, ti: usize, tj: usize) -> (Vec3, SharedShape) {
         let (n, cells) = (self.res - 1, self.tile_cells());
         let (i0, j0) = (ti * cells, tj * cells);
         let (i1, j1) = ((i0 + cells).min(n), (j0 + cells).min(n));
         let (res, h, c) = (self.res, &self.heights, self.cell());
-        let arr = Array2::from_fn(i1 - i0 + 1, j1 - j0 + 1, |a, b| h[(i0 + a) * res + j0 + b]);
         let (w, d) = ((j1 - j0) as f32 * c, (i1 - i0) as f32 * c);
         let center = Vec3::new(j0 as f32 * c - self.half() + w * 0.5, 0.0, i0 as f32 * c - self.half() + d * 0.5);
+        let stride = self.stride();
+        let arr = if stride == 1 {
+            Array2::from_fn(i1 - i0 + 1, j1 - j0 + 1, |a, b| h[(i0 + a) * res + j0 + b])
+        } else {
+            let (mi, mj) = ((i1 - i0).div_ceil(stride), (j1 - j0).div_ceil(stride));
+            let (x0, z0) = (center.x - w * 0.5, center.z - d * 0.5);
+            Array2::from_fn(mi + 1, mj + 1, |a, b| self.height_at(x0 + w * b as f32 / mj as f32, z0 + d * a as f32 / mi as f32))
+        };
         (center, SharedShape::heightfield(arr, Vec3::new(w, 1.0, d)))
     }
 

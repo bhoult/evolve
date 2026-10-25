@@ -536,7 +536,7 @@ fn a_fine_terrain_gets_the_same_water_from_a_coarse_grid() {
 fn a_big_terrain_has_its_physics_ground_in_pieces() {
     use evolve_sim::sim::ObstacleShape;
     // 1025 a side is eight pieces of 128 cells each way; four meet in the middle (x = z = 0).
-    let p = SimParams { world_size: 120.0, terrain_resolution: 1025, stones: 0, plant_max_count: 0, plant_spawn_rate: 0.0, ..quiet_params() };
+    let p = SimParams { world_size: 120.0, terrain_resolution: 1025, ground_collision_cell: 0.0, stones: 0, plant_max_count: 0, plant_spawn_rate: 0.0, ..quiet_params() };
     let mut sim = Sim::new(p);
     assert_eq!(sim.terrain.tiles(), 8);
     assert!(sim.shards.iter().all(|s| s.ground.len() == 64));
@@ -620,4 +620,59 @@ fn water_worked_out_on_another_thread_is_the_same_every_time() {
     assert!(a.water.iter().any(|&w| w > 0.05), "streams formed");
     assert!(a.water.iter().zip(b.water.iter()).all(|(x, y)| x == y), "the same water");
     assert!(a.heights.iter().zip(b.heights.iter()).all(|(x, y)| x == y), "the same erosion");
+}
+
+/// On a terrain finer than `ground_collision_cell`, the physics ground samples every few grid
+/// points, in pieces of the same number of samples: `collision_height_at` is exactly where a ray
+/// meets it (seams between pieces included), and it stays close to the drawn ground.
+#[test]
+fn a_fine_terrain_collides_on_a_coarser_ground() {
+    use evolve_sim::math::Vec3;
+    use rapier3d::prelude::{QueryFilter, Ray};
+    // 120 m at 1537 a side is 0.078 m apart; 0.1 m makes every 2nd point, 768 samples a side,
+    // in pieces of 256 cells (128 samples): six each way.
+    let p = SimParams {
+        world_size: 120.0,
+        terrain_resolution: 1537,
+        ground_collision_cell: 0.1,
+        stones: 0,
+        plant_max_count: 0,
+        plant_spawn_rate: 0.0,
+        ..quiet_params()
+    };
+    let mut sim = Sim::new(p);
+    // Once, so the physics worlds have indexed their ground for rays.
+    sim.step();
+    let t = &sim.terrain;
+    assert_eq!(t.stride(), 2);
+    assert_eq!(t.tiles(), 6);
+    assert!(sim.shards.iter().all(|s| s.ground.len() == 36));
+    let world = &sim.shards[0].world;
+    let qp = world.query_pipeline_with_filter(QueryFilter::default());
+    let mut worst = 0.0f32;
+    let mut gap = 0.0f32;
+    // A grid of spots across the island, including the seams at multiples of 256 cells.
+    let seam = 256.0 * t.cell();
+    for a in -14..=14 {
+        for b in -14..=14 {
+            let (x, z) = (a as f32 * 3.7 + 0.31, b as f32 * 3.3 - 0.17);
+            for (x, z) in [(x, z), (seam - t.half() + 0.001 * a as f32, z)] {
+                let top = Vec3::new(x, 200.0, z);
+                let Some((_, toi)) = qp.cast_ray(&Ray::new(top, Vec3::NEG_Y), 400.0, true) else {
+                    panic!("no ground under ({x}, {z})");
+                };
+                let hit = 200.0 - toi;
+                worst = worst.max((hit - t.collision_height_at(x, z)).abs());
+                gap = gap.max((t.height_at(x, z) - t.collision_height_at(x, z)).abs());
+            }
+        }
+    }
+    assert!(worst < 2e-3, "collision_height_at is off the physics ground by up to {worst} m");
+    assert!(gap < 0.1, "the physics ground strays from the drawn one by up to {gap} m");
+    // Every point again: the drawn ground is the physics ground.
+    let mut q = sim.params.clone();
+    q.ground_collision_cell = 0.0;
+    sim.set_params(q);
+    assert_eq!(sim.terrain.stride(), 1);
+    assert!(sim.shards.iter().all(|s| s.ground.len() == 144), "pieces of 128 cells: {}", sim.shards[0].ground.len());
 }

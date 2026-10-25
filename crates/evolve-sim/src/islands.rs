@@ -14,10 +14,20 @@ use crate::zoo::{SharedZoo, store_best};
 
 /// How many genomes travel each way per migration.
 const MIGRANTS: usize = 8;
-/// Threads for the world you watch, which steps its physics worlds (`physics_shards`) on them.
+/// Threads for the world you watch, which steps its physics worlds (`physics_shards`) on them,
+/// at least (see `main_threads`).
 pub const MAIN_THREADS: usize = 12;
 /// Threads for each background world.
 pub const BACKGROUND_THREADS: usize = 4;
+
+/// Threads for the world you watch: `MAIN_THREADS`, or more when fewer background worlds leave
+/// cores spare, keeping a tenth of the machine free. With the background worlds off, a fixed 12
+/// left half of 24 cores idle, and raising `physics_shards` past 12 gained nothing: the extra
+/// physics worlds waited for a thread.
+pub fn main_threads(cores: usize, background_worlds: usize) -> usize {
+    let spare = (cores * 9 / 10).saturating_sub(background_worlds * BACKGROUND_THREADS);
+    spare.max(MAIN_THREADS).min(cores)
+}
 
 /// A thread pool of its own for one world, so worlds don't contend in one shared pool.
 pub fn world_pool(name: &str, threads: usize) -> rayon::ThreadPool {
