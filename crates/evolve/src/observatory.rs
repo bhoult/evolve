@@ -8,10 +8,11 @@ use std::sync::mpsc::{Receiver, Sender};
 use bevy::prelude::*;
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured};
+use evolve_sim::Command;
 use evolve_sim::mcp::Shot;
 
 use crate::camera::OrbitCam;
-use crate::{Args, Snap};
+use crate::{Args, SimLink, Snap};
 
 pub struct ObservatoryPlugin;
 
@@ -41,6 +42,8 @@ struct Pending {
     wait: u32,
     /// How the view was before, to put back: focus, yaw, pitch, distance, following, panels hidden.
     restore: (Vec3, f32, f32, f32, bool, bool),
+    /// The selection to put back, if the picture selected its creature.
+    selected: Option<Option<u64>>,
 }
 
 /// Frames for the panels to disappear and the view to settle on the creature.
@@ -52,6 +55,7 @@ fn serve_shots(
     mut cam: ResMut<OrbitCam>,
     mut args: ResMut<Args>,
     snap: Res<Snap>,
+    link: Res<SimLink>,
 ) {
     if shots.pending.is_none() {
         let Some(shot) = shots.rx.lock().ok().and_then(|rx| rx.try_recv().ok()) else {
@@ -64,9 +68,14 @@ fn serve_shots(
             return;
         }
         let restore = (cam.focus, cam.yaw, cam.pitch, cam.distance, cam.follow, args.no_ui);
-        // The picture is of the world, without the panels (the selection stays as it was).
+        // The picture is of the world, without the panels (the selection stays as it was unless
+        // asked for).
         args.no_ui = true;
-        shots.pending = Some(Pending { reply: Some(shot.reply), creature: shot.creature, wait: SETTLE, restore });
+        let selected = shot.creature.filter(|_| shot.select).map(|id| {
+            link.cmd(Command::Select(Some(id)));
+            snap.0.selected.as_ref().map(|s| s.id)
+        });
+        shots.pending = Some(Pending { reply: Some(shot.reply), creature: shot.creature, wait: SETTLE, restore, selected });
     }
     let Some(p) = shots.pending.as_mut() else {
         return;
@@ -104,6 +113,9 @@ fn serve_shots(
     cam.distance = distance;
     cam.follow = follow;
     args.no_ui = no_ui;
+    if let Some(was) = p.selected {
+        link.cmd(Command::Select(was));
+    }
     shots.pending = None;
 }
 

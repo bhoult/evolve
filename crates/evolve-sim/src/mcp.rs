@@ -50,6 +50,8 @@ pub enum Ask {
 pub struct Shot {
     /// Look at this creature, or else at the scene as the user sees it.
     pub creature: Option<u64>,
+    /// Select it for the picture (it shows ringed in gold), then put the selection back.
+    pub select: bool,
     pub reply: Sender<Result<Vec<u8>, String>>,
 }
 
@@ -375,7 +377,10 @@ fn tools(pictures: bool) -> Value {
         list.push(json!({
             "name": "screenshot",
             "description": "A picture of the world on screen: close behind a creature if one is given (the view returns to what it was), otherwise the view as it is.",
-            "inputSchema": {"type": "object", "properties": {"creature": {"type": "integer"}}},
+            "inputSchema": {"type": "object", "properties": {
+                "creature": {"type": "integer"},
+                "select": {"type": "boolean", "description": "select the creature for the picture, as a click would (default false); the selection goes back to what it was"}
+            }},
         }));
     }
     Value::Array(list)
@@ -464,8 +469,9 @@ fn call(name: &str, args: &Value, runner: &Sender<Control>, shots: Option<&Sende
         "screenshot" => {
             let shots = shots.ok_or("pictures need the app; this is the headless runner")?;
             let creature = args.get("creature").and_then(Value::as_u64);
+            let select = args.get("select").and_then(Value::as_bool).unwrap_or(false);
             let (tx, rx) = mpsc::channel();
-            shots.send(Shot { creature, reply: tx }).map_err(|_| "the app has stopped".to_string())?;
+            shots.send(Shot { creature, select, reply: tx }).map_err(|_| "the app has stopped".to_string())?;
             let png = rx.recv_timeout(Duration::from_secs(30)).map_err(|_| "no picture came back".to_string())??;
             Ok(vec![json!({"type": "image", "data": base64(&png), "mimeType": "image/png"})])
         }
