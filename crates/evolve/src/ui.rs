@@ -641,6 +641,7 @@ fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: 
                     for (q, name) in [(ShadowQuality::Off, "off"), (ShadowQuality::Low, "low"), (ShadowQuality::High, "high")] {
                         ui.selectable_value(&mut gfx.shadows, q, name);
                     }
+                    ui.checkbox(&mut gfx.soft_shadows, "soft (by weather)");
                 });
             });
             ui.separator();

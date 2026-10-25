@@ -82,6 +82,9 @@ pub struct GraphicsSettings {
     /// Plants bending in the wind.
     pub sway: bool,
     pub shadows: ShadowQuality,
+    /// Shadows that blur with distance from what casts them, more under cloud (percentage-closer
+    /// soft shadows: dearer for the GPU, and a little grainy).
+    pub soft_shadows: bool,
 }
 
 impl Default for GraphicsSettings {
@@ -93,9 +96,15 @@ impl Default for GraphicsSettings {
             bloom: true,
             sway: true,
             shadows: ShadowQuality::High,
+            soft_shadows: true,
         }
     }
 }
+
+/// The size of the light for soft shadows (see `GraphicsSettings::soft_shadows`) in a clear sky
+/// and under full cloud.
+const SOFT_CLEAR: f32 = 4.0;
+const SOFT_OVERCAST: f32 = 30.0;
 
 /// Marks the directional light: the sun by day, the moon by night.
 #[derive(Component)]
@@ -449,6 +458,16 @@ fn update_env(
     let shadows_on = settings.shadows != ShadowQuality::Off;
     if dl.shadows_enabled != shadows_on {
         dl.shadows_enabled = shadows_on;
+    }
+    // Soft shadows: the penumbra grows with the light's size, a small bright disc in a clear sky
+    // and the whole glowing cloud deck when it's overcast or stormy. Stepped, so the light (and
+    // with it every caster's shadow visibility) changes only now and then.
+    let soft = (settings.soft_shadows && shadows_on).then(|| {
+        let cover = smoothstep(0.15, 1.0, env.cloud).max(storm);
+        ((SOFT_CLEAR + (SOFT_OVERCAST - SOFT_CLEAR) * cover) * 2.0).round() / 2.0
+    });
+    if dl.soft_shadow_size != soft {
+        dl.soft_shadow_size = soft;
     }
     // Rebuild cascades only when the zoom changes noticeably.
     let key = ((cam.distance.max(1.0).ln() * 12.0) as u32, settings.shadows as u32);

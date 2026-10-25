@@ -31,6 +31,7 @@ bevy = { version = "0.18.1", default-features = false, features = [
     "bevy_picking",
     "mesh_picking",
     "png",
+    "experimental_pbr_pcss",
 ] }
 bevy_egui = "0.39.1"
 egui_plot = "0.34"
