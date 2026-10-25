@@ -326,9 +326,51 @@ pub struct Perf {
     /// time shows how well the worlds run in parallel).
     pub shard_slowest_ms: f32,
     pub shard_total_ms: f32,
-    /// "Other" by part, ms per step: after physics (senses of the ground, eyes, breath...),
-    /// interacting and metabolism, ecology (plants, trees), water, and the rest (rain, deaths).
-    pub other_parts: [f32; 5],
+    /// Each phase of the step (named in `PHASE_NAMES`), ms per step, smoothed. Phases that run
+    /// only now and then (brains, ecology, water) count as their cost spread over the steps
+    /// between.
+    pub phases: [f32; PHASES],
+    /// This step's phases so far, before smoothing.
+    pub this_step: [f32; PHASES],
+    /// The runner's work for the screen, ms each time (smoothed): building a snapshot, and taking
+    /// a fresh copy of the terrain when it has changed.
+    pub publish_ms: f32,
+    pub terrain_copy_ms: f32,
+}
+
+/// The phases of a step, in order, as `Perf::phases` times them.
+pub const PHASES: usize = 15;
+pub const PHASE_NAMES: [&str; PHASES] = [
+    "weather and totems",
+    "brain results",
+    "calls and lookup grids",
+    "senses",
+    "brains",
+    "muscles",
+    "regrouping",
+    "forces",
+    "physics",
+    "after physics",
+    "interacting",
+    "metabolism",
+    "ecology",
+    "water",
+    "the rest",
+];
+
+impl Perf {
+    /// The phases of a step in a line, e.g. "senses 1.20, physics 12.4, ... ms".
+    pub fn phases_line(&self) -> String {
+        let parts: Vec<String> = PHASE_NAMES.iter().zip(&self.phases).map(|(n, ms)| format!("{n} {ms:.2}")).collect();
+        format!("{} ms per step", parts.join(", "))
+    }
+
+    /// Adds the time since `since` to this step's phase `k`, and moves `since` on to now.
+    pub(crate) fn lap(&mut self, k: usize, since: &mut Instant) {
+        let now = Instant::now();
+        self.this_step[k] += (now - *since).as_secs_f32() * 1000.0;
+        *since = now;
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1504,18 +1546,25 @@ impl Sim {
         let bdt = brain_every as f32 * DT;
 
         let t0 = Instant::now();
+        self.perf.this_step = [0.0; PHASES];
+        let mut lap = t0;
         if self.tick % 6 == 0 {
             self.acts.expire(self.time);
             self.refresh_weather();
         }
         if brain_tick {
             self.totem_urges();
+            self.perf.lap(0, &mut lap);
             self.think(bdt);
+        } else {
+            self.perf.lap(0, &mut lap);
         }
         let t1 = Instant::now();
+        lap = t1;
         if self.tick % REGROUP_EVERY == 0 {
             self.regroup();
         }
+        self.perf.lap(6, &mut lap);
         self.move_whirlwinds(DT);
         if self.tick % 30 == 0 {
             self.wash_away();
@@ -1523,6 +1572,7 @@ impl Sim {
         self.environment_forces();
         self.carry();
         let t_forces = Instant::now();
+        self.perf.lap(7, &mut lap);
         // The physics worlds step in parallel: rapier solves a world's articulations on one
         // thread.
         let times: Vec<f32> = {
@@ -1537,6 +1587,7 @@ impl Sim {
                 .collect()
         };
         let t2 = Instant::now();
+        self.perf.lap(8, &mut lap);
         let k = 0.05;
         let slowest = times.iter().copied().fold(0.0, f32::max);
         let total: f32 = times.iter().sum();
@@ -1544,20 +1595,21 @@ impl Sim {
         self.perf.shard_total_ms += (total - self.perf.shard_total_ms) * k;
         self.perf.forces_ms += ((t_forces - t1).as_secs_f32() * 1000.0 - self.perf.forces_ms) * k;
         self.after_physics();
-        let ta = Instant::now();
+        self.perf.lap(9, &mut lap);
         if brain_tick {
             self.interact(bdt);
+            self.perf.lap(10, &mut lap);
             self.metabolism(bdt);
+            self.perf.lap(11, &mut lap);
         }
-        let ti = Instant::now();
         if self.tick % TICKS_PER_SECOND == 0 {
             self.ecology(1.0);
+            self.perf.lap(12, &mut lap);
         }
-        let te = Instant::now();
         if self.tick % (TICKS_PER_SECOND * HYDROLOGY_EVERY) == 0 {
             self.hydrology(HYDROLOGY_EVERY as f32);
+            self.perf.lap(13, &mut lap);
         }
-        let th = Instant::now();
         if self.tick % (TICKS_PER_SECOND * 2) == 0 {
             self.sample_history();
         }
@@ -1569,6 +1621,7 @@ impl Sim {
         self.tick += 1;
         self.time += DT as f64;
         let t3 = Instant::now();
+        self.perf.lap(14, &mut lap);
 
         // Smoothed per-step timings for the UI.
         let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
@@ -1576,9 +1629,8 @@ impl Sim {
         self.perf.think_ms += (ms(t0, t1) - self.perf.think_ms) * k;
         self.perf.physics_ms += (ms(t1, t2) - self.perf.physics_ms) * k;
         self.perf.other_ms += (ms(t2, t3) - self.perf.other_ms) * k;
-        // What "other" is made of, per step (ecology and water run now and then, so these are
-        // their cost spread over the steps between).
-        for (x, v) in self.perf.other_parts.iter_mut().zip([ms(t2, ta), ms(ta, ti), ms(ti, te), ms(te, th), ms(th, t3)]) {
+        let Perf { phases, this_step, .. } = &mut self.perf;
+        for (x, v) in phases.iter_mut().zip(this_step.iter()) {
             *x += (v - *x) * k;
         }
     }

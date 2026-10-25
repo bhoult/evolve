@@ -99,6 +99,7 @@ impl Sim {
     /// submitted now and their outputs are applied at the next tick (a one-tick reaction delay),
     /// so the GPU thinks while the CPU runs the physics steps in between.
     pub(crate) fn think(&mut self, bdt: f32) {
+        let mut lap = Instant::now();
         if let Some(gpu) = self.brains.as_mut() {
             let wait = Instant::now();
             let collected = gpu.collect();
@@ -138,8 +139,11 @@ impl Sim {
             let (tick, scale) = (self.tick, self.params.exploration);
             self.creatures.par_iter_mut().for_each(|c| explore(c, tick, bdt, scale));
         }
+        self.perf.lap(1, &mut lap);
 
         let torso = self.torso_positions();
+        // When the lookup grids were ready and the senses began (`cx` borrows the world).
+        let grids_done;
         // Who is calling, from what they decided last tick. A call is announced (for the sound
         // and the camera) when it starts and twice a second while it lasts.
         let mut calls = Vec::new();
@@ -221,12 +225,16 @@ impl Sim {
                 torso,
                 calls,
             };
+            grids_done = Instant::now();
             self.creatures
                 .par_iter()
                 .enumerate()
                 .map(|(i, c)| sense(&cx, i, c))
                 .collect()
         };
+        self.perf.this_step[2] += (grids_done - lap).as_secs_f32() * 1000.0;
+        lap = grids_done;
+        self.perf.lap(3, &mut lap);
 
         let rate = self.params.learning_rate * brain::LEARNING_RATE;
         let plastic_decay = brain::per_tick_decay(self.params.learned_memory, bdt);
@@ -283,6 +291,7 @@ impl Sim {
                     });
             }
         }
+        self.perf.lap(4, &mut lap);
 
         let p = &self.params;
         for c in &self.creatures {
@@ -308,6 +317,7 @@ impl Sim {
                 }
             }
         }
+        self.perf.lap(5, &mut lap);
     }
 
     pub(crate) fn interact(&mut self, bdt: f32) {
