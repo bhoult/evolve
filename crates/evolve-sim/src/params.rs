@@ -162,6 +162,16 @@ params! {
         /// of lives had a part sink half a meter or more, against 0.15-0.3% with it, at no
         /// measurable cost. 0.5 covers a part at `max_body_speed`. 0 turns it off.
         soft_ccd: f32 = 0.5, [0, 2], Live;
+        /// Spacing of the physics ground's height samples, m: the terrain's own grid where it's
+        /// coarser than this, otherwise every few of its points (the drawn ground keeps them all).
+        /// A body part on a fine grid has many more triangles under it to collide with, for detail
+        /// no body can feel: on an 800 m island at 5000 a side (0.16 m), ground every 0.64 m took
+        /// 46% less physics time (0.32 m, 35% less), its pieces (each 128 samples a side) down
+        /// from 1600 per physics world to 100, while parting from the drawn ground by 1 cm
+        /// typically and 13 cm at the 99th percentile under creatures. The default leaves the
+        /// 177-a-side, 1.25 m default world alone.
+        /// 0 samples every point.
+        ground_collision_cell: f32 = 0.5, [0, 4], Live;
         /// Physics worlds the world is split into and stepped in parallel. Creatures that might
         /// touch share one, and rapier solves each world on one thread, so more use more cores.
         physics_shards: u32 = 12, [1, 32], Live;

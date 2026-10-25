@@ -81,6 +81,12 @@ fn main() {
             let mut sim = save::load(p).unwrap_or_else(|e| die(&e));
             let params = with_sets(sim.params.clone());
             sim.set_params(params);
+            // EVOLVE_REGEN_RES: the same world on a new landscape at that many points a side,
+            // keeping every creature, to compare costs on the same creatures.
+            if let Some(res) = std::env::var("EVOLVE_REGEN_RES").ok().and_then(|s| s.parse().ok()) {
+                sim.params.terrain_resolution = res;
+                sim.regenerate_terrain();
+            }
             sim
         }
         None => Sim::new(with_sets(SimParams::default())),
@@ -154,6 +160,19 @@ fn main() {
         sim.perf.shard_slowest_ms,
         sim.perf.shard_total_ms
     );
+    // Each physics world: creatures, their parts, colliders in all, and its time to step.
+    let mut line = String::new();
+    for (k, shard) in sim.shards.iter().enumerate() {
+        let here: Vec<_> = sim.creatures.iter().filter(|c| c.shard == k).collect();
+        line.push_str(&format!(
+            " [{k}: {} creatures, {} parts, {} colliders, {:.2} ms]",
+            here.len(),
+            here.iter().map(|c| c.parts.len()).sum::<usize>(),
+            shard.world.colliders.len(),
+            sim.shard_ms.get(k).copied().unwrap_or(0.0)
+        ));
+    }
+    println!("# physics worlds:{line}");
     // Loose stones and boulders: how many are still moving (or never settled), and how many
     // ended up under the ground.
     let (mut awake, mut buried) = (0, 0);

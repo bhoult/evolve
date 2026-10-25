@@ -294,6 +294,16 @@ body's real weight. Every joint has a genetic range of motion that the physics e
   the ground. Each part now looks ahead as far as it will move in the next step, up to
   `soft_ccd` (0.5 m; rapier's soft continuous collision detection), which cut that to
   0.15–0.3% at no measurable cost (2026-10-25, the `sinking` diagnostic).
+- *The ground creatures collide with:* on a terrain finer than `ground_collision_cell` (0.5 m),
+  the physics ground samples every few grid points (the drawn ground keeps them all), in pieces
+  of 128 samples a side. A body part on ground sampled every 0.16 m (an 800 m island at 5000 a
+  side) has many more triangles under it to collide with, for detail no body can feel: sampled
+  every 0.64 m, physics took 46% less time (every 0.32 m, 35% less), and the pieces in each
+  physics world went from 1600 to 100 (each is a collider its broad phase keeps). The
+  price is that the two grounds part a little: under creatures, typically 1 cm, 13 cm at the
+  99th percentile, up to 20–30 cm on steep stream banks and dug holes. Bodies buried by a reshaped
+  ground are rescued to the physics ground (`Terrain::collision_height_at`), not the drawn one.
+  The default 177-a-side world (1.25 m apart) is unchanged; 0 samples every point.
 
 **Physics on many cores.** Rapier solves a world's articulations on one thread, so the world's
 physics is split into `physics_shards` (12) physics worlds stepped in parallel, each on a thread
@@ -304,7 +314,10 @@ of busy worlds to even the load. A creature moves between worlds exactly as it i
 angles, motors, every velocity). Eyes see into every world. With 790 creatures this runs about
 4x faster than one world (71 steps a second on a Core Ultra 9 285K, about 1.2x real time).
 Background worlds run at `background_population` (a quarter) of this world's population and at a
-lower CPU priority, so they use spare cores without starving this one.
+lower CPU priority, so they use spare cores without starving this one. This world gets 12
+threads, or more when fewer background worlds leave cores spare (a tenth of the machine is kept
+free): with them off, a fixed 12 left half of 24 cores idle, and raising `physics_shards` past
+12 gained nothing, the extra physics worlds waiting for a thread.
 - *Speed:* the angle a joint aims for moves at most `max_joint_speed` (8 rad/s for a half-meter
   segment; longer segments slower, shorter ones faster, like pendulums). The brain can change its
   mind 30 times a second, but a limb swings rather than snapping back and forth in a blur.

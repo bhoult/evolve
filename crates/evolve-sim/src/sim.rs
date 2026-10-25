@@ -395,6 +395,9 @@ pub struct Sim {
     pub index: HashMap<u64, usize>,
     #[serde(skip)]
     pub perf: Perf,
+    /// Each physics world's time to step, ms, smoothed like `perf`.
+    #[serde(skip)]
+    pub shard_ms: Vec<f32>,
     #[serde(skip)]
     pub events: Vec<String>,
     /// Refreshed with each history sample.
@@ -462,7 +465,8 @@ impl Sim {
     }
 
     fn new_with(params: SimParams, background: bool) -> Self {
-        let terrain = Terrain::generate(&params, 1);
+        let mut terrain = Terrain::generate(&params, 1);
+        terrain.set_collision_cell(params.ground_collision_cell);
         let rng = Rng::new(params.seed.wrapping_mul(0x9E37_79B9).wrapping_add(7));
         let mut sim = Sim {
             params,
@@ -500,6 +504,7 @@ impl Sim {
             acts: Default::default(),
             index: HashMap::new(),
             perf: Perf::default(),
+            shard_ms: Vec::new(),
             events: Vec::new(),
             species: Vec::new(),
             brains: None,
@@ -565,9 +570,11 @@ impl Sim {
         for e in &mut self.pool.entries {
             e.genome.upgrade();
         }
-        // The ground as this version splits it (one piece in saves from before it was split).
+        // The ground as this version splits and samples it (one piece in saves from before it
+        // was split).
+        self.terrain.set_collision_cell(self.params.ground_collision_cell);
         let n = self.terrain.tiles();
-        if self.shards.iter().any(|s| s.ground.len() != n * n) {
+        if self.terrain.stride() > 1 || self.shards.iter().any(|s| s.ground.len() != n * n) {
             let tiles = self.ground_tiles();
             for shard in &mut self.shards {
                 Self::place_ground(&tiles, self.params.ground_friction, shard);
@@ -826,6 +833,16 @@ impl Sim {
     pub fn set_params(&mut self, new: SimParams) {
         let old = std::mem::replace(&mut self.params, new);
         self.sync_physics_params(Some(&old));
+        if old.ground_collision_cell != self.params.ground_collision_cell {
+            let stride = self.terrain.stride();
+            self.terrain.set_collision_cell(self.params.ground_collision_cell);
+            if self.terrain.stride() != stride {
+                let tiles = self.ground_tiles();
+                for shard in &mut self.shards {
+                    Self::place_ground(&tiles, self.params.ground_friction, shard);
+                }
+            }
+        }
         if old.physics_shards != self.params.physics_shards {
             self.resize_shards();
         }
@@ -899,6 +916,7 @@ impl Sim {
     /// Swaps in a new ground surface and the walls around it.
     pub fn install_terrain(&mut self, terrain: Terrain) {
         self.terrain = terrain;
+        self.terrain.set_collision_cell(self.params.ground_collision_cell);
         // The same ground in every physics world (the heightfield shapes are shared).
         let tiles = self.ground_tiles();
         for shard in &mut self.shards {
@@ -1538,6 +1556,10 @@ impl Sim {
         };
         let t2 = Instant::now();
         let k = 0.05;
+        self.shard_ms.resize(times.len(), 0.0);
+        for (s, &t) in self.shard_ms.iter_mut().zip(&times) {
+            *s += (t - *s) * k;
+        }
         let slowest = times.iter().copied().fold(0.0, f32::max);
         let total: f32 = times.iter().sum();
         self.perf.shard_slowest_ms += (slowest - self.perf.shard_slowest_ms) * k;
