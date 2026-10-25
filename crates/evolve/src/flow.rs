@@ -180,6 +180,7 @@ fn update_flow(
     mut meshes: ResMut<Assets<Mesh>>,
     mut visibility: Query<&mut Visibility>,
 ) {
+    let _cost = crate::FrameCost::start("update_flow");
     let t = &snap.0.terrain;
     let on = settings.flow && t.res >= 3 && t.water.len() == t.heights.len();
     if !on {

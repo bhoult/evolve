@@ -174,6 +174,7 @@ fn update_heights(
     ocean: Single<&Ocean>,
     mut materials: ResMut<Assets<WaterMaterial>>,
 ) {
+    let _cost = crate::FrameCost::start("update_heights");
     let t = &snap.0.terrain;
     if t.res < 3 || heights.from.as_ref().is_some_and(|f| Arc::ptr_eq(f, t)) {
         return;

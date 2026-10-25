@@ -210,6 +210,7 @@ fn sync_creatures(
     interp: Res<Interp>,
     time: Res<Time>,
 ) {
+    let _cost = crate::FrameCost::start("sync_creatures");
     let snap = &snap.0;
     let alpha = interp.alpha(time.elapsed_secs_f64());
     let selected = snap.selected.as_ref().map(|s| s.id);
@@ -480,6 +481,7 @@ fn sync_food(
     mut mirror: ResMut<Mirror>,
     mut transforms: Query<&mut Transform>,
 ) {
+    let _cost = crate::FrameCost::start("sync_food");
     let snap = &snap.0;
     let max = snap.params.plant_max_energy;
     let mirror = &mut *mirror;
@@ -594,6 +596,7 @@ fn sync_obstacles(
     mut mirror: ResMut<Mirror>,
     mut transforms: Query<&mut Transform>,
 ) {
+    let _cost = crate::FrameCost::start("sync_obstacles");
     let mut alive = HashSet::new();
     for o in &snap.0.obstacles {
         alive.insert(o.id);

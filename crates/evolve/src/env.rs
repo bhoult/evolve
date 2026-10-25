@@ -370,6 +370,7 @@ fn update_env(
     mut clear: ResMut<ClearColor>,
     view: Single<(&mut DistanceFog, &mut ColorGrading), With<MainCamera>>,
 ) {
+    let _cost = crate::FrameCost::start("update_env");
     let (mut fog, mut grading) = view.into_inner();
     let env = &mut *env;
     let dt = time.delta_secs().min(0.1);

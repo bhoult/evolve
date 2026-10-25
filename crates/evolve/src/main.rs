@@ -302,6 +302,7 @@ fn main() -> AppExit {
 }
 
 fn refresh_snapshot(link: Res<SimLink>, time: Res<Time>, mut snap: ResMut<Snap>, mut interp: ResMut<Interp>) {
+    let _cost = FrameCost::start("refresh_snapshot");
     let latest = link.0.snapshot();
     if Arc::ptr_eq(&latest, &snap.0) {
         return;
@@ -326,10 +327,41 @@ fn refresh_snapshot(link: Res<SimLink>, time: Res<Time>, mut snap: ResMut<Snap>,
 /// be told apart from the simulation's (the runner logs its own slow passes).
 fn log_slow_frames(time: Res<Time<Real>>, frames: Res<FrameCount>, mut last: Local<f64>) {
     let dt = time.delta_secs_f64();
+    let costs = std::mem::take(&mut *FRAME_COSTS.lock().unwrap_or_else(|e| e.into_inner()));
     if dt > 0.1 && frames.0 > 120 {
         let now = time.elapsed_secs_f64();
-        eprintln!("evolve: slow frame {:.0} ms (frame {}, {:.1} s since the last slow one)", dt * 1000.0, frames.0, now - *last);
+        let mut costs: Vec<(&str, f32)> = costs.into_iter().filter(|c| c.1 >= 1.0).collect();
+        costs.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let costs: Vec<String> = costs.iter().map(|(n, ms)| format!("{n} {ms:.0}")).collect();
+        eprintln!(
+            "evolve: slow frame {:.0} ms (frame {}, {:.1} s since the last slow one); updates over 1 ms: {}",
+            dt * 1000.0,
+            frames.0,
+            now - *last,
+            if costs.is_empty() { "none (so the time went to drawing)".to_string() } else { costs.join(", ") }
+        );
         *last = now;
+    }
+}
+
+/// Milliseconds the costly update systems took this frame, for `log_slow_frames`.
+pub static FRAME_COSTS: std::sync::Mutex<Vec<(&'static str, f32)>> = std::sync::Mutex::new(Vec::new());
+
+/// Times a system: records how long it ran in `FRAME_COSTS` when dropped.
+pub struct FrameCost(&'static str, std::time::Instant);
+
+impl FrameCost {
+    pub fn start(name: &'static str) -> Self {
+        Self(name, std::time::Instant::now())
+    }
+}
+
+impl Drop for FrameCost {
+    fn drop(&mut self) {
+        let ms = self.1.elapsed().as_secs_f32() * 1000.0;
+        if let Ok(mut c) = FRAME_COSTS.lock() {
+            c.push((self.0, ms));
+        }
     }
 }
 

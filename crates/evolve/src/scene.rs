@@ -50,6 +50,10 @@ const LOD_ANGLE: f32 = 0.012;
 /// Vertices built per frame at most (nearest chunks first), so a new world or a camera jump
 /// spreads its work over a few frames instead of stalling one.
 const VERTEX_BUDGET: usize = 600_000;
+/// And time spent building chunks per frame at most, ms, once the first is built: on a big
+/// terrain with hundreds of creatures digging and trampling everywhere, chunks change faster
+/// than that, and building the whole vertex budget every frame took 30-150 ms a frame.
+const BUILD_MS: f32 = 4.0;
 
 /// Beaches, rock, grass, sea floor and cloud shadows, all from world position in the shader, so
 /// changing the water level needs no rebuild.
@@ -138,6 +142,7 @@ fn update_terrain(
     mut materials: ResMut<Assets<TerrainMaterial>>,
     camera: Query<&GlobalTransform, With<MainCamera>>,
 ) {
+    let _cost = crate::FrameCost::start("update_terrain");
     let t = snap.0.terrain.clone();
     if t.res < 3 {
         return;
@@ -442,10 +447,11 @@ fn build_chunks(commands: &mut Commands, state: &mut TerrainState, t: &Terrain, 
         .collect();
     todo.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut budget = VERTEX_BUDGET;
+    let started = std::time::Instant::now();
     for (_, c, want) in todo {
         let ch = &state.chunks[c];
         let verts = (ch.ni / want + 2) * (ch.nj / want + 2);
-        if verts > budget && budget < VERTEX_BUDGET {
+        if budget < VERTEX_BUDGET && (verts > budget || started.elapsed().as_secs_f32() * 1000.0 > BUILD_MS) {
             break;
         }
         budget = budget.saturating_sub(verts);
