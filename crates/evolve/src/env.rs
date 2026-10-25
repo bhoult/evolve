@@ -108,6 +108,10 @@ impl Default for GraphicsSettings {
     }
 }
 
+/// Seconds between gradual changes to the sun or moon (brightness, colour, direction; see
+/// `update_env`).
+const LIGHT_EVERY: f64 = 3.0;
+
 /// The size of the light for soft shadows (see `GraphicsSettings::soft_shadows`) in a clear sky
 /// and under full cloud.
 const SOFT_CLEAR: f32 = 4.0;
@@ -366,6 +370,7 @@ fn update_env(
     gpu: Res<EnvGpu>,
     queue: Res<RenderQueue>,
     light: Single<(&mut DirectionalLight, &mut Transform, &mut CascadeShadowConfig), With<SkyLight>>,
+    mut last_light: Local<f64>,
     mut ambient: ResMut<GlobalAmbientLight>,
     mut clear: ResMut<ClearColor>,
     view: Single<(&mut DistanceFog, &mut ColorGrading), With<MainCamera>>,
@@ -451,15 +456,21 @@ fn update_env(
     let use_sun = elev > -0.03;
     let (ldir, lcolor, lux) = if use_sun { (sun, tint, sun_lux) } else { (moon, moon_tint, moon_lux) };
     let (mut dl, mut tf, mut casc) = light.into_inner();
-    // Touch the light only when it really changes: a changed light makes Bevy redo its shadow
-    // cascades' visibility for every caster.
+    // Touch the light only when it really changes, and gradual changes at most every
+    // `LIGHT_EVERY` seconds: a changed light makes Bevy redo its shadow cascades' visibility for
+    // every caster, and with twenty thousand plants and bodies that's a hitch you can see (with
+    // drifting clouds it came every couple of seconds).
+    let since = time.elapsed_secs_f64() - *last_light;
     let old = dl.color.to_linear();
-    let color_moved = (Vec3::new(old.red, old.green, old.blue) - lcolor).abs().max_element() > 0.002;
-    if (dl.illuminance - lux).abs() > 0.002 * lux.max(1.0) || color_moved {
+    let color_moved = (Vec3::new(old.red, old.green, old.blue) - lcolor).abs().max_element();
+    let lux_moved = (dl.illuminance - lux).abs() / lux.max(1.0);
+    let sudden = lux_moved > 0.25;
+    if sudden || (since > LIGHT_EVERY && (lux_moved > 0.03 || color_moved > 0.01)) {
         dl.illuminance = lux;
         dl.color = Color::linear_rgb(lcolor.x, lcolor.y, lcolor.z);
+        *last_light = time.elapsed_secs_f64();
     }
-    if tf.forward().dot(-ldir) < 0.999_999 {
+    if tf.forward().dot(-ldir) < 0.9999 && (since > LIGHT_EVERY || tf.forward().dot(-ldir) < 0.999) {
         let up = if ldir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
         *tf = Transform::default().looking_to(-ldir, up);
     }
