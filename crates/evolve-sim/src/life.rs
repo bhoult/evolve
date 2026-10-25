@@ -293,8 +293,9 @@ impl Sim {
         }
         self.perf.lap(4, &mut lap);
 
+        // The muscles: each creature's joints in its own world, the worlds in parallel.
         let p = &self.params;
-        for c in &self.creatures {
+        crate::sim::in_shards(&mut self.creatures, &mut self.shards, |c, world| {
             for j in &c.joints {
                 let (mid, half) = j.span();
                 // Out of breath, muscles weaken (to a quarter at worst).
@@ -306,7 +307,7 @@ impl Sim {
                 let len = c.plan.get(j.child).map_or(0.5, |s| s.shape.length()).max(0.05);
                 let step = p.max_joint_speed * (0.5 / len).sqrt().clamp(0.5, 1.5) * bdt;
                 for &(axis, d) in j.axes() {
-                    if let Some(data) = body::axis_joint_mut(&mut self.shards[c.shard].world, j, d) {
+                    if let Some(data) = body::axis_joint_mut(world, j, d) {
                         let want = mid + c.output(output::JOINTS + j.slot + d) * half;
                         let was = data.motors[axis as usize].target_pos;
                         let target = was + (want - was).clamp(-step, step);
@@ -316,7 +317,7 @@ impl Sim {
                     }
                 }
             }
-        }
+        });
         self.perf.lap(5, &mut lap);
     }
 
