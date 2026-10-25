@@ -585,7 +585,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     w.creature != sel.id || at.elapsed() > Duration::from_secs(1)
                 });
                 if stale && let Some(c) = sim.creature(sel.id) {
-                    wiring = Some((Arc::new(crate::wiring::sketch(c)), Instant::now()));
+                    wiring = Some((Arc::new(crate::wiring::sketch(c, crate::wiring::SketchLimits::default())), Instant::now()));
                 }
                 if let Some((w, _)) = &wiring {
                     sel.wiring = w.clone();
