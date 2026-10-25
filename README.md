@@ -587,7 +587,21 @@ makings of walls, piles, caches and gardens, if evolution finds a use for them.
 - *Looks:* soaked soil stays dark after rain; shallow streams and puddles are painted on the
   ground. Water deeper than 10 cm gets a surface of its own: lakes lie level and deep streams
   follow their beds, reflecting the sky over a body that darkens with depth, see-through at the
-  shore.
+  shore. The shader reads the water's depth and the soil's wetness from a buffer and interpolates
+  them smoothly between grid points (bicubic) for every pixel. Interpolated across the triangles
+  of the mesh, as until 2026-10-25, stream banks zigzagged into hexagons. Flecks of foam (up to
+  3,000, near what the camera looks at) ride running water down the slope of its surface, faster
+  where it's deeper and steeper, and gather toward the middle of a channel (`flowing water` in
+  Graphics turns them off).
+- *Drawing a big terrain:* the ground is drawn as squares of 128 by 128 cells. On terrains of more
+  than 513 points a side, a square farther from the camera is drawn with every 2nd, 4th, 8th or
+  16th point, and a skirt hanging from its edges hides the cracks against a neighbour drawn at
+  another level. Close up it is always the physics surface, point for point and triangle for
+  triangle. When the ground changes, only the squares that changed are rebuilt, and only the rows
+  of water that changed are sent to the GPU; on a big terrain the comparison runs on a thread of
+  its own. At 5,000 points a side (25 million) that's about 410,000 vertices drawn from 40 m over
+  the middle, against 25 million for the whole grid. `tint terrain detail levels` in Graphics
+  shows the levels.
 - *Cost:* about 1.6 ms of one core every 2 simulated seconds per world.
 
 **Swimming.** Water gives buoyancy and costs breath. Drag acts at two points along every body

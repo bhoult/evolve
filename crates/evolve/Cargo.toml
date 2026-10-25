@@ -16,6 +16,10 @@ wayland = ["bevy/wayland"]
 [dependencies]
 evolve-sim.workspace = true
 bevy.workspace = true
+# Terrain chunks are compared and packed for the GPU in parallel; water travels as half floats.
+rayon.workspace = true
+half.workspace = true
+bytemuck.workspace = true
 bevy_egui.workspace = true
 egui_plot.workspace = true
 # Sound output; the sounds themselves are synthesized in audio.rs.
