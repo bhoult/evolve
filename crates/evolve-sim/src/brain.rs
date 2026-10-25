@@ -284,6 +284,23 @@ fn geometric(rng: &mut Rng, p: f32) -> usize {
     (u.ln() / (-p).ln_1p()).floor().min(1e12) as usize
 }
 
+/// A `rows` x `cols` matrix of `weight(row, column, rng)`, row by row on every core, each row with
+/// its own random numbers seeded from one draw of `rng`, so it comes out the same however the
+/// threads run. One row after another on one thread, a 4096-neuron brain's 17 million recurrent
+/// weights took long enough to stall the world whenever one was made or resized.
+fn rows(rng: &mut Rng, rows: usize, cols: usize, weight: impl Fn(usize, usize, &mut Rng) -> f16 + Sync) -> Vec<f16> {
+    use rayon::prelude::*;
+    let base = rng.next_u64();
+    let mut out = vec![f16::ZERO; rows * cols];
+    out.par_chunks_mut(cols.max(1)).enumerate().for_each(|(i, row)| {
+        let mut r = Rng::new(base ^ (i as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        for (j, w) in row.iter_mut().enumerate() {
+            *w = weight(i, j, &mut r);
+        }
+    });
+    out
+}
+
 fn mutate_halves(rng: &mut Rng, v: &mut [f16], rate: f32, sigma: f32) {
     if rate <= 0.0 || v.is_empty() {
         return;
@@ -312,7 +329,7 @@ impl BrainGenes {
             }
         }
         let sigma_rec = RECURRENT_GAIN / (h as f32).sqrt();
-        let w_rec = (0..h * h).map(|_| half_normal(rng, sigma_rec)).collect();
+        let w_rec = rows(rng, h, h, |_, _, r| half_normal(r, sigma_rec));
         let sigma_out = 1.5 / (h as f32).sqrt();
         Self {
             h,
@@ -341,16 +358,10 @@ impl BrainGenes {
             bias.push(rng.normal() * 0.2);
         }
         let sigma_new = 0.3 * RECURRENT_GAIN / (nh as f32).sqrt();
-        let mut w_rec = Vec::with_capacity(nh * nh);
-        for i in 0..nh {
-            for j in 0..nh {
-                let w = match (keep.get(i), keep.get(j)) {
-                    (Some(&oi), Some(&oj)) => self.w_rec.0[oi * self.h + oj],
-                    _ => half_normal(rng, sigma_new),
-                };
-                w_rec.push(w);
-            }
-        }
+        let w_rec = rows(rng, nh, nh, |i, j, r| match (keep.get(i), keep.get(j)) {
+            (Some(&oi), Some(&oj)) => self.w_rec.0[oi * self.h + oj],
+            _ => half_normal(r, sigma_new),
+        });
         let mut w_out = Vec::with_capacity(N_OUT * nh);
         for k in 0..N_OUT {
             for i in 0..nh {

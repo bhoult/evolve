@@ -134,7 +134,16 @@ impl Deref for Layer {
 
 impl DerefMut for Layer {
     fn deref_mut(&mut self) -> &mut Vec<f32> {
-        Arc::make_mut(&mut self.0)
+        // Still shared with a copy (the screen's): take our own, copied on every core. Copied on
+        // one, a 100 MB layer of a big terrain took tens of ms, and the water touching four of
+        // them stalled the world for over 100 ms.
+        if Arc::get_mut(&mut self.0).is_none() {
+            use rayon::prelude::*;
+            let mut own = Vec::with_capacity(self.0.len());
+            self.0.par_iter().copied().collect_into_vec(&mut own);
+            self.0 = Arc::new(own);
+        }
+        Arc::get_mut(&mut self.0).expect("just made our own")
     }
 }
 
