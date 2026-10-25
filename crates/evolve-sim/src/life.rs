@@ -69,11 +69,73 @@ pub(crate) fn fruit_grid(size: f32, fruit: &[Fruit]) -> Grid {
 }
 
 /// What a creature bites into: an index into plants, fruit, meat or trees.
+#[derive(Clone, Copy)]
 enum Bite {
     Plant(usize),
     Fruit(usize),
     Meat(usize),
     Wood(usize),
+}
+
+/// The food within reach of mouths, and the grids to find it by, for choosing what to bite.
+struct FoodNear<'a> {
+    plants: &'a [Food],
+    fruit: &'a [Fruit],
+    meat: &'a [Food],
+    trees: &'a [crate::forest::Tree],
+    pg: &'a Grid,
+    fg: &'a Grid,
+    mg: &'a Grid,
+    tg: &'a Grid,
+    tree_reach: f32,
+}
+
+impl FoodNear<'_> {
+    /// What a creature with its mouth here bites: soft plant food first (the nearer of a plant
+    /// and a fruit), or meat if it suits the creature better; wood only when there's nothing else.
+    fn choose(&self, c: &Creature, mouth: Vec3, reach: f32) -> Option<Bite> {
+        let near = |grid: &Grid, food: &[Food]| {
+            grid.nearest(
+                mouth,
+                reach,
+                |k| food[k as usize].pos,
+                |k| {
+                    let f = &food[k as usize];
+                    f.energy > 0.0 && (f.pos.y - mouth.y).abs() < reach + 0.6
+                },
+            )
+        };
+        let plant = near(self.pg, self.plants).map(|(k, d)| (Bite::Plant(k as usize), d));
+        let fruit = self
+            .fg
+            .nearest(mouth, reach, |k| self.fruit[k as usize].pos, |k| fruit_within(&self.fruit[k as usize], mouth.y, reach))
+            .map(|(k, d)| (Bite::Fruit(k as usize), d));
+        let meat = near(self.mg, self.meat).map(|(k, _)| Bite::Meat(k as usize));
+        let (pe, me) = (c.plant_efficiency(), c.meat_efficiency());
+        let soft = match (plant, fruit) {
+            (Some(a), Some(b)) => Some(if a.1 <= b.1 { a.0 } else { b.0 }),
+            (a, b) => a.or(b).map(|f| f.0),
+        };
+        let wood = || {
+            self.tg
+                .nearest(mouth, reach + self.tree_reach, |k| self.trees[k as usize].pos, |k| {
+                    let t = &self.trees[k as usize];
+                    let (dx, dz) = (t.pos.x - mouth.x, t.pos.z - mouth.z);
+                    t.standing()
+                        && t.wood > 0.0
+                        && (dx * dx + dz * dz).sqrt() < reach + t.trunk_radius()
+                        && mouth.y > t.pos.y - 0.5
+                        && mouth.y < t.pos.y + t.height
+                })
+                .map(|(k, _)| Bite::Wood(k as usize))
+        };
+        match (soft, meat) {
+            (Some(_), Some(m)) if me >= pe => Some(m),
+            (Some(v), _) => Some(v),
+            (None, Some(m)) => Some(m),
+            (None, None) => wood(),
+        }
+    }
 }
 
 /// How far a creature's mouth reaches for food, m.
@@ -493,60 +555,49 @@ impl Sim {
         let bite_rate = self.params.bite_rate;
         let wood_bite = self.params.wood_bite;
         let away = self.params.score_food_away;
-        for c in &mut self.creatures {
-            if c.dead.is_some() || c.output(output::EAT) <= 0.0 || c.energy >= c.max_energy {
-                continue;
-            }
-            let Some(torso) = self.shards[c.shard].world.bodies.get(c.parts[0].body) else {
-                continue;
-            };
-            let half = c.torso_half();
-            let mouth = torso.position().transform_point(Vec3::new(half.x, 0.0, 0.0));
-            let reach = mouth_reach(&self.params, c);
-            let near = |grid: &Grid, food: &[Food]| {
-                grid.nearest(
-                    mouth,
-                    reach,
-                    |k| food[k as usize].pos,
-                    |k| {
-                        let f = &food[k as usize];
-                        f.energy > 0.0 && (f.pos.y - mouth.y).abs() < reach + 0.6
-                    },
-                )
-            };
-            let plant = near(&pg, &self.plants).map(|(k, d)| (Bite::Plant(k as usize), d));
-            let fruit = fg
-                .nearest(mouth, reach, |k| self.fruit[k as usize].pos, |k| fruit_within(&self.fruit[k as usize], mouth.y, reach))
-                .map(|(k, d)| (Bite::Fruit(k as usize), d));
-            let meat = near(&mg, &self.meat).map(|(k, _)| Bite::Meat(k as usize));
-            let (pe, me) = (c.plant_efficiency(), c.meat_efficiency());
-            // Soft plant food first (the nearer of a plant and a fruit), or meat if it suits the
-            // creature better; wood only when there's nothing else.
-            let soft = match (plant, fruit) {
-                (Some(a), Some(b)) => Some(if a.1 <= b.1 { a.0 } else { b.0 }),
-                (a, b) => a.or(b).map(|f| f.0),
-            };
-            let wood = || {
-                tg.nearest(mouth, reach + tree_reach, |k| self.trees[k as usize].pos, |k| {
-                    let t = &self.trees[k as usize];
-                    let (dx, dz) = (t.pos.x - mouth.x, t.pos.z - mouth.z);
-                    t.standing()
-                        && t.wood > 0.0
-                        && (dx * dx + dz * dz).sqrt() < reach + t.trunk_radius()
-                        && mouth.y > t.pos.y - 0.5
-                        && mouth.y < t.pos.y + t.height
+        // Every creature's mouth and what it would bite, worked out for all of them at once
+        // against the food as it stands. The bites are then taken in creature order, and one
+        // whose food an earlier bite has just finished chooses again, as it would have done one
+        // by one, so the outcome is the same however many threads there are.
+        let mouths: Vec<Option<(Vec3, Option<Bite>)>> = {
+            let food = FoodNear { plants: &self.plants, fruit: &self.fruit, meat: &self.meat, trees: &self.trees, pg: &pg, fg: &fg, mg: &mg, tg: &tg, tree_reach };
+            let (shards, p) = (&self.shards, &self.params);
+            self.creatures
+                .par_iter()
+                .map(|c| {
+                    if c.dead.is_some() || c.output(output::EAT) <= 0.0 || c.energy >= c.max_energy {
+                        return None;
+                    }
+                    let torso = shards[c.shard].world.bodies.get(c.parts[0].body)?;
+                    let half = c.torso_half();
+                    let mouth = torso.position().transform_point(Vec3::new(half.x, 0.0, 0.0));
+                    Some((mouth, food.choose(c, mouth, mouth_reach(p, c))))
                 })
-                .map(|(k, _)| Bite::Wood(k as usize))
+                .collect()
+        };
+        for (i, m) in mouths.into_iter().enumerate() {
+            let Some((mouth, chosen)) = m else {
+                continue;
             };
-            let target = match (soft, meat) {
-                (Some(_), Some(m)) if me >= pe => m,
-                (Some(v), _) => v,
-                (None, Some(m)) => m,
-                (None, None) => match wood() {
-                    Some(w) => w,
-                    None => continue,
-                },
+            let gone = |b: &Bite| match *b {
+                Bite::Plant(k) => self.plants[k].energy <= 0.0,
+                Bite::Fruit(k) => self.fruit[k].energy <= 0.0,
+                Bite::Meat(k) => self.meat[k].energy <= 0.0,
+                Bite::Wood(k) => self.trees[k].wood <= 0.0,
             };
+            let target = match chosen {
+                Some(b) if gone(&b) => {
+                    let food = FoodNear { plants: &self.plants, fruit: &self.fruit, meat: &self.meat, trees: &self.trees, pg: &pg, fg: &fg, mg: &mg, tg: &tg, tree_reach };
+                    let c = &self.creatures[i];
+                    food.choose(c, mouth, mouth_reach(&self.params, c))
+                }
+                b => b,
+            };
+            let Some(target) = target else {
+                continue;
+            };
+            let c = &mut self.creatures[i];
+            let (pe, me) = (c.plant_efficiency(), c.meat_efficiency());
             let (left, eff, share) = match target {
                 Bite::Plant(k) => (&mut self.plants[k].energy, pe, 1.0),
                 Bite::Fruit(k) => (&mut self.fruit[k].energy, pe, 1.0),
@@ -577,27 +628,32 @@ impl Sim {
 
     /// A creature whose torso (its head) touches another and wants to attack, bites it.
     fn fight(&mut self) {
-        let mut contacts = Vec::new();
         // Creatures that touch share a physics world (see `regroup`), so each world's own
-        // contacts are all of them.
-        for shard in &self.shards {
-            let world = &shard.world;
-            for pair in world.narrow_phase.contact_pairs() {
-                if !pair.has_any_active_contact() {
-                    continue;
+        // contacts are all of them: gathered in parallel, then taken world by world in order.
+        let contacts: Vec<Vec<(u64, u16, u64, u16)>> = self
+            .shards
+            .par_iter()
+            .map(|shard| {
+                let world = &shard.world;
+                let mut contacts = Vec::new();
+                for pair in world.narrow_phase.contact_pairs() {
+                    if !pair.has_any_active_contact() {
+                        continue;
+                    }
+                    let (Some(a), Some(b)) = (world.colliders.get(pair.collider1), world.colliders.get(pair.collider2)) else {
+                        continue;
+                    };
+                    if let (Tag::Creature { id: ia, part: pa }, Tag::Creature { id: ib, part: pb }) =
+                        (Tag::decode(a.user_data), Tag::decode(b.user_data))
+                        && ia != ib
+                    {
+                        contacts.push((ia, pa, ib, pb));
+                    }
                 }
-                let (Some(a), Some(b)) = (world.colliders.get(pair.collider1), world.colliders.get(pair.collider2)) else {
-                    continue;
-                };
-                if let (Tag::Creature { id: ia, part: pa }, Tag::Creature { id: ib, part: pb }) =
-                    (Tag::decode(a.user_data), Tag::decode(b.user_data))
-                    && ia != ib
-                {
-                    contacts.push((ia, pa, ib, pb));
-                }
-            }
-        }
-        for (ia, pa, ib, pb) in contacts {
+                contacts
+            })
+            .collect();
+        for (ia, pa, ib, pb) in contacts.into_iter().flatten() {
             if pa == 0 {
                 self.try_attack(ia, ib);
             }
@@ -884,22 +940,34 @@ impl Sim {
         self.terrain.ensure_layers();
         let wl = self.params.water_level;
         let area = self.terrain.cell() * self.terrain.cell();
-        for c in &self.creatures {
-            for (k, part) in c.parts.iter().enumerate() {
-                let Some(b) = self.shards[c.shard].world.bodies.get(part.body) else {
-                    continue;
-                };
-                let pos = b.translation();
-                let ground = self.terrain.height_at(pos.x, pos.z);
-                let reach = c.plan[k].shape.vertical_radius() + 0.15;
-                if ground <= wl || pos.y - ground > reach {
-                    continue;
+        // Where each creature's feet wear the ground, worked out for all of them at once, then
+        // worn in creature order (so the sums come out the same however many threads there are).
+        let (terrain, shards) = (&self.terrain, &self.shards);
+        let steps: Vec<Vec<(usize, f32)>> = self
+            .creatures
+            .par_iter()
+            .map(|c| {
+                let mut steps = Vec::new();
+                for (k, part) in c.parts.iter().enumerate() {
+                    let Some(b) = shards[c.shard].world.bodies.get(part.body) else {
+                        continue;
+                    };
+                    let pos = b.translation();
+                    let ground = terrain.height_at(pos.x, pos.z);
+                    let reach = c.plan[k].shape.vertical_radius() + 0.15;
+                    if ground <= wl || pos.y - ground > reach {
+                        continue;
+                    }
+                    let v = b.linvel();
+                    let speed = (v.x * v.x + v.z * v.z).sqrt().min(5.0);
+                    steps.push((terrain.nearest_point(pos.x, pos.z), b.mass() * speed * bdt / area * scale));
                 }
-                let v = b.linvel();
-                let speed = (v.x * v.x + v.z * v.z).sqrt().min(5.0);
-                let at = self.terrain.nearest_point(pos.x, pos.z);
-                self.terrain.wear[at] += b.mass() * speed * bdt / area * scale;
-            }
+                steps
+            })
+            .collect();
+        let wear = &mut self.terrain.wear;
+        for (at, w) in steps.into_iter().flatten() {
+            wear[at] += w;
         }
     }
 

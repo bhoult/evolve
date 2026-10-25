@@ -343,45 +343,55 @@ pub struct Perf {
 /// what `f` gave for each creature, in creature order. Each world takes its creatures in creature
 /// order, so the outcome is the same however many threads there are.
 pub(crate) fn in_shards<R: Send>(
-    creatures: &mut Vec<Creature>,
+    creatures: &mut [Creature],
     shards: &mut [Shard],
     f: impl Fn(&mut Creature, &mut PhysicsWorld) -> R + Sync,
 ) -> Vec<R> {
     use rayon::prelude::*;
-    let n = creatures.len();
-    let mut groups: Vec<Vec<(usize, Creature)>> = (0..shards.len()).map(|_| Vec::new()).collect();
-    for (i, c) in std::mem::take(creatures).into_iter().enumerate() {
-        let s = c.shard;
-        groups[s].push((i, c));
+    let mut groups: Vec<Vec<usize>> = vec![Vec::new(); shards.len()];
+    for (i, c) in creatures.iter().enumerate() {
+        groups[c.shard].push(i);
     }
-    let done: Vec<Vec<(usize, Creature, R)>> = shards
+    let all = Creatures(creatures.as_mut_ptr());
+    let done: Vec<Vec<(usize, R)>> = shards
         .par_iter_mut()
-        .zip(groups.into_par_iter())
+        .zip(groups.par_iter())
         .map(|(shard, group)| {
             group
-                .into_iter()
-                .map(|(i, mut c)| {
-                    let r = f(&mut c, &mut shard.world);
-                    (i, c, r)
+                .iter()
+                .map(|&i| {
+                    // SAFETY: every creature index is in exactly one world's group and each group
+                    // is run by one task, so no two tasks reach the same creature; the slice
+                    // outlives the tasks, which end before this function returns.
+                    let c = unsafe { &mut *all.at(i) };
+                    (i, f(c, &mut shard.world))
                 })
                 .collect()
         })
         .collect();
-    let mut slots: Vec<Option<(Creature, R)>> = std::iter::repeat_with(|| None).take(n).collect();
-    for (i, c, r) in done.into_iter().flatten() {
-        slots[i] = Some((c, r));
+    let mut slots: Vec<Option<R>> = std::iter::repeat_with(|| None).take(creatures.len()).collect();
+    for (i, r) in done.into_iter().flatten() {
+        slots[i] = Some(r);
     }
-    let mut out = Vec::with_capacity(n);
-    creatures.extend(slots.into_iter().map(|s| {
-        let (c, r) = s.expect("every creature comes back from its world");
-        out.push(r);
-        c
-    }));
-    out
+    slots.into_iter().map(|r| r.expect("every creature is in a world")).collect()
 }
 
+/// The creatures, shared between the worlds' tasks in `in_shards`, each task taking only its own.
+struct Creatures(*mut Creature);
+
+impl Creatures {
+    fn at(&self, i: usize) -> *mut Creature {
+        // SAFETY: `i` is an index into the slice the pointer was taken from (see `in_shards`).
+        unsafe { self.0.add(i) }
+    }
+}
+
+// SAFETY: the tasks that share it never touch the same creature (see `in_shards`).
+unsafe impl Send for Creatures {}
+unsafe impl Sync for Creatures {}
+
 /// The phases of a step, in order, as `Perf::phases` times them.
-pub const PHASES: usize = 15;
+pub const PHASES: usize = 17;
 pub const PHASE_NAMES: [&str; PHASES] = [
     "weather and totems",
     "brain results",
@@ -397,7 +407,9 @@ pub const PHASE_NAMES: [&str; PHASES] = [
     "metabolism",
     "ecology",
     "water",
-    "the rest",
+    "history",
+    "rain",
+    "deaths",
 ];
 
 impl Perf {
@@ -1655,15 +1667,17 @@ impl Sim {
         if self.tick % (TICKS_PER_SECOND * 2) == 0 {
             self.sample_history();
         }
-        self.rain(DT);
         if !self.watches.is_empty() && self.tick % 6 == 0 {
             self.sample_watches();
         }
+        self.perf.lap(14, &mut lap);
+        self.rain(DT);
+        self.perf.lap(15, &mut lap);
         self.process_deaths();
         self.tick += 1;
         self.time += DT as f64;
         let t3 = Instant::now();
-        self.perf.lap(14, &mut lap);
+        self.perf.lap(16, &mut lap);
 
         // Smoothed per-step timings for the UI.
         let ms = |a: Instant, b: Instant| (b - a).as_secs_f32() * 1000.0;
