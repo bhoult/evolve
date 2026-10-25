@@ -305,3 +305,53 @@ fn plants_saved_before_trees_load_as_grass() {
     let f: Food = rmp_serde::decode::from_slice(&bytes).unwrap();
     assert_eq!((f.id, f.energy, f.kind), (7, 12.0, PlantKind::Grass));
 }
+
+/// A body part sweeping through fallen fruit knocks it along the way it moves; it slides, slows
+/// and comes to rest. Hanging fruit and parts held high off the ground knock nothing.
+#[test]
+fn fallen_fruit_is_knocked_along_and_comes_to_rest() {
+    use evolve_sim::knock::Swing;
+    use evolve_sim::math::Vec2;
+    let mut sim = Sim::new(bare_params());
+    let at = sim.random_land_point(30.0);
+    let ground = sim.terrain.height_at(at.x, at.z);
+    let fruit = put_fruit(&mut sim, Vec3::new(at.x, ground, at.z), None);
+    let swing = |y: f32| Swing { at: Vec3::new(at.x, y, at.z), vel: Vec2::new(3.0, 0.0), reach: 0.2 };
+    sim.knock_with(&[swing(ground + 2.0)]);
+    assert!(sim.sliding.is_empty(), "a part swinging overhead misses it");
+    sim.knock_with(&[swing(ground + 0.1)]);
+    assert!(sim.sliding.contains_key(&fruit), "a part sweeping the ground knocks it");
+    for _ in 0..200 {
+        sim.slide_food(1.0 / 30.0);
+    }
+    let f = sim.fruit.iter().find(|f| f.id == fruit).unwrap();
+    assert!(f.pos.x - at.x > 0.3, "it went the part's way: {} m", f.pos.x - at.x);
+    assert!((f.pos.y - sim.terrain.height_at(f.pos.x, f.pos.z)).abs() < 1e-3, "along the ground");
+    assert!(!sim.sliding.contains_key(&fruit), "and came to rest");
+}
+
+/// A trunk struck hard enough drops some of the tree's hanging fruit; a gentle touch doesn't,
+/// and a shaken tree gives nothing more to another blow straight away.
+#[test]
+fn striking_a_tree_shakes_its_fruit_down() {
+    use evolve_sim::knock::Swing;
+    use evolve_sim::math::Vec2;
+    let mut sim = Sim::new(SimParams { tree_max_count: 4, ..bare_params() });
+    let at = sim.random_land_point(30.0);
+    let k = sim.add_tree(at).unwrap();
+    sim.trees[k].height = 10.0;
+    let (tree, foot, r) = (sim.trees[k].id, sim.trees[k].pos, sim.trees[k].trunk_radius());
+    for i in 0..12 {
+        put_fruit(&mut sim, foot + Vec3::new(i as f32 * 0.1, 6.0, 0.0), Some(tree));
+    }
+    let hanging = |sim: &Sim| sim.fruit.iter().filter(|f| f.hanging()).count();
+    let blow = |speed: f32| Swing { at: foot + Vec3::new(r + 0.1, 0.5, 0.0), vel: Vec2::new(-speed, 0.0), reach: 0.15 };
+    sim.knock_with(&[blow(1.0)]);
+    assert_eq!(hanging(&sim), 12, "a gentle touch shakes nothing down");
+    sim.knock_with(&[blow(4.5)]);
+    let after = hanging(&sim);
+    assert!(after < 12, "a hard blow shakes fruit down: {after} still hang");
+    assert!(sim.fruit.iter().filter(|f| !f.hanging()).all(|f| (f.pos.y - sim.terrain.height_at(f.pos.x, f.pos.z)).abs() < 1e-3), "onto the ground");
+    sim.knock_with(&[blow(4.5)]);
+    assert_eq!(hanging(&sim), after, "not again straight away");
+}

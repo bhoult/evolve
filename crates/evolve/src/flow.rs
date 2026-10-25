@@ -167,6 +167,11 @@ fn water_here(t: &Terrain, p: Vec2) -> (f32, Vec2, Vec2) {
 }
 
 /// How fast running water `depth` m deep goes down a surface falling `fall` m per m.
+/// Whether water stands here (a pond or lake, which pools in a hollow) rather than runs.
+fn still(t: &Terrain, p: Vec2) -> bool {
+    t.pooled.len() == t.heights.len() && t.sample(&t.pooled, p.x, p.y).1 > 0.02
+}
+
 fn stream_speed(depth: f32, fall: f32) -> f32 {
     (depth.max(0.0).powf(2.0 / 3.0) * fall.max(0.0).sqrt() / ROUGHNESS).min(TOP_SPEED)
 }
@@ -202,11 +207,15 @@ fn update_flow(
     flow.flecks.retain_mut(|f| {
         let (depth, fall, deeper) = water_here(t, f.pos);
         let steep = fall.length();
-        let target = fall.normalize_or_zero() * stream_speed(depth, steep) + deeper.clamp_length_max(1.0) * 0.8;
+        // Only a falling surface drives the water: the pull toward a channel's middle goes with
+        // it, so on a pond (flat, or pooled) a fleck just slows and fades instead of circling
+        // the deepest point forever.
+        let running = if still(t, f.pos) { 0.0 } else { steep / (steep + 4.0 * MIN_FALL) };
+        let target = (fall.normalize_or_zero() * stream_speed(depth, steep) + deeper.clamp_length_max(1.0) * 0.8) * running;
         f.vel += (target - f.vel) * k;
         f.pos += f.vel * dt;
         // Still water lets them go sooner.
-        f.age += dt * if steep < MIN_FALL { 3.0 } else { 1.0 };
+        f.age += dt * if running < 0.5 { 3.0 } else { 1.0 };
         f.age < f.life && depth >= MIN_DEPTH && f.pos.x.abs() < half && f.pos.y.abs() < half
     });
 
@@ -223,7 +232,7 @@ fn update_flow(
             continue;
         }
         let (depth, fall, _) = water_here(t, pos);
-        if depth < MIN_DEPTH * 1.5 || fall.length() < MIN_FALL {
+        if depth < MIN_DEPTH * 1.5 || fall.length() < MIN_FALL || still(t, pos) {
             continue;
         }
         let life = 4.0 + 5.0 * flow.rand();

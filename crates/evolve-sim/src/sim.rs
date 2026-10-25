@@ -450,6 +450,12 @@ pub struct Sim {
     /// Fruit hanging in the trees and lying under them.
     #[serde(default)]
     pub fruit: Vec<crate::forest::Fruit>,
+    /// Fruit and meat knocked about, still sliding: id and velocity (see `knock`).
+    #[serde(skip)]
+    pub sliding: std::collections::HashMap<u64, crate::math::Vec2>,
+    /// When each recently shaken tree was shaken (see `knock`).
+    #[serde(skip)]
+    pub shaken: std::collections::HashMap<u64, f64>,
     /// Whether the world has had its first trees (false in saves from before trees).
     #[serde(default)]
     pub forest_planted: bool,
@@ -585,6 +591,8 @@ impl Sim {
             meat: Vec::new(),
             trees: Vec::new(),
             fruit: Vec::new(),
+            sliding: Default::default(),
+            shaken: Default::default(),
             forest_planted: true,
             obstacles: Vec::new(),
             rng,

@@ -540,6 +540,12 @@ A watch on a paused world waits until the world runs again.
     (`fruit_hang_time`), and rots on the ground over five (`fruit_rot_time`), sometimes sprouting
     a seedling where it lay (`fruit_sprout`). Most fruit is eaten off the ground; tall bodies
     can reach the low crowns of young trees.
+  - *Knocking food about:* a body part moving faster than 0.8 m/s through fallen fruit or meat
+    sends it its way at `knock_strength` (0.7) of its speed; it slides, slows and comes to rest
+    (ground gentler than about 25° holds it). A trunk struck faster than `shake_speed` (1.5 m/s)
+    drops some of the tree's hanging fruit, a tenth at that speed and most of it at three times
+    it, once a second at most. So kicking food closer and shaking trees are there for evolution
+    to find.
   - *Seeds* ride the wind for as long as they take to fall from the crown (`seed_fall_speed`):
     about 15 m from a 10 m tree in a breeze, across the island in a storm.
   - *Old trees* die after about four hours (`tree_lifespan`) and fall, dropping their fruit.

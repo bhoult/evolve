@@ -10,6 +10,7 @@ pub mod forest;
 pub mod genome;
 pub mod grid;
 pub mod islands;
+pub mod knock;
 pub mod gpu;
 pub mod hydro;
 mod life;

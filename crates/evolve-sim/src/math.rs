@@ -1,6 +1,7 @@
 pub use rapier3d::math::{Pose, Real};
 
 pub type Vec3 = rapier3d::math::Vector;
+pub type Vec2 = rapier3d::glamx::Vec2;
 pub type Quat = rapier3d::math::Rotation;
 
 /// Mirror across the creature's sagittal plane (z -> -z).

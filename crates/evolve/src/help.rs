@@ -484,6 +484,14 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
+            "Creatures can knock food about: a body part moving faster than 0.8 m/s through fallen fruit or meat sends it its way at {} of its speed (knock_strength), and a trunk struck faster than {} m/s drops some of the tree's hanging fruit, more the harder the blow (shake_speed).",
+            pct(p.knock_strength),
+            num(p.shake_speed)
+        ),
+    );
+    bullet(
+        ui,
+        format!(
             "Grown trees send {} seeds a minute off on the wind (tree_seed_rate), which carries them for as long as they take to fall from the crown at {} m/s (seed_fall_speed): about {} m from a 10 m tree in a 3 m/s breeze, across the island in a storm.",
             num(p.tree_seed_rate),
             num(p.seed_fall_speed),

@@ -390,6 +390,7 @@ impl Sim {
         self.grip();
         self.trample(bdt);
         self.eat(bdt);
+        self.knock(bdt);
         self.fight();
         self.breed();
         self.earthworks(bdt);

@@ -379,6 +379,12 @@ params! {
         sky_meat_per_mass: f32 = 1.0, [0, 10], Live;
         /// Fraction of meat energy lost per second to rot.
         meat_decay: f32 = 0.01, [0, 0.5], Live;
+        /// How much of a moving body part's speed a piece of fallen fruit or meat it sweeps
+        /// through takes on: creatures can knock food along (0: food can't be moved).
+        knock_strength: f32 = 0.7, [0, 2], Live;
+        /// A trunk struck by a body part moving faster than this (m/s) drops some of the tree's
+        /// hanging fruit, more the harder the blow (0: trees can't be shaken).
+        shake_speed: f32 = 1.5, [0, 20], Live;
     }
     "Drinking" {
         /// Simulated seconds for a full creature to run dry without drinking (0: never thirsty).
