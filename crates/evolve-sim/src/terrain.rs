@@ -79,6 +79,10 @@ pub struct Terrain {
     pub stripe: usize,
     #[serde(skip)]
     pub stripe_age: Vec<f32>,
+    /// The coarse grid's water being worked out on another thread, to be spread back at the next
+    /// update (see `hydro::update`).
+    #[serde(skip)]
+    pub water_job: Option<crate::hydro::WaterJob>,
     #[serde(skip)]
     pub worn_tiles: Vec<usize>,
 }
@@ -181,6 +185,7 @@ impl Default for Terrain {
             wet_cells: Vec::new(),
             stripe: 0,
             stripe_age: Vec::new(),
+            water_job: None,
         }
     }
 }
@@ -244,6 +249,7 @@ impl Terrain {
             wet_cells: Vec::new(),
             stripe: 0,
             stripe_age: Vec::new(),
+            water_job: None,
         }
     }
 

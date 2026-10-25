@@ -18,8 +18,10 @@ use std::collections::BinaryHeap;
 
 use rayon::prelude::*;
 
+use std::sync::{Arc, Mutex};
+
 use crate::params::SimParams;
-use crate::terrain::Terrain;
+use crate::terrain::{Layer, Terrain};
 
 /// Stream depth per square root of flow (flow counted in m² of hillside in steady rain), m.
 const STREAM_DEPTH: f32 = 0.01;
@@ -144,24 +146,46 @@ pub const HYDRO_CELL: f32 = 1.0;
 /// notices it: creatures drink, see water and plants drown from 3 cm deep).
 const VISIBLE: f32 = 0.005;
 
+/// How many points a side the water is worked out on for a terrain: its own, or a coarser grid
+/// no finer than `HYDRO_CELL`.
+pub fn grid_res(t: &Terrain) -> usize {
+    let stride = (HYDRO_CELL / t.cell()).ceil().max(1.0) as usize;
+    (t.res - 1).div_ceil(stride) + 1
+}
+
 /// Rain on the land for `dt` seconds (see the module docs), on a grid no finer than `HYDRO_CELL`.
 pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, erode: Option<f32>) -> Budget {
     t.ensure_layers();
-    let stride = (HYDRO_CELL / t.cell()).ceil() as usize;
-    if stride <= 1 {
+    let res = grid_res(t);
+    if res == t.res {
         t.coarse = None;
         return update_grid(t, p, rain, soak, dt, erode);
     }
-    let res = (t.res - 1).div_ceil(stride) + 1;
-    // The coarse grid keeps its water between updates; its ground is taken afresh from the fine
-    // one, which creatures dig and pile.
-    let mut c = match t.coarse.take() {
-        Some(c) if c.res == res && c.size == t.size => c,
-        _ => {
-            t.wet_cells.clear();
-            Box::new(t.resampled(res))
+    // The coarse grid's water is worked out on another thread while the world steps on, and
+    // spread back at the next update (waiting for it only if it isn't done): working it out took
+    // about 55 ms of every update on an 800 m world. Always one update behind, so the world
+    // doesn't depend on how fast the thread was.
+    let done = t.water_job.take().and_then(|j| j.0.lock().ok()?.take()).and_then(|h| h.join().ok());
+    let (budget, mut c) = match done {
+        Some(Coarse { grid, budget, heights, eroded }) if grid.res == res && grid.size == t.size => {
+            spread_back(t, &grid, &heights, &eroded, budget.reshaped, p, dt);
+            t.version += 1;
+            (budget, grid)
         }
+        // The first update (or a new terrain): the coarse grid kept from before, or a new one.
+        _ => (
+            Budget::default(),
+            match t.coarse.take() {
+                Some(c) if c.res == res && c.size == t.size => c,
+                _ => {
+                    t.wet_cells.clear();
+                    Box::new(t.resampled(res))
+                }
+            },
+        ),
     };
+    // Its ground is taken afresh from the fine grid, which creatures dig and pile; its water
+    // stays as it was.
     {
         let fine = &*t;
         let points: Vec<(f32, f32)> = (0..res * res).map(|k| c.point(k)).collect();
@@ -173,8 +197,34 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
         c.springs = fine.springs_on(&c);
     }
     let (heights, eroded) = (c.heights.clone(), c.eroded.clone());
-    let budget = update_grid(&mut c, p, rain, soak, dt, erode);
+    let p = p.clone();
+    let job = std::thread::Builder::new()
+        .name("evolve-water".into())
+        .spawn(move || {
+            let budget = update_grid(&mut c, &p, rain, soak, dt, erode);
+            Coarse { grid: c, budget, heights, eroded }
+        })
+        .expect("a thread for the water");
+    t.water_job = Some(WaterJob(Arc::new(Mutex::new(Some(job)))));
+    budget
+}
 
+/// The coarse grid's water being worked out on another thread (see `update`).
+#[derive(Clone, Debug)]
+pub struct WaterJob(Arc<Mutex<Option<std::thread::JoinHandle<Coarse>>>>);
+
+/// A worked-out coarse grid, with its ground as it was before (for what erosion cut).
+#[derive(Debug)]
+pub struct Coarse {
+    grid: Box<Terrain>,
+    budget: Budget,
+    heights: Layer,
+    eroded: Layer,
+}
+
+/// Spreads a worked-out coarse grid `c` back onto the fine terrain `t`; `heights` and `eroded`
+/// are `c`'s from before it was worked out.
+fn spread_back(t: &mut Terrain, c: &Terrain, heights: &Layer, eroded: &Layer, reshaped: bool, p: &SimParams, dt: f32) {
     // Back onto the fine grid, only where something changed: spreading everything over all 25
     // million points of a 5000-a-side terrain took half a second every update. Water lies at the
     // level the coarse grid has it (a lake's surface is flat however bumpy its bed), in coarse
@@ -186,7 +236,6 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
     let pool_surface: Vec<f32> = c.heights.iter().zip(&c.pooled).map(|(h, w)| h + w).collect();
     let dh: Vec<f32> = c.heights.iter().zip(heights.iter()).map(|(a, b)| a - b).collect();
     let de: Vec<f32> = c.eroded.iter().zip(eroded.iter()).map(|(a, b)| a - b).collect();
-    let reshaped = budget.reshaped;
     let (cres, cells) = (c.res, c.res - 1);
     let corners = |layer: &[f32], ci: usize, cj: usize, f: &dyn Fn(f32) -> bool| {
         let k = ci * cres + cj;
@@ -214,7 +263,7 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
     let rows = stripe * n / stripes..(stripe + 1) * n / stripes;
     let age = std::mem::take(&mut t.stripe_age[stripe]);
     let recover = (-age * std::f32::consts::LN_2 / (p.wear_recovery.max(0.01) * 60.0)).exp();
-    let cr = &*c;
+    let cr = c;
     let (cell, half, cc) = (t.cell(), t.half(), c.cell());
     let coarse_of = |v: f32| (((v + half) / cc).floor().max(0.0) as usize).min(cells - 1);
     // The fine columns in each coarse column: cols[cj]..cols[cj + 1].
@@ -292,9 +341,6 @@ pub fn update(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, ero
             }
         }
     }
-    t.coarse = Some(c);
-    t.version += 1;
-    budget
 }
 
 fn update_grid(t: &mut Terrain, p: &SimParams, rain: f32, soak: f32, dt: f32, erode: Option<f32>) -> Budget {

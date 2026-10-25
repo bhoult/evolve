@@ -473,7 +473,7 @@ fn a_fine_terrain_gets_the_same_water_from_a_coarse_grid() {
         start.elapsed().as_secs_f32()
     };
     let (tc, tf) = (time(&mut coarse, &base), time(&mut fine, &fine_p));
-    assert!(fine.coarse.as_ref().is_some_and(|c| c.res == 121), "worked out on a 121 grid");
+    assert_eq!(hydro::grid_res(&fine), 121, "worked out on a 121 grid");
     let wet = |t: &Terrain| {
         let land = (0..t.heights.len()).filter(|&k| t.heights[k] > base.water_level).count();
         (0..t.heights.len()).filter(|&k| t.heights[k] > base.water_level && t.water[k] > 0.05).count() as f32 / land as f32
@@ -556,4 +556,27 @@ fn plants_grow_faster_beside_water() {
     let per = |s: f32| 0.2 + 0.8 * s;
     let (g1, g2) = ((energy(&sim, beside) - 1.0) / per(s1), (energy(&sim, far) - 1.0) / per(s2));
     assert!(g1 > 1.2 * g2, "beside water {g1:.3} vs away {g2:.3} (per unit of suitability)");
+}
+
+/// On a fine terrain the coarse grid's water is worked out on another thread and spread back an
+/// update later: two copies of the same terrain still get exactly the same water, however the
+/// threads ran, and the water comes one update behind (none after the first).
+#[test]
+fn water_worked_out_on_another_thread_is_the_same_every_time() {
+    let p = SimParams { world_size: 120.0, terrain_resolution: 481, ..SimParams::default() };
+    let mut a = Terrain::generate(&p, 1);
+    let first = hydro::update(&mut a, &p, 1.0, 1.0, 30.0, None);
+    assert_eq!(first.rained, 0.0, "nothing worked out yet after the first update");
+    let mut b = Terrain::generate(&p, 1);
+    hydro::update(&mut b, &p, 1.0, 1.0, 30.0, None);
+    for k in 0..6 {
+        let erode = (k % 3 == 2).then_some(30.0);
+        hydro::update(&mut a, &p, 1.0, 1.0, 30.0, erode);
+        // The other copy waits a little first, so its thread finishes at a different moment.
+        std::thread::sleep(std::time::Duration::from_millis(5 * k));
+        hydro::update(&mut b, &p, 1.0, 1.0, 30.0, erode);
+    }
+    assert!(a.water.iter().any(|&w| w > 0.05), "streams formed");
+    assert!(a.water.iter().zip(b.water.iter()).all(|(x, y)| x == y), "the same water");
+    assert!(a.heights.iter().zip(b.heights.iter()).all(|(x, y)| x == y), "the same erosion");
 }

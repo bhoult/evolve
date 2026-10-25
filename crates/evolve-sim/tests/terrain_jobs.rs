@@ -17,14 +17,23 @@ fn terrain_jobs() {
     let t = &mut sim.terrain;
     println!("terrain {} a side over {} m ({:.2} m apart), {} pieces of ground", t.res, t.size, t.cell(), t.tiles() * t.tiles());
     let ms = |s: Instant| s.elapsed().as_secs_f64() * 1000.0;
-    for k in 0..3 {
+    // The world steps on between updates, while a big terrain's coarse water is worked out on
+    // another thread: a pause stands in for it, so what's timed is what the world waits for.
+    let between = std::time::Duration::from_millis(400);
+    for k in 0..4 {
+        std::thread::sleep(between);
         let s = Instant::now();
         hydro::update(t, &p, 1.0, 1.0, 2.0, None);
         println!("water, run {k}: {:.1} ms", ms(s));
     }
+    std::thread::sleep(between);
     let s = Instant::now();
     hydro::update(t, &p, 1.0, 1.0, 2.0, Some(30.0));
     println!("water with erosion: {:.1} ms", ms(s));
+    std::thread::sleep(between);
+    let s = Instant::now();
+    hydro::update(t, &p, 1.0, 1.0, 2.0, None);
+    println!("water after erosion (spreading what it cut): {:.1} ms", ms(s));
     t.take_dirty();
     // Dig 300 holes about the island, as creatures do.
     let mut rng = Rng::new(3);
