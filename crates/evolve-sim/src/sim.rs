@@ -1925,13 +1925,15 @@ impl Sim {
                     None => self.pool.consider(score, c.generation, &c.genome),
                 }
                 self.stats.record_life(c.life.food(), c.life.distance, c.life.children as f32, c.age);
-                // Meat where each body part lay. A body born in the world was paid for by its
-                // parents (`life::birth_cost`), so it leaves that much meat; one that fell from
-                // the sky cost nothing, so it leaves only what it still held. Otherwise the
-                // population floor would rain free meat, and big carrion-eaters that never move
-                // would win.
-                let body_meat = if c.rained { 0.0 } else { self.params.meat_per_mass };
-                let leftover = c.energy.max(0.0) * 0.5;
+                // Meat where each body part lay: `meat_per_mass` per kg plus half the energy it
+                // still held. A body born in the world was paid for by its parents
+                // (`life::birth_cost`), so it always leaves that. One that fell from the sky cost
+                // nothing, so it leaves meat only when something killed it: hunting pays, but
+                // starving, drowning and old age leave nothing. Otherwise the population floor
+                // rains free carcasses, and big carrion-eaters that never move win.
+                let meaty = !c.rained || cause == DeathCause::Killed;
+                let body_meat = if meaty { self.params.meat_per_mass } else { 0.0 };
+                let leftover = if meaty { c.energy.max(0.0) * 0.5 } else { 0.0 };
                 // Shares by volume of the body as it was built (the density param may have
                 // changed since).
                 let volume: f32 = c.plan.iter().map(|s| s.shape.volume()).sum::<f32>().max(1e-6);

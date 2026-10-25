@@ -461,7 +461,7 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "A dead creature leaves a piece of meat at each body part: {} energy per kg of body (meat_per_mass) plus half the energy it still held. One that fell from the sky cost nothing to make, so it leaves only the half.",
+            "A dead creature leaves a piece of meat at each body part: {} energy per kg of body (meat_per_mass) plus half the energy it still held. One that fell from the sky cost nothing to make, so it leaves meat only if something killed it; starved, drowned or old, it leaves nothing.",
             num(p.meat_per_mass)
         ),
     );

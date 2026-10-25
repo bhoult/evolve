@@ -529,6 +529,29 @@ fn a_child_killed_at_birth_leaves_no_more_meat_than_it_cost() {
     assert!(meat <= spent + 0.1, "the carcass left {meat} of meat, but its parents only spent {spent} on it");
 }
 
+/// A body that fell from the sky leaves meat only when it was killed, not when it starved.
+#[test]
+fn a_body_from_the_sky_leaves_meat_only_when_killed() {
+    use evolve_sim::sim::DeathCause;
+    let mut p = quiet_params();
+    p.plant_max_count = 0;
+    p.plant_spawn_rate = 0.0;
+    let mut sim = Sim::new(p);
+    let a = sim.rain_creature(None);
+    let b = sim.rain_creature(None);
+    sim.step();
+    let meat = |sim: &Sim| sim.meat.iter().map(|m| m.energy).sum::<f32>();
+    sim.creature_mut(a).unwrap().dead = Some(DeathCause::Starved);
+    sim.step();
+    assert_eq!(meat(&sim), 0.0, "a starved one leaves nothing");
+    let mass = sim.creature(b).unwrap().mass;
+    sim.creature_mut(b).unwrap().dead = Some(DeathCause::Killed);
+    sim.step();
+    let left = meat(&sim);
+    let want = mass * sim.params.meat_per_mass;
+    assert!(left >= 0.9 * want, "a killed one leaves its body's meat: {left} of at least {want}");
+}
+
 /// Meat-eaters that do nothing but breed, bite and eat, in a world with no plants and no rain:
 /// with energy conserved they die out, since every birth and death loses some.
 #[test]

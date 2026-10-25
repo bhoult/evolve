@@ -419,10 +419,10 @@ interbreed. Breeding alone is an optional parameter.
 **Combat.** A creature that touches another with its torso (its head; the eyes show which end)
 and wants to attack bites it. Damage depends on the size ratio and the target's armor. Biting
 costs energy and has a cooldown, and the target can bite back. The dead leave meat where their
-body parts were, and the meat rots over time. A creature that fell from the sky leaves only half
-the energy it still held: its body cost nothing, so it leaves no meat of its own. (When those
-bodies left meat, the population floor rained free carcasses, and huge limbless carrion-eaters
-that never moved took over.)
+body parts were, and the meat rots over time. A creature that fell from the sky cost nothing, so
+it leaves meat only if something killed it: hunting it pays, but one that starved, drowned or
+died of age leaves nothing. (When every such body left meat, the population floor rained free
+carcasses, and huge limbless carrion-eaters that never moved took over.)
 
 **Rain and the gene pool.** When the population drops below `min_population`, creatures fall
 from the sky. Most are bred from a hall of fame of the most successful genomes seen recently,
