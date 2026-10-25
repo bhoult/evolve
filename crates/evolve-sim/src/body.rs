@@ -375,6 +375,8 @@ pub enum Tag {
     Wall,
     Creature { id: u64, part: u16 },
     Obstacle { id: u64 },
+    /// A tree's trunk, in every physics world like the ground.
+    Tree { id: u64 },
 }
 
 impl Tag {
@@ -385,6 +387,7 @@ impl Tag {
             Tag::Wall => 2 << 120,
             Tag::Creature { id, part } => (3 << 120) | ((id as u128) << 16) | part as u128,
             Tag::Obstacle { id } => (4 << 120) | ((id as u128) << 16),
+            Tag::Tree { id } => (5 << 120) | ((id as u128) << 16),
         }
     }
 
@@ -398,6 +401,7 @@ impl Tag {
                 part: (v & 0xFFFF) as u16,
             },
             4 => Tag::Obstacle { id },
+            5 => Tag::Tree { id },
             _ => Tag::None,
         }
     }

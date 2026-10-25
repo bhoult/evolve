@@ -1,5 +1,7 @@
-//! Plants drawn as small trees and bushes instead of cones, bending in the wind. sync.rs still
-//! owns the plant entities; this swaps their mesh and material as they appear.
+//! Plants drawn as trees and bushes instead of cones, bending in the wind: grass as low bushes,
+//! tree seedlings and trees as conifers, broadleaves and poplars (which, by the plant's id), at
+//! the size sync.rs gives them. sync.rs owns the plant entities; this swaps their mesh and
+//! material as they appear.
 
 use bevy::pbr::{ExtendedMaterial, MaterialExtension, MaterialPlugin};
 use bevy::prelude::*;
@@ -7,7 +9,7 @@ use bevy::render::render_resource::{AsBindGroup, Buffer};
 use bevy::shader::ShaderRef;
 
 use crate::env::{EnvGpu, shader};
-use crate::sync::PlantOf;
+use crate::sync::{PlantLook, PlantOf};
 
 pub struct TreesPlugin;
 
@@ -72,10 +74,15 @@ fn setup(
     });
 }
 
-fn dress_plants(mut commands: Commands, added: Query<(Entity, &PlantOf), Added<PlantOf>>, assets: Res<TreeAssets>) {
-    for (e, p) in &added {
-        let h = p.0.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40;
-        let mesh = assets.meshes[(h % assets.meshes.len() as u64) as usize].clone();
+/// Mesh indices (see `setup`: four shapes, in two turns).
+const BUSHES: [usize; 2] = [2, 6];
+const TREES: [usize; 6] = [0, 1, 3, 4, 5, 7];
+
+fn dress_plants(mut commands: Commands, added: Query<(Entity, &PlantOf, &PlantLook), Added<PlantOf>>, assets: Res<TreeAssets>) {
+    for (e, p, look) in &added {
+        let h = (p.0.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as usize;
+        let kinds: &[usize] = if *look == PlantLook::Grass { &BUSHES } else { &TREES };
+        let mesh = assets.meshes[kinds[h % kinds.len()]].clone();
         commands
             .entity(e)
             .remove::<MeshMaterial3d<StandardMaterial>>()

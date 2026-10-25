@@ -496,8 +496,27 @@ A watch on a paused world waits until the world runs again.
 **World.**
 - *Terrain:* an island in an ocean. The coast follows the hills, with headlands and bays
   (`island_size`, `coast_roughness`). The terrain is a noise heightfield that is also the physics
-  collider, with water at an adjustable level. Plants grow best just above the shoreline, seed
-  nearby, and die when flooded.
+  collider, with water at an adjustable level. Plants grow best just above the shoreline and
+  die when flooded.
+- *Plants:* two kinds. Grass stays small and soft, seeds nearby, and fills open ground. Trees
+  start as soft seedlings that grazing can stop. A seedling that grows full uneaten, clear of
+  other trees, turns woody and grows over about an hour (`tree_growth_time`) into a tree 8–12 m
+  tall (`tree_height`).
+  - *Trunks* are solid from 2 m up, in every physics world like the ground: creatures and stones
+    bump into them, and eyes see them.
+  - *Wood* is hard to eat: gnawing gives a tenth of a bite (`wood_bite`), and a grown tree holds
+    2,000 energy of it (`tree_wood`).
+  - *Fruit* grows on trees past half their height (`fruit_rate`, `fruit_energy`). It hangs in the
+    crown, where only a mouth that reaches it can eat it, falls after three minutes
+    (`fruit_hang_time`), and rots on the ground over five (`fruit_rot_time`), sometimes sprouting
+    a seedling where it lay (`fruit_sprout`). Most fruit is eaten off the ground; tall bodies
+    can reach the low crowns of young trees.
+  - *Seeds* ride the wind for as long as they take to fall from the crown (`seed_fall_speed`):
+    about 15 m from a 10 m tree in a breeze, across the island in a storm.
+  - *Old trees* die after about four hours (`tree_lifespan`) and fall, dropping their fruit.
+  - The plant sense points at the nearest food a creature could eat (grass, seedlings, fallen
+    fruit, fruit within reach), never at wood. Saves from before trees load with their plants as
+    grass, and get a forest of mixed ages planted the first time they load.
 - *Day and weather:* the sun rises and sets over `day_length` (15 simulated minutes; nights take
   about a third of it). Clouds, rain and storms come and go on their own (`weather_period`,
   `storminess`).
@@ -606,7 +625,9 @@ At **Max** speed the program is built to keep the whole machine busy.
   - *Splashes:* creatures moving through the sea leave spreading rings; hitting the water fast
     throws spray and white water, and parts bursting out drip (splash.rs).
   - *Land:* island terrain shading with wet sand, rock and cloud shadows.
-  - *Plants:* trees and bushes that sway in the wind.
+  - *Plants:* grass as low bushes, and trees at their real size (conifers, broadleaves and
+    poplars) that sway in the wind and topple when they die, with fruit in their crowns and on the
+    ground.
   - *Weather:* rain streaks, and lightning with flashes.
   - *Light:* the sun and moon light the scene, with shadows that scale with the camera's distance.
 

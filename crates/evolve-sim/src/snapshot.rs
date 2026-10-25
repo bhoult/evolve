@@ -99,6 +99,26 @@ pub struct FoodView {
     pub id: u64,
     pub pos: [f32; 3],
     pub energy: f32,
+    /// Grass or a tree seedling (meat: grass).
+    pub kind: crate::sim::PlantKind,
+}
+
+#[derive(Clone, Debug)]
+pub struct TreeView {
+    pub id: u64,
+    /// The foot of the trunk.
+    pub pos: [f32; 3],
+    pub height: f32,
+    /// Seconds since it fell (0 while it stands).
+    pub fallen: f32,
+}
+
+#[derive(Clone, Debug)]
+pub struct FruitView {
+    pub id: u64,
+    pub pos: [f32; 3],
+    pub energy: f32,
+    pub hanging: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -164,6 +184,8 @@ pub struct Snapshot {
     pub time: f64,
     pub creatures: Vec<CreatureView>,
     pub plants: Vec<FoodView>,
+    pub trees: Vec<TreeView>,
+    pub fruit: Vec<FruitView>,
     pub meat: Vec<FoodView>,
     pub obstacles: Vec<ObstacleView>,
     pub terrain: Arc<Terrain>,
@@ -224,7 +246,7 @@ impl Sim {
                 };
                 let t = self.torso_of(c)?;
                 let mouth = t.position().transform_point(crate::math::Vec3::new(c.torso_half().x + 0.1, -0.1, 0.0));
-                Some(FoodView { id: u64::MAX - c.id, pos: mouth.to_array(), energy })
+                Some(FoodView { id: u64::MAX - c.id, pos: mouth.to_array(), energy, kind: Default::default() })
             })
             .collect()
     }
@@ -291,6 +313,7 @@ impl Sim {
             id: f.id,
             pos: f.pos.to_array(),
             energy: f.energy,
+            kind: f.kind,
         };
         let obstacles = self
             .obstacles
@@ -365,6 +388,16 @@ impl Sim {
             time: self.time,
             creatures,
             plants: self.plants.iter().map(food).chain(self.carried(true)).collect(),
+            trees: self
+                .trees
+                .iter()
+                .map(|t| TreeView { id: t.id, pos: t.pos.to_array(), height: t.height, fallen: t.fallen.map_or(0.0, |f| f.max(1e-3)) })
+                .collect(),
+            fruit: self
+                .fruit
+                .iter()
+                .map(|f| FruitView { id: f.id, pos: f.pos.to_array(), energy: f.energy, hanging: f.hanging() })
+                .collect(),
             meat: self.meat.iter().map(food).chain(self.carried(false)).collect(),
             obstacles,
             terrain,

@@ -6,6 +6,7 @@ pub mod body;
 pub mod carry;
 pub mod brain;
 pub mod commands;
+pub mod forest;
 pub mod genome;
 pub mod grid;
 pub mod islands;

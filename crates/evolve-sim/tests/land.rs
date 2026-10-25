@@ -9,6 +9,7 @@ fn quiet_params() -> SimParams {
         min_population: 0,
         terrain_resolution: 65,
         weather: false,
+        tree_max_count: 0,
         ..SimParams::default()
     }
 }
