@@ -365,8 +365,6 @@ impl Brain3d {
             };
             let links = self.edges.iter().filter(|e| e.0 as usize == i || e.1 as usize == i).count();
             resp.clone().on_hover_text_at_pointer(format!("{name}: {:+.2}\n{links} connections shown", value(i)));
-        } else if resp.hovered() && !resp.dragged() {
-            resp.clone().on_hover_text_at_pointer("Drag to turn it, scroll to zoom");
         }
     }
 }

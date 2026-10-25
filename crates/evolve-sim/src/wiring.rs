@@ -196,8 +196,14 @@ pub fn sketch_brain(g: &BrainGenes, learned: Option<&[f32]>, inputs: Vec<usize>,
     let n_out = outputs.len() * hidden.len();
     let total = (n_in + n_rec + n_out).max(1) as u128;
     let k = limits.connections.min(n_in + n_rec + n_out);
-    let k_in = (k as u128 * n_in as u128 / total) as usize;
-    let k_out = (k as u128 * n_out as u128 / total) as usize;
+    let mut k_in = (k as u128 * n_in as u128 / total) as usize;
+    let mut k_out = (k as u128 * n_out as u128 / total) as usize;
+    // Rounding the others down can leave neuron-to-neuron a connection or two more than there
+    // are; those go to the others.
+    let spare = (k - k_in - k_out).saturating_sub(n_rec);
+    let to_in = spare.min(n_in - k_in);
+    k_in += to_in;
+    k_out += spare - to_in;
     let k_rec = k - k_in - k_out;
 
     let mut edges = Vec::with_capacity(k);

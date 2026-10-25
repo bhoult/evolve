@@ -48,10 +48,12 @@ fn check(b: &BrainGenes, learned: Option<&[f32]>, w: &Wiring, limits: SketchLimi
     let total: usize = n.iter().sum();
     let k = limits.connections.min(total);
     assert_eq!(w.edges.len(), k, "as many connections as asked for");
-    let k_in = k * n[0] / total;
-    let k_out = k * n[2] / total;
     let by_kind: Vec<Vec<&Edge>> = (0..3).map(|t| w.edges.iter().filter(|e| kind(e) == t).collect()).collect();
-    assert_eq!([by_kind[0].len(), by_kind[1].len(), by_kind[2].len()], [k_in, k - k_in - k_out, k_out]);
+    for t in 0..3 {
+        // Shared by how many of each kind there are, give or take rounding.
+        let fair = k as f64 * n[t] as f64 / total as f64;
+        assert!((by_kind[t].len() as f64 - fair).abs() <= 2.0, "kind {t}: {} for a fair {fair}", by_kind[t].len());
+    }
     // Senses into neurons, then neurons into neurons, then neurons into actions.
     assert!(w.edges.windows(2).all(|p| kind(&p[0]) <= kind(&p[1])));
     let shown: HashSet<usize> = w.hidden.iter().copied().collect();
@@ -95,6 +97,13 @@ fn sketch_keeps_to_its_limits_strongest_first() {
             let w = sketch_brain(&b, l, inputs.clone(), outputs.clone(), limits);
             check(&b, l, &w, limits);
         }
+    }
+    // Just short of every connection among a few neurons, the shares of the others round down
+    // to more neuron-to-neuron connections than there are.
+    let all = sketch_brain(&b, None, inputs.clone(), outputs.clone(), SketchLimits { neurons: 7, connections: usize::MAX }).edges.len();
+    for connections in all - 12..all {
+        let limits = SketchLimits { neurons: 7, connections };
+        check(&b, None, &sketch_brain(&b, None, inputs.clone(), outputs.clone(), limits), limits);
     }
 }
 
