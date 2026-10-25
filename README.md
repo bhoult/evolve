@@ -591,8 +591,10 @@ makings of walls, piles, caches and gardens, if evolution finds a use for them.
   them smoothly between grid points (bicubic) for every pixel. Interpolated across the triangles
   of the mesh, as until 2026-10-25, stream banks zigzagged into hexagons. Flecks of foam (up to
   3,000, near what the camera looks at) ride running water down the slope of its surface, faster
-  where it's deeper and steeper, and gather toward the middle of a channel. They're off unless
-  `flowing water` in Graphics is ticked: they looked worse than the water without them.
+  where it's deeper and steeper, and gather toward the middle of a channel (`flowing water` in
+  Graphics turns them off). Each is a lacy patch of foam, one of nine made from noise with soft
+  edges, of its own size, stretch, angle to the flow and faintness (12-42% opaque): drawn as plain
+  flat streaks they looked like little white rectangles.
 - *Drawing a big terrain:* the ground is drawn as squares of 128 by 128 cells. On terrains of more
   than 513 points a side, a square farther from the camera is drawn with every 2nd, 4th, 8th or
   16th point, and a skirt hanging from its edges hides the cracks against a neighbour drawn at

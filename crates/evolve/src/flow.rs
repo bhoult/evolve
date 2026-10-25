@@ -37,6 +37,62 @@ struct Fleck {
     life: f32,
     /// Its width, m (flecks vary).
     width: f32,
+    /// How much longer than wide, how far it's turned from the way it drifts (radians), how
+    /// opaque at most, and which of the foam patches (`FOAM_KINDS`) it looks like.
+    stretch: f32,
+    turn: f32,
+    opacity: f32,
+    kind: u32,
+}
+
+/// Foam patches in the texture, along each side of its grid.
+const FOAM_GRID: u32 = 3;
+/// Pixels along a side of each foam patch in the texture.
+const FOAM_PX: u32 = 64;
+
+/// Patches of foam to draw flecks with: a soft-edged blob broken up by noise into lacy bits,
+/// each patch a different seed, so no two flecks look the same shape (flat quads looked like
+/// little white rectangles).
+fn foam_image() -> Image {
+    let side = FOAM_GRID * FOAM_PX;
+    let mut data = Vec::with_capacity((side * side * 4) as usize);
+    // Value noise from a hash of the lattice point.
+    let hash = |x: i32, y: i32, s: u32| {
+        let mut h = (x as u32).wrapping_mul(0x8DA6_B343) ^ (y as u32).wrapping_mul(0xD816_3841) ^ s.wrapping_mul(0xCB1A_B31F);
+        h ^= h >> 13;
+        h = h.wrapping_mul(0x5BD1_E995);
+        (h ^ (h >> 15)) as f32 / u32::MAX as f32
+    };
+    let noise = |x: f32, y: f32, s: u32| {
+        let (xi, yi) = (x.floor() as i32, y.floor() as i32);
+        let (fx, fy) = (x - xi as f32, y - yi as f32);
+        let (u, v) = (fx * fx * (3.0 - 2.0 * fx), fy * fy * (3.0 - 2.0 * fy));
+        let a = hash(xi, yi, s) + (hash(xi + 1, yi, s) - hash(xi, yi, s)) * u;
+        let b = hash(xi, yi + 1, s) + (hash(xi + 1, yi + 1, s) - hash(xi, yi + 1, s)) * u;
+        a + (b - a) * v
+    };
+    for py in 0..side {
+        for px in 0..side {
+            let kind = (py / FOAM_PX) * FOAM_GRID + px / FOAM_PX;
+            let (x, y) = ((px % FOAM_PX) as f32 / FOAM_PX as f32 * 2.0 - 1.0, (py % FOAM_PX) as f32 / FOAM_PX as f32 * 2.0 - 1.0);
+            // A lumpy outline, fading out well inside the patch so no edge shows.
+            let wobble = 0.75 + 0.5 * noise(x * 2.0 + 7.0, y * 2.0 + 3.0, kind * 3 + 1);
+            let r = (x * x + y * y).sqrt() / wobble.max(0.3);
+            let body = 1.0 - smoothstep(0.35, 0.95, r);
+            // Lace: two octaves of noise, cut so most of it is gaps between bubbles.
+            let n = 0.65 * noise(x * 4.0 + 11.0, y * 4.0 + 5.0, kind * 3 + 2) + 0.35 * noise(x * 9.0, y * 9.0, kind * 3 + 3);
+            let lace = smoothstep(0.42, 0.68, n);
+            let a = (body * lace * 255.0) as u8;
+            data.extend_from_slice(&[255, 255, 255, a]);
+        }
+    }
+    Image::new(
+        bevy::render::render_resource::Extent3d { width: side, height: side, depth_or_array_layers: 1 },
+        bevy::render::render_resource::TextureDimension::D2,
+        data,
+        bevy::render::render_resource::TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 #[derive(Resource)]
@@ -64,10 +120,16 @@ impl Plugin for FlowPlugin {
     }
 }
 
-fn spawn_flow(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<StandardMaterial>>) {
-    let mesh = meshes.add(flecks_mesh(Vec::new(), Vec::new(), Vec::new()));
+fn spawn_flow(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let mesh = meshes.add(flecks_mesh(Vec::new(), Vec::new(), Vec::new(), Vec::new()));
     let material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.93, 0.96, 0.96),
+        base_color: Color::srgb(0.86, 0.91, 0.92),
+        base_color_texture: Some(images.add(foam_image())),
         alpha_mode: AlphaMode::Blend,
         perceptual_roughness: 0.5,
         reflectance: 0.2,
@@ -164,32 +226,43 @@ fn update_flow(
             continue;
         }
         let life = 4.0 + 5.0 * flow.rand();
-        let width = 0.05 + 0.06 * flow.rand();
-        flow.flecks.push(Fleck { pos, vel: fall.normalize_or_zero() * stream_speed(depth, fall.length()), age: 0.0, life, width });
+        let width = 0.08 + 0.22 * flow.rand() * flow.rand();
+        let stretch = 1.0 + 1.5 * flow.rand();
+        let turn = (flow.rand() - 0.5) * 1.2;
+        let opacity = 0.12 + 0.3 * flow.rand() * flow.rand();
+        let kind = ((flow.rand() * (FOAM_GRID * FOAM_GRID) as f32) as u32).min(FOAM_GRID * FOAM_GRID - 1);
+        let vel = fall.normalize_or_zero() * stream_speed(depth, fall.length());
+        flow.flecks.push(Fleck { pos, vel, age: 0.0, life, width, stretch, turn, opacity, kind });
     }
 
     // Each a streak lying on the water along its way, raised a little at both ends to follow the
     // surface down a falling stream.
     let mut positions = Vec::with_capacity(flow.flecks.len() * 4);
     let mut colors = Vec::with_capacity(flow.flecks.len() * 4);
+    let mut uvs = Vec::with_capacity(flow.flecks.len() * 4);
     let mut indices = Vec::with_capacity(flow.flecks.len() * 6);
     let surface = |p: Vec2| t.height_at(p.x, p.y) + t.water_at(p.x, p.y) + 0.015;
     for f in &flow.flecks {
         let speed = f.vel.length();
-        let along = if speed > 1e-3 { f.vel / speed } else { Vec2::X };
+        let way = if speed > 1e-3 { f.vel / speed } else { Vec2::X };
+        // Drawn turned a little from the way it drifts, and stretched more the faster it goes.
+        let along = Vec2::from_angle(f.turn).rotate(way);
         let side = Vec2::new(-along.y, along.x);
-        let len = 0.2 + 0.3 * speed.min(2.0);
-        let fade = smoothstep(0.0, 0.6, f.age) * (1.0 - smoothstep(f.life - 1.2, f.life, f.age));
-        let alpha = 0.75 * fade * (t.water_at(f.pos.x, f.pos.y) / 0.05).clamp(0.0, 1.0);
+        let len = f.width * f.stretch * (1.0 + 0.5 * speed.min(2.0));
+        let fade = smoothstep(0.0, 1.0, f.age) * (1.0 - smoothstep(f.life - 1.5, f.life, f.age));
+        let alpha = f.opacity * fade * (t.water_at(f.pos.x, f.pos.y) / 0.05).clamp(0.0, 1.0);
         let base = positions.len() as u32;
+        let cell = 1.0 / FOAM_GRID as f32;
+        let (u0, v0) = ((f.kind % FOAM_GRID) as f32 * cell, (f.kind / FOAM_GRID) as f32 * cell);
         for (u, v) in [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)] {
             let p = f.pos + along * len * u + side * f.width * v;
             positions.push([p.x, surface(p), p.y]);
             colors.push([1.0, 1.0, 1.0, alpha]);
+            uvs.push([u0 + (u + 0.5) * cell, v0 + (v + 0.5) * cell]);
         }
         indices.extend_from_slice(&[base, base + 2, base + 1, base, base + 3, base + 2]);
     }
-    let _ = meshes.insert(&flow.mesh, flecks_mesh(positions, colors, indices));
+    let _ = meshes.insert(&flow.mesh, flecks_mesh(positions, colors, uvs, indices));
 }
 
 fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
@@ -197,12 +270,13 @@ fn smoothstep(a: f32, b: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-fn flecks_mesh(positions: Vec<[f32; 3]>, colors: Vec<[f32; 4]>, indices: Vec<u32>) -> Mesh {
+fn flecks_mesh(positions: Vec<[f32; 3]>, colors: Vec<[f32; 4]>, uvs: Vec<[f32; 2]>, indices: Vec<u32>) -> Mesh {
     let normals = vec![[0.0f32, 1.0, 0.0]; positions.len()];
     Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD)
         .with_inserted_attribute(Mesh::ATTRIBUTE_POSITION, positions)
         .with_inserted_attribute(Mesh::ATTRIBUTE_NORMAL, normals)
         .with_inserted_attribute(Mesh::ATTRIBUTE_COLOR, colors)
+        .with_inserted_attribute(Mesh::ATTRIBUTE_UV_0, uvs)
         .with_inserted_indices(Indices::U32(indices))
 }
 

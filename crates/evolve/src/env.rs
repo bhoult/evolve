@@ -85,8 +85,7 @@ pub struct GraphicsSettings {
     /// Shadows that blur with distance from what casts them, more under cloud (percentage-closer
     /// soft shadows: dearer for the GPU, and a little grainy).
     pub soft_shadows: bool,
-    /// Flecks of foam riding the streams (flow.rs). Off unless asked for: the user found them
-    /// ugly.
+    /// Flecks of foam riding the streams (flow.rs).
     pub flow: bool,
     /// Ground tinted by its level of detail (scene.rs): green, yellow, orange and red as the
     /// stride doubles. For checking what the camera gets at full detail.
@@ -103,7 +102,7 @@ impl Default for GraphicsSettings {
             sway: true,
             shadows: ShadowQuality::High,
             soft_shadows: true,
-            flow: false,
+            flow: true,
             lod_tint: false,
         }
     }
