@@ -999,3 +999,78 @@ fn block_drift() {
         }
     }
 }
+
+/// How varied a zoo (EVOLVE_ZOO_DIR, ideally a copy) is: how many groups its genomes fall into
+/// at the species distance, how far each is from its nearest neighbour, and the spread of
+/// body plans. Only current-score-version entries unless EVOLVE_DIAG_ALL is set.
+#[test]
+#[ignore]
+fn zoo_diversity() {
+    let Some(dir) = std::env::var_os("EVOLVE_ZOO_DIR") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let zoo = evolve_sim::zoo::Zoo::open(dir.clone());
+    let all = std::env::var_os("EVOLVE_DIAG_ALL").is_some();
+    let genomes: Vec<(String, Genome)> = zoo
+        .entries
+        .iter()
+        .filter(|m| all || m.score_version == evolve_sim::zoo::SCORE_VERSION)
+        .filter_map(|m| Some((m.name.clone(), evolve_sim::zoo::load_genome(&dir, m.id).ok()?)))
+        .collect();
+    let n = genomes.len();
+    for t in [0.05, 0.1, 0.15, 0.2] {
+        let mut leaders: Vec<usize> = Vec::new();
+        for i in 0..n {
+            if !leaders.iter().any(|&l| genomes[l].1.distance(&genomes[i].1) < t) {
+                leaders.push(i);
+            }
+        }
+        println!("{} groups at distance {t}", leaders.len());
+        if t == 0.1 {
+            // Each group's leader's body plan: do the groups differ in shape or only in proportion?
+            let mut by_plan: std::collections::BTreeMap<(usize, u8, usize), usize> = Default::default();
+            for &l in &leaders {
+                let g = &genomes[l].1;
+                *by_plan.entry((g.limbs.iter().filter(|x| x.present).count(), g.spine.segments, body::body_plan(g).len())).or_default() += 1;
+            }
+            let mut v: Vec<_> = by_plan.into_iter().collect();
+            v.sort_by_key(|(_, c)| std::cmp::Reverse(*c));
+            println!("  leaders' body plans (limb genes/spine segments/parts): {} kinds; {}", v.len(), v.iter().map(|((l, s, p), c)| format!("{l}/{s}/{p}: {c}")).collect::<Vec<_>>().join(", "));
+        }
+    }
+    let t = SimParams::default().species_threshold;
+    // Leader clustering: each genome joins the first group whose leader is within `t`.
+    let mut leaders: Vec<usize> = Vec::new();
+    let mut sizes: Vec<usize> = Vec::new();
+    for i in 0..n {
+        match leaders.iter().position(|&l| genomes[l].1.distance(&genomes[i].1) < t) {
+            Some(k) => sizes[k] += 1,
+            None => {
+                leaders.push(i);
+                sizes.push(1);
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..sizes.len()).collect();
+    order.sort_by_key(|&k| std::cmp::Reverse(sizes[k]));
+    let mut nearest: Vec<f32> = (0..n)
+        .map(|i| (0..n).filter(|&j| j != i).map(|j| genomes[i].1.distance(&genomes[j].1)).fold(f32::MAX, f32::min))
+        .collect();
+    nearest.sort_by(f32::total_cmp);
+    let q = |f: f32| nearest[((n - 1) as f32 * f) as usize];
+    println!("{n} genomes; {} groups at distance {t}; largest {:?}", sizes.len(), order.iter().take(8).map(|&k| sizes[k]).collect::<Vec<_>>());
+    println!("nearest neighbour distance p10 {:.3} p50 {:.3} p90 {:.3}", q(0.1), q(0.5), q(0.9));
+    let mut plans: std::collections::BTreeMap<(usize, u8, usize), usize> = Default::default();
+    for (_, g) in &genomes {
+        let limbs = g.limbs.iter().filter(|l| l.present).count();
+        *plans.entry((limbs, g.spine.segments, body::body_plan(g).len())).or_default() += 1;
+    }
+    let mut common: Vec<_> = plans.iter().collect();
+    common.sort_by_key(|(_, c)| std::cmp::Reverse(**c));
+    println!(
+        "{} body plans (limb genes, spine segments, parts); commonest: {}",
+        plans.len(),
+        common.iter().take(8).map(|((l, s, p), c)| format!("{l}/{s}/{p}: {c}")).collect::<Vec<_>>().join(", ")
+    );
+}
