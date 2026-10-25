@@ -128,7 +128,7 @@ struct Mirror {
     outline: Option<Outline>,
 }
 
-/// The gold rim round the selected creature: a shell on each body part (see `outline`).
+/// The rim round the selected creature: a shell on each body part (see `outline`).
 struct Outline {
     creature: u64,
     /// The creature's first part when the shells were made: a new one means the body was rebuilt.
@@ -174,7 +174,8 @@ fn setup_assets(
         eye_mat: mat(&mut materials, Color::srgb(0.03, 0.03, 0.03), 0.2),
         rock_mat: mat(&mut materials, Color::srgb(0.42, 0.41, 0.40), 0.95),
         boulder_mat: mat(&mut materials, Color::srgb(0.55, 0.45, 0.35), 0.85),
-        // Unlit, and bright enough to bloom a little; only its inside faces are drawn.
+        // Unlit, and bright enough to bloom a little; only its inside faces are drawn. Its colour
+        // is set each frame (see `outline`).
         outline_mat: materials.add(StandardMaterial {
             base_color: Color::linear_rgb(1.6, 1.15, 0.15),
             unlit: true,
@@ -401,7 +402,7 @@ fn sync_creatures(
             });
         }
     }
-    outline(&mut commands, &mut mirror, &shared, &mut meshes, &snap.creatures, selected);
+    outline(&mut commands, &mut mirror, &shared, &mut meshes, &mut materials, &snap.creatures, selected, now);
     mirror.dying.retain(|d| {
         let t = ((now - d.since) / DEATH_FADE) as f32;
         if t >= 1.0 {
@@ -423,18 +424,32 @@ fn sync_creatures(
     });
 }
 
-/// Rings the selected creature in gold: each body part gets a slightly bigger copy of itself with
-/// only its inside drawn, so a rim shows round the body's outline (and at its joints). Unlit and
-/// casting no shadow, it shows in shade and at night. Made again when the selection changes or the
-/// body is rebuilt, and gone when the creature dies.
+/// Rings the selected creature: each body part gets a slightly bigger copy of itself with only its
+/// inside drawn, so a rim shows round the body's outline (and at its joints). The rim is the colour
+/// opposite the creature's own, so it stands out from the body whatever its colour, and pulses.
+/// Unlit and casting no shadow, it shows in shade and at night. Made again when the selection
+/// changes or the body is rebuilt, and gone when the creature dies.
+#[allow(clippy::too_many_arguments)]
 fn outline(
     commands: &mut Commands,
     mirror: &mut Mirror,
     shared: &Shared3d,
     meshes: &mut Assets<Mesh>,
+    materials: &mut Assets<StandardMaterial>,
     creatures: &[CreatureView],
     selected: Option<u64>,
+    now: f64,
 ) {
+    if let Some(o) = &mirror.outline
+        && let Some(ent) = mirror.creatures.get(&o.creature)
+        && let Some(m) = materials.get_mut(&shared.outline_mat)
+    {
+        let [r, g, b] = ent.look.0;
+        let own = Hsva::from(Color::srgb(r, g, b));
+        let rim = LinearRgba::from(Hsva::new((own.hue + 180.0) % 360.0, own.saturation.max(0.8), 1.0, 1.0));
+        let k = 1.15 + 0.45 * (now * std::f64::consts::TAU * 0.8).sin() as f32;
+        m.base_color = Color::from(LinearRgba::rgb(rim.red * k, rim.green * k, rim.blue * k));
+    }
     let want = selected.and_then(|id| Some((id, *mirror.creatures.get(&id)?.parts.first()?)));
     if mirror.outline.as_ref().map(|o| (o.creature, o.root)) == want {
         return;
