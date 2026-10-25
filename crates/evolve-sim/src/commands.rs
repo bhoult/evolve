@@ -43,6 +43,9 @@ pub enum Command {
     RemoveCreature(u64),
     KillCreature(u64),
     FeedCreature(u64),
+    /// Lay the blessing of heaven on a creature (it glows, can't die, and changes every
+    /// `heaven_mutation_interval`), or lift it.
+    Heaven { id: u64, on: bool },
     RemovePlant(u64),
     RemoveMeat(u64),
     RemoveObstacle(u64),
@@ -126,9 +129,14 @@ impl Sim {
                 self.kill(id, DeathCause::Removed);
             }
             Command::KillCreature(id) => {
+                // A smite lifts any blessing first.
+                if let Some(c) = self.creature_mut(id) {
+                    c.heaven = None;
+                }
                 self.miracle(id, HighlightKind::Smite);
                 self.kill(id, DeathCause::Killed);
             }
+            Command::Heaven { id, on } => self.bless_from_heaven(id, on),
             Command::FeedCreature(id) => {
                 if let Some(c) = self.creature_mut(id) {
                     c.energy = c.max_energy;

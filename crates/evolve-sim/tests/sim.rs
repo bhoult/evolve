@@ -995,3 +995,31 @@ fn the_world_is_the_same_on_one_thread_or_many() {
     assert!(one.len() >= 20, "a world full of creatures: {}", one.len());
     assert_eq!(one, many);
 }
+
+/// A creature with the blessing of heaven can't die of hunger, changes when its hour comes (a
+/// new genome, the same creature), and dies like any other once the blessing is lifted.
+#[test]
+fn the_blessing_of_heaven_keeps_a_creature_alive_and_changes_it() {
+    use evolve_sim::Command;
+    let p = SimParams { heaven_mutation_interval: 10.0, mutation_rate: 1.0, ..quiet_params() };
+    let mut sim = Sim::new(p);
+    let g = Genome::random(&mut Rng::new(12), &sim.params);
+    let at = sim.random_land_point(20.0);
+    let id = sim.spawn_creature(g, at, 0.3, 50.0, 0, None);
+    let before = sim.creature(id).unwrap().genome.fingerprint();
+    sim.apply(Command::Heaven { id, on: true });
+    for _ in 0..(15 * 60) {
+        sim.creature_mut(id).unwrap().energy = 0.0;
+        sim.step();
+    }
+    let c = sim.creature(id).expect("it lives on without food");
+    assert!(c.heaven.is_some());
+    assert_ne!(c.genome.fingerprint(), before, "its hour came and it changed");
+    assert_eq!(c.parts.len(), c.plan.len(), "with a body to match its new genome");
+    sim.apply(Command::Heaven { id, on: false });
+    sim.creature_mut(id).unwrap().energy = 0.0;
+    for _ in 0..60 {
+        sim.step();
+    }
+    assert!(sim.creature(id).is_none(), "without the blessing it starves");
+}

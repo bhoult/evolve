@@ -173,6 +173,11 @@ first) and the time of day.
 - *Kill* is a smite: lightning out of a clear sky strikes it (the flash and the thunder of a strike
   that close), sparks fly, and fire burns where it fell, shedding embers, for a few seconds.
 - *Remove* takes it up: a white shaft, and a rush of light rising away with it.
+- *Blessing of heaven* (the creature inspector, on and off): the creature glows gold and can't
+  die (hunger, wounds, drowning, thirst and age leave it at half its energy and health instead;
+  Kill lifts the blessing first, Remove still takes it), and every simulated hour
+  (`heaven_mutation_interval`) it's remade where it stands from a mutated copy of its genome: a
+  new body and brain, the same creature otherwise.
 - Each casts real light on the ground around it, so they glow best at night, and they keep their
   colors through the night's cool grading. With the lightning checkbox off (in Graphics), a smite
   still strikes but doesn't flash the whole sky.

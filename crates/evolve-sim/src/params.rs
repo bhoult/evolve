@@ -220,6 +220,9 @@ params! {
         rain_from_zoo: f32 = 0.2, [0, 1], Live;
         /// Random: made from scratch.
         rain_from_random: f32 = 0.3, [0, 1], Live;
+        /// Simulated seconds between the changes of a creature with the blessing of heaven (a
+        /// power): each time it's remade from a mutated copy of its genome where it stands.
+        heaven_mutation_interval: f32 = 3600.0, [10, 100000], Live;
         /// Fraction of those pool-bred raindrops that land near a living relative they could breed
         /// with, instead of at a random spot. More births, but in tests walking failed to evolve
         /// in 2 of 3 worlds (breeding without moving gets rewarded), so it's off by default.

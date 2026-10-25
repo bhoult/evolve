@@ -30,6 +30,8 @@ pub struct CreatureView {
     pub attacking: bool,
     pub mating: bool,
     pub drowning: bool,
+    /// Has the blessing of heaven (glows).
+    pub heaven: bool,
     /// How submerged the torso is, 0..1.
     pub in_water: f32,
     /// What its life has achieved so far (see `Sim::score_parts`).
@@ -132,6 +134,8 @@ pub struct ObstacleView {
 
 #[derive(Clone, Debug)]
 pub struct CreatureDetail {
+    /// Seconds until it next changes, if it has the blessing of heaven.
+    pub heaven: Option<f32>,
     pub id: u64,
     pub generation: u32,
     pub parents: Option<(u64, u64)>,
@@ -290,6 +294,7 @@ impl Sim {
                 attacking: c.attack_flash > 0.0,
                 mating: c.mate_flash > 0.0,
                 drowning: c.drowning,
+                heaven: c.heaven.is_some(),
                 in_water: c.in_water,
                 score: self.life_score(c),
                 mass: c.mass,
@@ -333,6 +338,7 @@ impl Sim {
             let p = &self.params;
             let t = &c.genome.traits;
             CreatureDetail {
+                heaven: c.heaven.map(|t| (t - self.time) as f32),
                 id: c.id,
                 generation: c.generation,
                 parents: c.parents,

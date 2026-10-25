@@ -180,7 +180,10 @@ fn creature_look(c: &CreatureView, mode: ColorMode, selected: bool) -> ([f32; 3]
             [0.2 + 0.7 * n, 0.3, 0.9 - 0.5 * n]
         }
     };
-    let emissive = if selected {
+    let emissive = if c.heaven {
+        // The blessing of heaven: a golden glow (blooming in the light of the HDR camera).
+        [2.4, 1.8, 0.55]
+    } else if selected {
         [0.45, 0.35, 0.02]
     } else if c.attacking {
         [2.0, 0.1, 0.05]

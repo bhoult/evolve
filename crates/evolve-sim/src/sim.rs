@@ -172,6 +172,11 @@ pub struct Creature {
     #[serde(default)]
     pub origin: Origin,
     pub dead: Option<DeathCause>,
+    /// Under the blessing of heaven (a power): when it next changes, sim seconds. It glows,
+    /// can't die but by being removed, and every `heaven_mutation_interval` it's remade from a
+    /// mutated copy of its genome where it stands.
+    #[serde(default)]
+    pub heaven: Option<f64>,
     /// Which physics world its body is in (see `Sim::shards`).
     #[serde(default)]
     pub shard: usize,
@@ -1295,22 +1300,7 @@ impl Sim {
         let max_energy = self.params.energy_per_mass * mass;
         let max_health = 100.0 * (mass / 60.0).sqrt();
         let mut genome = genome;
-        // A brain from before the last change of brain size grows into the new era.
-        let (lo, hi) = self.params.neuron_range();
-        genome.brain.bring_up_to_era(lo as usize, hi as usize, &mut self.rng);
-        if let Some(g) = self.brains.as_mut() {
-            // A brain the GPU can't hold is trimmed until it fits.
-            let (lo, _) = self.params.neuron_range();
-            let mut result = g.register(id, &genome.brain, None);
-            while result.is_err() && genome.brain.h > lo as usize {
-                let nh = (genome.brain.h / 2).max(lo as usize);
-                genome.brain = genome.brain.resize(nh, &mut self.rng);
-                result = g.register(id, &genome.brain, None);
-            }
-            if let Err(e) = result {
-                self.events.push(format!("creature #{id}: {e}"));
-            }
-        }
+        self.place_brain(id, &mut genome);
         let brain = BrainState::new(&genome.brain);
         let lineage = parents
             .map(|(a, b)| {
@@ -1360,6 +1350,7 @@ impl Sim {
             lineage,
             origin: if parents.is_some() { Origin::Born } else { Origin::Dropped },
             dead: None,
+            heaven: None,
             shard,
         };
         if generation > self.stats.max_generation && parents.is_some() {
@@ -1369,6 +1360,104 @@ impl Sim {
         self.index.insert(id, self.creatures.len());
         self.creatures.push(creature);
         id
+    }
+
+    /// Readies a creature's brain: one from before the last change of brain size grows into the
+    /// new era, and on the GPU it gets its place (trimmed until it fits, if it doesn't).
+    fn place_brain(&mut self, id: u64, genome: &mut Genome) {
+        let (lo, hi) = self.params.neuron_range();
+        genome.brain.bring_up_to_era(lo as usize, hi as usize, &mut self.rng);
+        if let Some(g) = self.brains.as_mut() {
+            let mut result = g.register(id, &genome.brain, None);
+            while result.is_err() && genome.brain.h > lo as usize {
+                let nh = (genome.brain.h / 2).max(lo as usize);
+                genome.brain = genome.brain.resize(nh, &mut self.rng);
+                result = g.register(id, &genome.brain, None);
+            }
+            if let Err(e) = result {
+                self.events.push(format!("creature #{id}: {e}"));
+            }
+        }
+    }
+
+    /// Rebuilds a living creature from a new genome where it stands, facing the same way: a new
+    /// body and brain, the same creature otherwise (its id, age, energy and health in proportion,
+    /// history). What it held is let go.
+    pub fn remake_creature(&mut self, id: u64, genome: Genome) {
+        let Some(&ci) = self.index.get(&id) else {
+            return;
+        };
+        if self.creatures[ci].held.is_some() {
+            self.let_go(ci, 0.0);
+        }
+        let c = &self.creatures[ci];
+        let (shard, parts, joints) = (c.shard, c.parts.clone(), c.joints.clone());
+        let (at, yaw) = match self.shards[shard].world.bodies.get(parts[0].body) {
+            Some(b) => {
+                let f = b.rotation() * Vec3::X;
+                (b.translation(), (-f.z).atan2(f.x))
+            }
+            None => (c.last_pos, 0.0),
+        };
+        body::remove_body(&mut self.shards[shard].world, &parts, &joints);
+        let plan = body::body_plan(&genome);
+        let mass = body::plan_mass(&plan, self.params.body_density);
+        let ground = self.ground_over(at.x, at.z, body::plan_extent(&plan));
+        let root = Pose::from_parts(Vec3::new(at.x, (ground + body::plan_depth(&plan) + 0.3).max(at.y), at.z), Quat::from_rotation_y(yaw));
+        let shard = self.shard_for(root.translation);
+        let (parts, joints) = body::spawn_body(&mut self.shards[shard].world, &plan, root, id, mass, &self.params);
+        let mut genome = genome;
+        self.place_brain(id, &mut genome);
+        let (max_energy, max_health) = (self.params.energy_per_mass * mass, 100.0 * (mass / 60.0).sqrt());
+        let c = &mut self.creatures[ci];
+        let health = c.health / c.max_health.max(1e-3);
+        c.brain = BrainState::new(&genome.brain);
+        c.genome = genome;
+        (c.plan, c.parts, c.joints, c.mass, c.shard) = (plan, parts, joints, mass, shard);
+        (c.max_energy, c.max_health) = (max_energy, max_health);
+        c.energy = c.energy.min(max_energy);
+        c.health = health * max_health;
+    }
+
+    /// Lays the blessing of heaven on a creature, or lifts it.
+    pub fn bless_from_heaven(&mut self, id: u64, on: bool) {
+        let next = self.time + self.params.heaven_mutation_interval as f64;
+        let Some(c) = self.creature_mut(id) else {
+            return;
+        };
+        c.heaven = on.then_some(next);
+        if on {
+            c.energy = c.max_energy;
+            c.health = c.max_health;
+            self.miracle(id, HighlightKind::Blessing);
+            self.log(format!("#{id} has the blessing of heaven"));
+        } else {
+            self.log(format!("The blessing of heaven is lifted from #{id}"));
+        }
+    }
+
+    /// The blessed of heaven whose hour has come are remade from a mutated copy of their genome.
+    fn heavenly_changes(&mut self) {
+        let due: Vec<u64> = self
+            .creatures
+            .iter()
+            // (One marked dead this step is revived at its end, as the blessed are.)
+            .filter(|c| !matches!(c.dead, Some(DeathCause::Removed | DeathCause::Glitch)) && c.heaven.is_some_and(|t| self.time >= t))
+            .map(|c| c.id)
+            .collect();
+        for id in due {
+            let Some(c) = self.creature(id) else { continue };
+            let mut g = c.genome.clone();
+            let p = self.breeding_params();
+            g.mutate(&mut self.rng, &p);
+            self.remake_creature(id, g);
+            let next = self.time + self.params.heaven_mutation_interval as f64;
+            if let Some(c) = self.creature_mut(id) {
+                c.heaven = Some(next);
+            }
+            self.miracle(id, HighlightKind::Blessing);
+            self.log(format!("#{id}, blessed of heaven, is changed"));
+        }
     }
 
     /// A creature dropped from the sky: bred from the gene pool or entirely random.
@@ -1687,6 +1776,7 @@ impl Sim {
             self.perf.lap(11, &mut lap);
         }
         if self.tick % TICKS_PER_SECOND == 0 {
+            self.heavenly_changes();
             self.ecology(1.0);
             self.perf.lap(12, &mut lap);
         }
@@ -2161,6 +2251,21 @@ impl Sim {
 
     /// Dead creatures leave meat where their body parts were.
     fn process_deaths(&mut self) {
+        if !self.creatures.iter().any(|c| c.dead.is_some()) {
+            return;
+        }
+        // The blessed of heaven don't die, of hunger, wounds, drowning, thirst or age: they're
+        // made whole enough to go on (being removed, or the blessing lifted first, still ends
+        // them; so does falling out of the world).
+        for c in self.creatures.iter_mut().filter(|c| c.heaven.is_some()) {
+            if matches!(c.dead, Some(cause) if !matches!(cause, DeathCause::Removed | DeathCause::Glitch)) {
+                c.dead = None;
+                c.energy = c.energy.max(0.5 * c.max_energy);
+                c.health = c.health.max(0.5 * c.max_health);
+                c.hydration = c.hydration.max(0.5);
+                c.oxygen = c.oxygen.max(0.5);
+            }
+        }
         if !self.creatures.iter().any(|c| c.dead.is_some()) {
             return;
         }

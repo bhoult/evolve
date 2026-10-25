@@ -976,6 +976,14 @@ fn inspector(
                 if ui.button("Feed").on_hover_text("Fill energy and health").clicked() {
                     link.cmd(Command::FeedCreature(c.id));
                 }
+                let blessed = c.heaven.is_some();
+                let tip = match c.heaven {
+                    Some(left) => format!("Glows and can't die; changes (remade from a mutated copy of its genome) in {}. Click to lift the blessing.", crate::help::dur(left.max(0.0))),
+                    None => "It glows, can't die (but by Kill or Remove), and every hour of simulated time it's remade from a mutated copy of its genome (heaven_mutation_interval)".to_string(),
+                };
+                if ui.selectable_label(blessed, "Blessing of heaven").on_hover_text(tip).clicked() {
+                    link.cmd(Command::Heaven { id: c.id, on: !blessed });
+                }
                 if ui
                     .button("Clone")
                     .on_hover_text("Drop a mutated copy from the sky")
