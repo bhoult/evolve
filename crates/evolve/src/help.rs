@@ -213,7 +213,7 @@ fn controls(ui: &mut egui::Ui) {
     sub(ui, "Powers");
     para(ui, "The Powers menu on the toolbar's second row holds the acts of god; pick one, then click where it should fall.");
     bullet(ui, "Call a storm brings a storm down on the whole island for four minutes; the menu can calm it early.");
-    bullet(ui, "Meteor: click a spot and a meteor comes down on it. It digs a crater, kills what it lands on, hurts and throws everything within 16 m, scorches the plants, and burns.");
+    bullet(ui, "Meteor: click a spot and a meteor comes down on it. It digs a crater, kills what it lands on, hurts and throws everything within 16 m, scorches the plants and trees, and burns.");
     bullet(ui, "Whirlwind: click a spot and a whirlwind touches down there and wanders the island for 25 seconds, lifting creatures and boulders, whirling them round and flinging them out, and tearing up plants.");
     bullet(ui, "Raise land and Lower land: hold and sweep to reshape the island (the brush sets how wide). Raised out of the sea, it's new land; sunk below it, the sea comes in.");
     bullet(ui, "Spring: click to make an eternal spring. Whatever the weather, its water creeps downhill, fills the first hollow in its way, then spills over the rim and runs on, wearing a channel as it goes; click it again to stop it.");
@@ -427,11 +427,11 @@ fn energy(ui: &mut egui::Ui, p: &SimParams) {
 
 fn food(ui: &mut egui::Ui, p: &SimParams) {
     sub(ui, "Plants");
-    para(ui, "The trees and bushes are the plants, the base of all food.");
+    para(ui, "Plants are the base of all food. There are two kinds: grass, drawn as low bushes, which stays small and soft, and trees.");
     bullet(
         ui,
         format!(
-            "Each holds up to {} energy and gains up to {} a second (plant_max_energy, plant_growth), {} faster in a downpour (rain_plant_growth).",
+            "Grass and tree seedlings hold up to {} energy and gain up to {} a second (plant_max_energy, plant_growth), {} faster in a downpour (rain_plant_growth).",
             num(p.plant_max_energy),
             num(p.plant_growth),
             pct(p.rain_plant_growth)
@@ -441,22 +441,65 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Grown plants drop seeds up to {} m away (plant_spread_radius), and {} new plants a second sprout at random spots (plant_spawn_rate), up to {} in all (plant_max_count).",
+            "Grown grass drops seeds up to {} m away (plant_spread_radius), and {} new plants a second sprout at random spots (plant_spawn_rate), {} of them tree seedlings (tree_seedling_share), up to {} plants in all (plant_max_count).",
             num(p.plant_spread_radius),
             num(p.plant_spawn_rate),
+            pct(p.tree_seedling_share),
             p.plant_max_count
         ),
     );
+    sub(ui, "Trees");
+    bullet(
+        ui,
+        format!(
+            "A seedling is soft and as easy to eat as grass, so grazing can stop a tree before it starts. One that grows full uneaten, at least {} m from any tree (tree_min_spacing), turns woody: a sapling that grows over about {} (tree_growth_time; slower on poor ground) to about {} m tall (tree_height, each within a fifth of it), up to {} trees (tree_max_count).",
+            num(p.tree_min_spacing),
+            dur(p.tree_growth_time),
+            num(p.tree_height),
+            p.tree_max_count
+        ),
+    );
+    bullet(ui, "From 2 m up a tree's trunk is solid: creatures and stones bump into it and go around, and eyes see it.");
+    bullet(
+        ui,
+        format!(
+            "Wood is hard to eat: gnawing a trunk gives {} of a bite (wood_bite), and a full-grown tree holds {} energy of wood (tree_wood). A tree gnawed below half its wood stops growing and bearing until it heals; with none left it dies.",
+            pct(p.wood_bite),
+            num(p.tree_wood)
+        ),
+    );
+    bullet(
+        ui,
+        format!(
+            "From half its full height a tree bears fruit, up to {} a minute when full-grown on good ground (fruit_rate), each worth {} (fruit_energy). Fruit hangs in the crown, where only a mouth that reaches it can eat it, for {} (fruit_hang_time), then falls. On the ground anyone can eat it; uneaten, it rots away in {} (fruit_rot_time), and {} of the time it sprouts a seedling where it lay (fruit_sprout).",
+            num(p.fruit_rate),
+            num(p.fruit_energy),
+            dur(p.fruit_hang_time),
+            dur(p.fruit_rot_time),
+            pct(p.fruit_sprout)
+        ),
+    );
+    bullet(
+        ui,
+        format!(
+            "Grown trees send {} seeds a minute off on the wind (tree_seed_rate), which carries them for as long as they take to fall from the crown at {} m/s (seed_fall_speed): about {} m from a 10 m tree in a 3 m/s breeze, across the island in a storm.",
+            num(p.tree_seed_rate),
+            num(p.seed_fall_speed),
+            num((3.0 * 7.0 / p.seed_fall_speed.max(0.05)).round())
+        ),
+    );
+    bullet(ui, format!("Trees live about {} (tree_lifespan), then die and fall, dropping their fruit.", dur(p.tree_lifespan)));
     sub(ui, "Eating");
     bullet(
         ui,
         format!(
-            "With its eat output on, a creature bites the nearest plant or meat within {} m of its mouth (eat_reach), taking {} energy a second times its size gene (bite_rate). A full creature can't eat.",
+            "With its eat output on, a creature bites the nearest grass, seedling, fruit or meat within {} m of its mouth (eat_reach), taking {} energy a second times its size gene (bite_rate). It gnaws wood only with nothing else in reach. A full creature can't eat.",
             num(p.eat_reach),
             num(p.bite_rate)
         ),
     );
-    bullet(ui, "The diet gene decides what it gets out of it: a plant gives (1 - diet) of its energy and meat gives diet, at least 5% each; the rest is wasted. A pure plant-eater gets nothing much from meat, and the other way round. With both in reach it eats whichever suits it better.");
+    bullet(ui, "The diet gene decides what it gets out of it: plants, fruit and wood give (1 - diet) of their energy and meat gives diet, at least 5% each; the rest is wasted. A pure plant-eater gets nothing much from meat, and the other way round. With both in reach it eats whichever suits it better.");
+    bullet(ui, "Its plant sense points at the nearest plant food it could eat: grass, a seedling, fallen fruit, or fruit hanging within its reach, never at wood.");
     sub(ui, "Meat");
     bullet(
         ui,
