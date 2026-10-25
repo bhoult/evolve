@@ -390,7 +390,10 @@ fn zoo_stores_dedupes_prunes_and_drops() {
     let _ = std::fs::remove_dir_all(&dir);
     let p = SimParams::default();
     let mut rng = Rng::new(9);
-    let genomes: Vec<Genome> = (0..6).map(|_| Genome::random(&mut rng, &p)).collect();
+    let mut genomes: Vec<Genome> = (0..6).map(|_| Genome::random(&mut rng, &p)).collect();
+    // The fourth is the third's kind (the same body, a brain apart), so it's the pair to thin.
+    genomes[3] = genomes[2].clone();
+    genomes[3].brain.bias[0] += 1.0;
     {
         let mut zoo = Zoo::open(dir.clone());
         let first = zoo.add(&genomes[0], 5.0, 3, "test", false, 4).unwrap();
@@ -400,7 +403,8 @@ fn zoo_stores_dedupes_prunes_and_drops() {
         for (k, g) in genomes.iter().enumerate().skip(2) {
             zoo.add(g, 2.0 + k as f32, 1, "test", false, 4).unwrap();
         }
-        // 4 unpinned allowed plus the pinned one; the weakest unpinned (score 4.0) was pruned.
+        // 4 unpinned allowed plus the pinned one; the weaker of the two most alike (score 4.0)
+        // was pruned.
         assert_eq!(zoo.entries.len(), 5);
         assert!(zoo.entries.iter().any(|e| e.pinned && e.score == 1.0));
         assert!(!zoo.entries.iter().any(|e| e.score == 4.0));
@@ -461,31 +465,39 @@ fn zoo_survives_damage_and_a_second_process() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The zoo can be cut down to its best few (the pinned stay), and single creatures deleted; both
-/// go to the trash, and the zoo stays that way when reopened.
+/// The zoo can be cut down to the best of its most different kinds (the pinned stay), and single
+/// creatures deleted; both go to the trash, and the zoo stays that way when reopened.
 #[test]
-fn the_zoo_can_be_cut_down_to_its_best_and_creatures_deleted() {
+fn the_zoo_can_be_cut_down_to_its_best_kinds_and_creatures_deleted() {
     use evolve_sim::zoo::Zoo;
     let dir = std::env::temp_dir().join(format!("evolve-zoo-keep-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let p = SimParams::default();
     let mut rng = Rng::new(11);
     let mut zoo = Zoo::open(dir.clone());
-    for k in 0..6 {
-        // The first is pinned and the weakest.
-        zoo.add(&Genome::random(&mut rng, &p), k as f32, 1, "test", k == 0, 100).unwrap();
+    // One kind in three variants (the same body, brains apart) holds the three best scores; two
+    // other kinds score less, and a pinned one least of all.
+    let kind = Genome::random(&mut rng, &p);
+    for score in [7.0, 8.0, 9.0] {
+        let mut g = kind.clone();
+        g.brain.bias[0] += score;
+        zoo.add(&g, score, 1, "test", false, 100).unwrap();
     }
-    assert_eq!(zoo.keep_best(2).unwrap(), 3, "five unpinned, two kept");
+    for score in [2.0, 1.0] {
+        zoo.add(&Genome::random(&mut rng, &p), score, 1, "test", false, 100).unwrap();
+    }
+    zoo.add(&Genome::random(&mut rng, &p), 0.0, 1, "test", true, 100).unwrap();
+    assert_eq!(zoo.keep_best(3).unwrap(), 2, "five unpinned, three kept");
     let mut scores: Vec<f32> = zoo.entries.iter().map(|e| e.score).collect();
     scores.sort_by(f32::total_cmp);
-    assert_eq!(scores, [0.0, 4.0, 5.0], "the best two, and the pinned one");
-    assert_eq!(std::fs::read_dir(dir.join("trash")).unwrap().count(), 3, "the rest are in the trash");
-    let best = zoo.entries.iter().find(|e| e.score == 5.0).unwrap().id;
+    assert_eq!(scores, [0.0, 1.0, 2.0, 9.0], "the best of each kind, not the three best, and the pinned one");
+    assert_eq!(std::fs::read_dir(dir.join("trash")).unwrap().count(), 2, "the rest are in the trash");
+    let best = zoo.entries.iter().find(|e| e.score == 9.0).unwrap().id;
     zoo.remove(best).unwrap();
     assert!(zoo.get(best).is_none());
     drop(zoo);
     let zoo = Zoo::open(dir.clone());
-    assert_eq!(zoo.entries.len(), 2, "and it stays that way");
+    assert_eq!(zoo.entries.len(), 3, "and it stays that way");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

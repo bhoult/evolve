@@ -1408,18 +1408,21 @@ fn zoo_window(
                 ui.selectable_value(&mut st.zoo_sort_newest, false, "best");
                 ui.selectable_value(&mut st.zoo_sort_newest, true, "newest");
                 ui.separator();
-                ui.label("keep the best");
+                ui.label("keep");
                 ui.add(egui::DragValue::new(&mut st.zoo_keep).range(1..=500));
                 if ui
                     .button("Compact")
-                    .on_hover_text("Delete all but the best (pinned ones always stay); asks first")
+                    .on_hover_text(
+                        "Cut the zoo down to this many of the most different kinds, the best of each: \
+                         the weaker of the two most alike goes, again and again (pinned ones always \
+                         stay); asks first",
+                    )
                     .clicked()
                 {
                     st.confirm_compact = true;
                 }
             });
             if st.confirm_compact {
-                // The same order the zoo prunes in: the best by today's scoring, then the rest.
                 let unpinned = snap.zoo.iter().filter(|e| !e.pinned).count();
                 let pinned = snap.zoo.len() - unpinned;
                 let gone = unpinned.saturating_sub(st.zoo_keep as usize);
@@ -1434,7 +1437,7 @@ fn zoo_window(
                     ui.colored_label(
                         egui::Color32::from_rgb(255, 110, 90),
                         format!(
-                            "Delete {gone} of {} creatures, keeping the best {} and the {pinned} pinned? Their genomes go to the zoo's trash folder.",
+                            "Delete {gone} of {} creatures, keeping {} of the most different kinds (the best of each) and the {pinned} pinned? Their genomes go to the zoo's trash folder.",
                             snap.zoo.len(),
                             st.zoo_keep
                         ),

@@ -240,10 +240,11 @@ seed a world (until there are some, it starts all random): those that won under 
 (free children, limbs that couldn't push) would only bring back what those rules rewarded. You
 can still drop any of them by hand. Zoo scores worked out under older rules are marked with a *
 and listed after newer ones. When the zoo is full (500), those go
-first, then the weakest; pinned ones never.
+first, then the weaker of the two most alike, so every kind keeps its best; pinned ones never.
 - **Delete from the zoo** (beside the selected creature, or *delete* on its row) takes one out.
-  **Keep the best N** and **Compact** cut the zoo down to its N best (10 unless you change it)
-  plus every pinned one, in the same order pruning goes, after asking.
+  **Keep N** and **Compact** cut the zoo down to N creatures (10 unless you change it) plus
+  every pinned one, after asking: the weaker of the two most alike goes, again and again, so
+  what stays is the best of each of the most different kinds, not just the N best scores.
 - Pruned, deleted and compacted-away creatures go to `zoo/trash` (the newest 500 are kept
   there), not deleted.
 - Only one evolve at a time can change the zoo. A second one (another window, or

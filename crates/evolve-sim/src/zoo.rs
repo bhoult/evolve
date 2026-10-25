@@ -215,7 +215,8 @@ impl Zoo {
         let mut meta = meta_for(id, genome, score, generation, source, SCORE_VERSION);
         meta.pinned = pinned;
         self.entries.push(meta);
-        self.prune(max_entries);
+        self.fill_shapes();
+        self.prune_alike(max_entries);
         self.version += 1;
         self.save_index()?;
         Ok(Some(id))
@@ -286,48 +287,59 @@ impl Zoo {
     }
 
     /// Drops unpinned creatures beyond `max` entries: those scored the old way first (weakest
-    /// first), then the weaker of the two most alike, so every kind keeps its best.
+    /// first), then the weaker of the two most alike, again and again, so every kind keeps its
+    /// best and, when there are more kinds than room, the closest kinds merge first. What stays is
+    /// the best of the most different creatures, not just the best.
     fn prune_alike(&mut self, max: usize) {
+        let excess = self.entries.iter().filter(|e| !e.pinned).count().saturating_sub(max.max(1));
+        if excess == 0 {
+            return;
+        }
+        let n = self.entries.len();
+        // How far apart every two are, worked out once (NaN where a shape is missing).
+        let apart: Vec<f32> = (0..n * n)
+            .map(|k| match (&self.entries[k / n].shape, &self.entries[k % n].shape) {
+                (Some(a), Some(b)) if k / n != k % n => a.distance(b),
+                _ => f32::NAN,
+            })
+            .collect();
+        let mut kept = vec![true; n];
         let mut gone = Vec::new();
-        while self.entries.iter().filter(|e| !e.pinned).count() > max.max(1) {
-            let old = self
-                .entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| !e.pinned && e.score_version < SCORE_VERSION)
-                .min_by(|a, b| a.1.score.total_cmp(&b.1.score))
-                .map(|(i, _)| i);
-            let i = old.or_else(|| {
+        for _ in 0..excess {
+            let e = &self.entries;
+            let free = |i: usize| kept[i] && !e[i].pinned;
+            let weakest = |old: bool| {
+                (0..n)
+                    .filter(|&i| free(i) && (!old || e[i].score_version < SCORE_VERSION))
+                    .min_by(|&a, &b| e[a].score.total_cmp(&e[b].score))
+            };
+            let i = weakest(true).or_else(|| {
                 // Each unpinned entry's nearest neighbour; of the closest pair, the weaker goes
                 // (or the unpinned one, beside a pinned creature).
-                let n = self.entries.len();
                 let mut best: Option<(f32, usize)> = None;
-                for i in (0..n).filter(|&i| !self.entries[i].pinned) {
-                    let Some(si) = &self.entries[i].shape else { continue };
-                    for j in (0..n).filter(|&j| j != i) {
-                        let Some(sj) = &self.entries[j].shape else { continue };
-                        let d = si.distance(sj);
-                        let weaker = self.entries[j].pinned || self.entries[i].score <= self.entries[j].score;
-                        if weaker && best.is_none_or(|(bd, _)| d < bd) {
+                for i in (0..n).filter(|&i| free(i)) {
+                    for j in (0..n).filter(|&j| kept[j]) {
+                        let d = apart[i * n + j];
+                        let weaker = e[j].pinned || e[i].score <= e[j].score;
+                        if !d.is_nan() && weaker && best.is_none_or(|(bd, _)| d < bd) {
                             best = Some((d, i));
                         }
                     }
                 }
                 best.map(|(_, i)| i)
             });
-            let Some(i) = i.or_else(|| {
-                // No shapes to compare: the weakest.
-                self.entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| !e.pinned)
-                    .min_by(|a, b| a.1.score.total_cmp(&b.1.score))
-                    .map(|(i, _)| i)
-            }) else {
+            // No shapes to compare: the weakest.
+            let Some(i) = i.or_else(|| weakest(false)) else {
                 break;
             };
-            gone.push(self.entries.remove(i).id);
+            kept[i] = false;
+            gone.push(e[i].id);
         }
+        let mut k = 0;
+        self.entries.retain(|_| {
+            k += 1;
+            kept[k - 1]
+        });
         self.trash(gone);
     }
 
@@ -351,12 +363,13 @@ impl Zoo {
         Ok(())
     }
 
-    /// Keeps the `n` best creatures and every pinned one, moving the rest to the trash (those
-    /// scored the old way go first, then the weakest). Returns how many went.
+    /// Keeps `n` creatures, the best of each of the most different kinds (see `prune_alike`),
+    /// and every pinned one, moving the rest to the trash. Returns how many went.
     pub fn keep_best(&mut self, n: usize) -> Result<usize, String> {
         self.writable()?;
         let before = self.entries.len();
-        self.prune(n);
+        self.fill_shapes();
+        self.prune_alike(n);
         let gone = before - self.entries.len();
         if gone > 0 {
             self.version += 1;
@@ -374,26 +387,6 @@ impl Zoo {
             self.version += 1;
             let _ = self.save_index();
         }
-    }
-
-    /// Drops unpinned creatures beyond `max` entries: those scored the old way first, then the
-    /// weakest.
-    fn prune(&mut self, max: usize) {
-        let mut gone = Vec::new();
-        while self.entries.iter().filter(|e| !e.pinned).count() > max.max(1) {
-            let Some(i) = self
-                .entries
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| !e.pinned)
-                .min_by(|a, b| a.1.score_version.cmp(&b.1.score_version).then(a.1.score.total_cmp(&b.1.score)))
-                .map(|(i, _)| i)
-            else {
-                break;
-            };
-            gone.push(self.entries.remove(i).id);
-        }
-        self.trash(gone);
     }
 
     /// Whether this process may change the zoo.
