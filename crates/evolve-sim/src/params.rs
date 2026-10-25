@@ -191,6 +191,24 @@ params! {
         /// with, instead of at a random spot. More births, but in tests walking failed to evolve
         /// in 2 of 3 worlds (breeding without moving gets rewarded), so it's off by default.
         rain_near_kin: f32 = 0.0, [0, 1], Live;
+        /// Food and kills only count toward the life score (which picks the gene pool and the
+        /// zoo) when eaten or made at least this many meters from where the creature fell or was
+        /// born. Counting all food rewarded landing beside a plant: big bodies that never walked
+        /// filled their tanks where they fell and won, so the pool bred for sitting still. 0
+        /// counts everything.
+        score_food_away: f32 = 4.0, [0, 50], Live;
+        /// A kill's worth in the life score, in plants, when made at least `score_food_away` meters
+        /// from where the killer fell or was born. Counting every kill rewarded heavy bodies that
+        /// sat still biting whatever landed against them.
+        score_kill: f32 = 3.0, [0, 50], Live;
+        /// Meters closed on food (while it has room to eat) worth as much in the life score as
+        /// eating a plant.
+        score_approach: f32 = 10.0, [0.1, 1000], Live;
+        /// Fraction of the creatures bred from the gene pool that are instead exact copies of a
+        /// pool genome judged on fewer than 3 lives, whose scores are averaged into its own. One
+        /// life mostly measures luck (where it fell); this keeps the pool from filling with the
+        /// luckiest.
+        pool_retest: f32 = 0.0, [0, 1], Live;
         /// Lifespan in seconds before dying of old age.
         lifespan: f32 = 500.0, [20, 10000], Live;
         /// Age in seconds before a creature can breed.
@@ -223,6 +241,11 @@ params! {
         /// Fraction of what each parent learned that is written into its children's genes.
         /// 0 is purely Darwinian; 1 passes on everything.
         learned_inheritance: f32 = 0.5, [0, 1], Live;
+        /// How strongly a brain made from scratch is wired to the senses that point at food, prey
+        /// and mates, times the usual input strength. Random brains are dominated by their
+        /// rhythm, so where food lies barely changes what they do, leaving no steering for
+        /// evolution to pick from.
+        random_sense_gain: f32 = 1.0, [0, 20], Live;
         /// Distance at which food and other creatures can be sensed, m.
         sense_radius: f32 = 25.0, [1, 100], Live;
         /// Length of the three obstacle-sensing rays, m.

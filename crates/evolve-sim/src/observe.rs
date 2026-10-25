@@ -114,15 +114,18 @@ impl Sim {
         let mins = (window / 60.0).max(1e-6);
         let ages: Vec<f32> = deaths.iter().map(|d| d.age).collect();
         let ate: f32 = deaths.iter().map(|d| d.life.food()).sum();
+        let earned: f32 = deaths.iter().map(|d| d.life.earned).sum();
+        let never = deaths.iter().filter(|d| d.life.food() < 0.5).count() as f32 / deaths.len().max(1) as f32;
         let lived: f32 = ages.iter().sum::<f32>().max(1e-6) / 60.0;
         let travelled: f32 = deaths.iter().map(|d| d.life.distance).sum();
+        let closed: f32 = deaths.iter().map(|d| d.life.approached).sum();
         let deepest = self.creatures.iter().map(|c| c.lineage).max().unwrap_or(0);
         let mut masses: Vec<f32> = self.creatures.iter().map(|c| c.mass).collect();
         let mut neurons: Vec<f32> = self.creatures.iter().map(|c| c.genome.brain.h as f32).collect();
         format!(
             "t {:.0} min: {} alive ({} born here), births {:.1}/min, from the sky {:.1}/min, deaths {:.1}/min, \
-             median age at death {:.0} s, eaten {:.1}/creature-min, travel {:.1} m/creature-min, \
-             longest line of births {}, mass p50 {:.0} kg, neurons p50 {:.0}, plants {}",
+             median age at death {:.0} s, eaten {:.1}/creature-min ({:.1} away from where they landed), \
+             never ate {:.0}%, travel {:.1} m/creature-min (closing on food {:.1}), longest line of births {}, mass p50 {:.0} kg, neurons p50 {:.0}, plants {}",
             self.time / 60.0,
             self.creatures.len(),
             born_alive,
@@ -131,7 +134,10 @@ impl Sim {
             deaths.len() as f64 / mins,
             median(&mut ages.clone()),
             ate / lived,
+            earned / lived,
+            never * 100.0,
             travelled / lived,
+            closed / lived,
             deepest,
             median(&mut masses),
             median(&mut neurons),
@@ -193,6 +199,7 @@ impl Sim {
             ("From the sky, made at random", Origin::Random),
             ("From the sky, a mutated copy of a gene-pool genome", Origin::PoolClone),
             ("From the sky, a cross of two gene-pool genomes", Origin::PoolCross),
+            ("From the sky, an exact copy of a gene-pool genome, retesting it", Origin::Retest),
             ("Dropped in from the zoo or by hand", Origin::Dropped),
             ("Born in the world", Origin::Born),
             ("Of unknown origin (from an older save)", Origin::Unknown),
@@ -233,10 +240,11 @@ impl Sim {
             );
             let _ = writeln!(
                 o,
-                "  Energy per creature-minute: ate {:.1} (plants {:.1}, meat {:.1}); spent basal {:.1}, brain {:.1}, muscle {:.1}, healing {:.1}, digging {:.1}, calls+attacks {:.1}; gave children {:.1}.",
+                "  Energy per creature-minute: ate {:.1} (plants {:.1}, meat {:.1}; away from where it landed {:.1}); spent basal {:.1}, brain {:.1}, muscle {:.1}, healing {:.1}, digging {:.1}, calls+attacks {:.1}; gave children {:.1}.",
                 sum(&|l| l.food()) / lived,
                 sum(&|l| l.plant_eaten) / lived,
                 sum(&|l| l.meat_eaten) / lived,
+                sum(&|l| l.earned) / lived,
                 spent(&|s| s.basal),
                 spent(&|s| s.brain),
                 spent(&|s| s.muscle),
@@ -250,9 +258,10 @@ impl Sim {
             let kg_m: f32 = d.iter().map(|x| x.mass * x.life.distance).sum::<f32>().max(1e-6);
             let _ = writeln!(
                 o,
-                "  Per life: {:.1} children, {:.2} kills, {:.0} m of net travel ({:.1} m/min); muscle energy per 100 kg per 100 m travelled: {:.2}.",
+                "  Per life: {:.1} children, {:.2} kills ({:.2} away from where it landed), {:.0} m of net travel ({:.1} m/min); muscle energy per 100 kg per 100 m travelled: {:.2}.",
                 sum(&|l| l.children as f32) / n,
                 sum(&|l| l.kills as f32) / n,
+                sum(&|l| l.kills_away as f32) / n,
                 dist / n,
                 dist / lived,
                 muscle / kg_m * 1e4
@@ -272,6 +281,27 @@ impl Sim {
                     starved.iter().filter(|x| x.life.food() < 0.5).count() as f32 / ns * 100.0
                 );
             }
+        }
+
+        let st = &self.stats;
+        if st.admitted > 0 {
+            let total: f32 = st.admitted_parts.iter().sum::<f32>().max(1e-6);
+            let share = |k: usize| 100.0 * st.admitted_parts[k] / total;
+            let mainly = |k: usize| 100.0 * st.admitted_mainly[k] as f32 / st.admitted as f32;
+            let _ = writeln!(
+                o,
+                "\nGene pool: {} lives let in so far, mean score {:.2}. Their scores came from food {:.0}%, kills {:.0}%, children {:.0}%, travel {:.0}%; mostly food for {:.0}% of them, kills {:.0}%, children {:.0}%, travel {:.0}%.",
+                st.admitted,
+                total / st.admitted as f32,
+                share(0),
+                share(1),
+                share(2),
+                share(3),
+                mainly(0),
+                mainly(1),
+                mainly(2),
+                mainly(3)
+            );
         }
 
         // The living.

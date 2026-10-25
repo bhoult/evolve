@@ -4,6 +4,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 
+use evolve_sim::brain::output;
 use evolve_sim::genome::Genome;
 use evolve_sim::math::Vec3;
 use evolve_sim::rng::Rng;
@@ -113,6 +114,88 @@ fn closing_in_on_food_counts_toward_the_life_score() {
     assert!(parts[3] >= c.life.approached / 10.0 - 1e-3);
 }
 
+/// Food counts toward the life score only once a creature has gone to get it: a meal where it
+/// fell earns nothing (big bodies that landed beside plants used to fill their tanks and win).
+#[test]
+fn only_food_a_creature_went_to_get_counts_toward_its_score() {
+    let mut sim = Sim::new(SimParams { plant_spawn_rate: 0.0, plant_spread_rate: 0.0, ..quiet_params() });
+    sim.plants.clear();
+    let mut rng = Rng::new(11);
+    let mut g = Genome::random(&mut rng, &sim.params);
+    // Always biting at whatever is at its mouth.
+    g.brain.b_out[output::EAT] = 10.0;
+    let at = sim.random_land_point(30.0);
+    let id = sim.spawn_creature(g, at, 0.0, f32::MAX, 0, None);
+    let c = sim.creature_mut(id).unwrap();
+    c.energy = 0.3 * c.max_energy;
+    for _ in 0..60 {
+        sim.step();
+    }
+    let plant = (0..200)
+        .find_map(|k| sim.add_plant(at + Vec3::new(2.0 + k as f32 * 0.5, 0.0, 0.0), 20.0))
+        .expect("somewhere to put a plant");
+    let meal = |sim: &mut Sim| {
+        for _ in 0..90 {
+            let c = sim.creature(id).unwrap();
+            let mouth = sim.torso_of(c).unwrap().position().transform_point(Vec3::new(c.torso_half().x, 0.0, 0.0));
+            let k = sim.plants.iter().position(|f| f.id == plant).unwrap();
+            sim.plants[k].pos = mouth;
+            sim.plants[k].energy = 20.0;
+            sim.step();
+        }
+    };
+    meal(&mut sim);
+    let c = sim.creature(id).unwrap();
+    assert!(c.life.food() > 10.0, "it ate {}", c.life.food());
+    assert_eq!(c.life.earned, 0.0);
+    assert_eq!(sim.score_parts(c)[0], 0.0);
+    // As if it had walked 10 m from where it fell.
+    sim.creature_mut(id).unwrap().home += Vec3::new(10.0, 0.0, 0.0);
+    let before = sim.creature(id).unwrap().life.food();
+    meal(&mut sim);
+    let c = sim.creature(id).unwrap();
+    let ate = c.life.food() - before;
+    assert!(ate > 10.0, "it ate {ate}");
+    assert!((c.life.earned - ate).abs() < 1e-3, "ate {ate}, earned {}", c.life.earned);
+    assert!((sim.score_parts(c)[0] - ate / sim.params.plant_max_energy).abs() < 1e-3);
+}
+
+#[test]
+fn only_kills_made_away_from_where_the_killer_landed_count_toward_its_score() {
+    let mut sim = Sim::new(quiet_params());
+    let mut rng = Rng::new(12);
+    let at = sim.random_land_point(30.0);
+    let killer = sim.spawn_creature(Genome::random(&mut rng, &sim.params), at, 0.0, f32::MAX, 0, None);
+    let victims: Vec<u64> = (0..2)
+        .map(|k| sim.spawn_creature(Genome::random(&mut rng, &sim.params), at + Vec3::new(0.0, 0.0, 3.0 + 3.0 * k as f32), 0.0, f32::MAX, 0, None))
+        .collect();
+    for _ in 0..30 {
+        sim.step();
+    }
+    let kill = |sim: &mut Sim, victim: u64| {
+        let v = sim.creature_mut(victim).unwrap();
+        v.health = -50.0;
+        v.last_attacker = Some(killer);
+        v.attacked_ago = 0.0;
+        // Deaths are noticed on the brain's beat.
+        for _ in 0..10 {
+            sim.step();
+        }
+        assert!(sim.creature(victim).is_none());
+    };
+    // Biting whatever landed beside it.
+    kill(&mut sim, victims[0]);
+    let c = sim.creature(killer).unwrap();
+    assert_eq!((c.life.kills, c.life.kills_away), (1, 0));
+    assert_eq!(sim.score_parts(c)[1], 0.0);
+    // As if it had walked 10 m from where it fell to make this one.
+    sim.creature_mut(killer).unwrap().home += Vec3::new(10.0, 0.0, 0.0);
+    kill(&mut sim, victims[1]);
+    let c = sim.creature(killer).unwrap();
+    assert_eq!((c.life.kills, c.life.kills_away), (2, 1));
+    assert_eq!(sim.score_parts(c)[1], sim.params.score_kill);
+}
+
 #[test]
 fn the_gene_pool_crosses_only_genomes_that_could_interbreed() {
     let p = SimParams::default();
@@ -139,6 +222,41 @@ fn the_gene_pool_crosses_only_genomes_that_could_interbreed() {
     };
     assert_eq!(crosses(&strangers, &mut rng), 0, "strangers were crossed");
     assert!(crosses(&kin, &mut rng) > 20, "kin were never crossed");
+}
+
+/// A genome that got into the pool on one lucky life falls back once exact copies of it, living
+/// again, do no better; a retested copy is never let in a second time as a new entry.
+#[test]
+fn the_gene_pool_retests_genomes_judged_on_one_life() {
+    let mut sim = Sim::new(SimParams { rain_from_pool: 1.0, pool_retest: 1.0, ..quiet_params() });
+    let mut rng = Rng::new(31);
+    let lucky = Genome::random(&mut rng, &sim.params);
+    let steady = Genome::random(&mut rng, &sim.params);
+    sim.pool.consider(10.0, 3, &lucky);
+    sim.pool.consider(4.0, 3, &steady);
+    let fp = lucky.fingerprint();
+    let id = sim.rain_creature(None);
+    let c = sim.creature(id).unwrap();
+    assert_eq!(c.origin, Origin::Retest);
+    let entry = c.retest_of.expect("a retest knows what it retests");
+    assert!(entry == fp || entry == steady.fingerprint());
+    // Two more lives of the lucky one, scoring nothing.
+    assert!(sim.pool.retested(fp, 0.0));
+    assert!(sim.pool.retested(fp, 0.0));
+    let e = &sim.pool.entries;
+    assert_eq!(e.len(), 2);
+    assert_eq!(e[0].genome.fingerprint(), steady.fingerprint(), "the steady one leads now");
+    assert!((e[1].score - 10.0 / 3.0).abs() < 1e-4 && e[1].samples == 3);
+    // Once the steady one has had its retests too, nothing is left to retest, and rain is bred
+    // as usual.
+    let s = steady.fingerprint();
+    assert!(sim.pool.retested(s, 4.0) && sim.pool.retested(s, 4.0));
+    assert!(sim.pool.retest(&mut rng).is_none());
+    // A retest that dies is averaged in, not added as a new entry.
+    sim.kill(id, DeathCause::Starved);
+    sim.step();
+    assert_eq!(sim.pool.entries.len(), 2);
+    assert!(sim.pool.entries.iter().any(|e| e.samples == 4));
 }
 
 #[test]

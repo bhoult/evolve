@@ -632,7 +632,14 @@ fn fighting(ui: &mut egui::Ui, p: &SimParams) {
     sub(ui, "The victim");
     bullet(ui, "Feels pain (a sense its brain can learn to flee from) and a learning penalty in proportion to the damage. It can bite back on the same terms.");
     sub(ui, "A kill");
-    bullet(ui, "A creature whose health runs out within 5 s of a bite counts as killed by its last attacker, which scores 3 points for it (as much as eating three plants).");
+    bullet(
+        ui,
+        format!(
+            "A creature whose health runs out within 5 s of a bite counts as killed by its last attacker, which scores {} points for it (score_kill, as much as eating that many plants) if the kill was made at least {} m from where the killer fell or was born (score_food_away).",
+            num(p.score_kill),
+            num(p.score_food_away)
+        ),
+    );
     bullet(ui, "The body leaves meat where it lay, for whoever gets to it first.");
     sub(ui, "Sizing each other up");
     para(ui, "Creatures sense the nearest other creature's direction, closeness, size relative to their own, aggression and kinship, so a brain can learn to pick on smaller ones and avoid bigger ones.");
@@ -655,13 +662,26 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Eating: 1 per plant's worth ({} energy) of food or meat.",
-            num(p.plant_max_energy)
+            "Eating: 1 per plant's worth ({} energy) of food or meat eaten at least {} m from where it fell or was born (score_food_away). Counting every meal rewarded landing beside a plant: big bodies that never walked filled up where they fell and won.",
+            num(p.plant_max_energy),
+            num(p.score_food_away)
         ),
     );
-    bullet(ui, "Hunting: 3 per kill.");
+    bullet(
+        ui,
+        format!(
+            "Hunting: {} per kill (score_kill) made that far away too. Counting every kill rewarded heavy bodies that sat still biting whatever landed against them.",
+            num(p.score_kill)
+        ),
+    );
     bullet(ui, "Breeding: 0.5 per child, plus 1 per plant's worth of energy given to children.");
-    bullet(ui, "Travelling: 1 per 50 m of real progress, counted over 5-second stretches so flailing in place earns nothing, and 1 per 10 m closed on food while it has room to eat (scored on food alone, the pool rewarded landing beside a plant rather than walking to one).");
+    bullet(
+        ui,
+        format!(
+            "Travelling: 1 per 50 m of real progress, counted over 5-second stretches so flailing in place earns nothing, and 1 per {} m closed on food while it has room to eat (score_approach).",
+            num(p.score_approach)
+        ),
+    );
     para(ui, "Lasting long earns nothing by itself. The inspector shows each creature's score and its breakdown.");
     para(ui, "A creature bred from the pool is a mutated copy of one of its best, or half the time a cross of two of them, but only of two close enough to interbreed: the pool holds lineages from every world, and a cross of strangers mixes limbs and brain wiring that have nothing to do with each other.");
     sub(ui, "Mutation");

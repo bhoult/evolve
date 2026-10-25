@@ -395,6 +395,17 @@ impl Genome {
                     b.w_out.0[k * h..(k + 1) * h].fill(half::f16::ZERO);
                     b.b_out[k] = -1.0;
                 }
+                use crate::brain::{input, N_IN};
+                let g = p.random_sense_gain;
+                if g != 1.0 {
+                    for row in b.w_in.0.chunks_exact_mut(N_IN) {
+                        for k in [input::PLANT, input::MEAT, input::OTHER, input::MATE] {
+                            for w in &mut row[k..k + 2] {
+                                *w = half::f16::from_f32(w.to_f32() * g);
+                            }
+                        }
+                    }
+                }
                 b
             },
         }

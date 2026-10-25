@@ -416,6 +416,7 @@ impl Sim {
         let mg = food_grid(size, &self.meat);
         let reach_extra = self.params.eat_reach;
         let bite_rate = self.params.bite_rate;
+        let away = self.params.score_food_away;
         for c in &mut self.creatures {
             if c.dead.is_some() || c.output(output::EAT) <= 0.0 || c.energy >= c.max_energy {
                 continue;
@@ -462,6 +463,9 @@ impl Sim {
                 c.life.meat_eaten += gain;
             } else {
                 c.life.plant_eaten += gain;
+            }
+            if Vec3::new(mouth.x - c.home.x, 0.0, mouth.z - c.home.z).length() >= away {
+                c.life.earned += gain;
             }
 
         }

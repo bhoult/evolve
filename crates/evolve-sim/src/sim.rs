@@ -46,6 +46,8 @@ pub enum Origin {
     PoolCross,
     /// Dropped in by hand or from the zoo.
     Dropped,
+    /// Fell from the sky, an exact copy of a gene-pool genome, living again to check its score.
+    Retest,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -65,6 +67,14 @@ pub struct LifeStats {
     /// Meters closed on food it could sense while it had room to eat (see `life::approach_reward`).
     #[serde(default)]
     pub approached: f32,
+    /// Food eaten (plants and meat) at least `score_food_away` meters from where it came into the
+    /// world: what the life score counts, so landing beside a plant earns nothing.
+    #[serde(default)]
+    pub earned: f32,
+    /// Kills made at least `score_food_away` meters from where it came into the world: the ones
+    /// the life score counts, so biting whatever lands against its head earns nothing.
+    #[serde(default)]
+    pub kills_away: u32,
 }
 
 /// Energy a creature has used up, by what it went on.
@@ -135,6 +145,12 @@ pub struct Creature {
     pub mate_flash: f32,
     pub life: LifeStats,
     pub last_pos: Vec3,
+    /// Where it came into the world: where it fell, or was born.
+    #[serde(default)]
+    pub home: Vec3,
+    /// The fingerprint of the gene-pool entry it's an exact copy of, if it fell to retest it.
+    #[serde(default)]
+    pub retest_of: Option<u64>,
     /// Each part's vertical speed after the last step, to notice it hitting the ground.
     #[serde(skip)]
     pub fall: Vec<f32>,
@@ -824,6 +840,7 @@ impl Sim {
             mb.generalized_velocity_mut().fill(0.0);
         }
         self.creatures[ci].last_pos += delta;
+        self.creatures[ci].home += delta;
     }
 
     /// Two different physics worlds, mutably.
@@ -1124,6 +1141,8 @@ impl Sim {
             mate_flash: 0.0,
             life: LifeStats::default(),
             last_pos: Vec3::new(x, y, z),
+            home: Vec3::new(x, y, z),
+            retest_of: None,
             fall: Vec::new(),
             call_timer: 0.0,
             exertion: 0.0,
@@ -1146,20 +1165,28 @@ impl Sim {
     /// A creature dropped from the sky: bred from the gene pool or entirely random.
     pub fn rain_creature(&mut self, at: Option<Vec3>) -> u64 {
         let from_pool = self.rng.chance(self.params.rain_from_pool);
-        let bred = if from_pool {
+        let retest = if from_pool && self.rng.chance(self.params.pool_retest) {
+            self.pool.retest(&mut self.rng)
+        } else {
+            None
+        };
+        let bred = if from_pool && retest.is_none() {
             let p = self.breeding_params();
             self.pool.breed(&mut self.rng, &p)
         } else {
             None
         };
-        let from_pool = bred.is_some();
-        let origin = match &bred {
-            Some((_, _, true)) => Origin::PoolCross,
-            Some(_) => Origin::PoolClone,
-            None => Origin::Random,
+        let from_pool = retest.is_some() || bred.is_some();
+        let origin = match (&retest, &bred) {
+            (Some(_), _) => Origin::Retest,
+            (_, Some((_, _, true))) => Origin::PoolCross,
+            (_, Some(_)) => Origin::PoolClone,
+            _ => Origin::Random,
         };
-        let (genome, generation) = bred
+        let retest_of = retest.as_ref().map(|r| r.2);
+        let (genome, generation) = retest
             .map(|(g, n, _)| (g, n))
+            .or(bred.map(|(g, n, _)| (g, n)))
             .unwrap_or_else(|| (Genome::random(&mut self.rng, &self.params), 0));
         let near_kin = (from_pool && self.rng.chance(self.params.rain_near_kin))
             .then(|| self.near_kin_point(&genome))
@@ -1172,6 +1199,7 @@ impl Sim {
         let energy = match self.creature_mut(id) {
             Some(c) => {
                 c.origin = origin;
+                c.retest_of = retest_of;
                 c.energy
             }
             None => 0.0,
@@ -1188,21 +1216,24 @@ impl Sim {
         self.score_parts(c).iter().sum()
     }
 
-    /// What a life achieved, in "plants' worth": eating (food and meat), hunting (kills),
+    /// What a life achieved, in "plants' worth": eating (food and meat, away from where it fell or
+    /// was born: see `score_food_away`), hunting (kills, also away from there: `score_kill`),
     /// breeding (children, and the energy given them) and travelling (net progress, and above all
-    /// closing in on food it has room to eat: 10 m of that is worth a plant). Simply lasting earns
+    /// closing in on food it has room to eat: `score_approach` m of that is worth a plant). Simply lasting earns
     /// nothing, and neither do children given almost nothing.
     ///
     /// Closing in on food is there because eating alone mostly measured luck: creatures from the
     /// sky that landed beside a plant scored, and ones that set off toward a plant 5 m away and
-    /// starved on the way scored nothing, so walking to food never got a foothold.
+    /// starved on the way scored nothing, so walking to food never got a foothold. It wasn't
+    /// enough: a lucky landing filled a 200 kg tank, worth more than any walk, so food only counts
+    /// once a creature has gone to get it.
     pub fn score_parts(&self, c: &Creature) -> [f32; 4] {
         let plant = self.params.plant_max_energy.max(1.0);
         [
-            c.life.food() / plant,
-            c.life.kills as f32 * 3.0,
+            c.life.earned / plant,
+            c.life.kills_away as f32 * self.params.score_kill,
             c.life.children as f32 * 0.5 + c.life.invested / plant,
-            c.life.distance / 50.0 + c.life.approached.max(0.0) / 10.0,
+            c.life.distance / 50.0 + c.life.approached.max(0.0) / self.params.score_approach.max(0.1),
         ]
     }
 
@@ -1820,9 +1851,13 @@ impl Sim {
                 kills.push((k, c.id, at));
             }
         }
+        let away = self.params.score_food_away;
         for (killer, victim, at) in kills {
             if let Some(k) = self.creature_mut(killer) {
                 k.life.kills += 1;
+                if Vec3::new(at.x - k.home.x, 0.0, at.z - k.home.z).length() >= away {
+                    k.life.kills_away += 1;
+                }
                 self.highlight(HighlightKind::Kill, killer, Some(victim), at);
             }
         }
@@ -1869,7 +1904,13 @@ impl Sim {
                 let at = self.torso_of(&c).map(|b| b.translation()).filter(|p| p.is_finite()).unwrap_or(c.last_pos);
                 self.record_death(&c, at);
                 let score = self.life_score(&c);
+                let retested = c.retest_of.is_some_and(|fp| self.pool.retested(fp, score));
+                if !retested && self.pool.would_take(score) {
+                    let parts = self.score_parts(&c);
+                    self.stats.record_admitted(parts);
+                }
                 match learned.get(&c.id) {
+                    _ if retested => {}
                     Some(p) => {
                         let mut g = c.genome.clone();
                         g.brain.absorb(p, self.params.learned_inheritance);

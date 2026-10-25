@@ -22,6 +22,14 @@ pub struct Stats {
     pub life_children: f32,
     pub life_age: f32,
     pub dead_count: u64,
+    /// Lives let into the gene pool, what their scores were made of (summed `Sim::score_parts`:
+    /// food, kills, children, travel), and how many each part made the most of.
+    #[serde(default)]
+    pub admitted: u64,
+    #[serde(default)]
+    pub admitted_parts: [f32; 4],
+    #[serde(default)]
+    pub admitted_mainly: [u64; 4],
 }
 
 impl Stats {
@@ -36,6 +44,15 @@ impl Stats {
         self.life_children += (children - self.life_children) * a;
         self.life_age += (age - self.life_age) * a;
         self.dead_count += 1;
+    }
+
+    pub fn record_admitted(&mut self, parts: [f32; 4]) {
+        self.admitted += 1;
+        for (sum, x) in self.admitted_parts.iter_mut().zip(parts) {
+            *sum += x;
+        }
+        let main = (0..4).max_by(|&a, &b| parts[a].total_cmp(&parts[b])).unwrap_or(0);
+        self.admitted_mainly[main] += 1;
     }
 
     pub fn deaths(&self) -> u64 {
@@ -71,6 +88,14 @@ pub struct PoolEntry {
     pub score: f32,
     pub generation: u32,
     pub genome: Genome,
+    /// Lives its score is the average of: one, until exact copies are retested (see
+    /// `GenePool::retest`).
+    #[serde(default = "one")]
+    pub samples: u32,
+}
+
+fn one() -> u32 {
+    1
 }
 
 /// Hall of fame of the most successful genomes seen recently. Creatures that rain from the sky
@@ -82,6 +107,9 @@ pub struct GenePool {
 }
 
 pub const POOL_SIZE: usize = 48;
+
+/// Lives a pool genome is judged on before it stops being retested.
+pub const RETEST_SAMPLES: u32 = 3;
 
 impl GenePool {
     pub fn consider(&mut self, score: f32, generation: u32, genome: &Genome) {
@@ -101,9 +129,39 @@ impl GenePool {
                 score,
                 generation,
                 genome: genome.clone(),
+                samples: 1,
             },
         );
         self.entries.truncate(POOL_SIZE);
+    }
+
+    /// An exact copy of a genome the pool has judged on too few lives, to live again (and its
+    /// entry's fingerprint, to find it by when it dies). The better of two such entries, so the
+    /// ones that shape the most rain are checked first. A single life mostly measures luck: where
+    /// it fell, what was within reach. Without retests the pool filled with the luckiest and bred
+    /// from them, and its creatures did no better than random ones.
+    pub fn retest(&self, rng: &mut Rng) -> Option<(Genome, u32, u64)> {
+        let open: Vec<usize> = (0..self.entries.len()).filter(|&i| self.entries[i].samples < RETEST_SAMPLES).collect();
+        if open.is_empty() {
+            return None;
+        }
+        let i = open[rng.below(open.len())].min(open[rng.below(open.len())]);
+        let e = &self.entries[i];
+        Some((e.genome.clone(), e.generation, e.genome.fingerprint()))
+    }
+
+    /// Folds a retested life's score into its genome's average. False if the genome has left the
+    /// pool meanwhile.
+    pub fn retested(&mut self, fingerprint: u64, score: f32) -> bool {
+        let Some(i) = self.entries.iter().position(|e| e.genome.fingerprint() == fingerprint) else {
+            return false;
+        };
+        let mut e = self.entries.remove(i);
+        e.score = (e.score * e.samples as f32 + score) / (e.samples + 1) as f32;
+        e.samples += 1;
+        let at = self.entries.partition_point(|x| x.score >= e.score);
+        self.entries.insert(at, e);
+        true
     }
 
     /// Whether a life with this score would make it in (before checking for duplicates).

@@ -424,11 +424,12 @@ from the sky. Most are bred from a hall of fame of the most successful genomes s
 and the rest are random.
 
 A life is scored by what it achieved, in "plants' worth":
-- *Eating:* 1 per plant's worth of food or meat.
-- *Hunting:* 3 per kill.
+- *Eating:* 1 per plant's worth of food or meat eaten at least `score_food_away` (4 m) from
+  where it fell or was born.
+- *Hunting:* 3 per kill (`score_kill`) made that far away too.
 - *Breeding:* 0.5 per child, plus 1 per plant's worth of energy given to children.
-- *Travelling:* 1 per 50 m of net progress, and 1 per 10 m closed on food while it has room to
-  eat.
+- *Travelling:* 1 per 50 m of net progress, and 1 per `score_approach` (10) m closed on food while
+  it has room to eat.
 
 Lasting long earns nothing by itself. Children must start with at least `min_child_energy`.
 Before both rules, tiny limbless specks that bred where they landed topped the rankings: their
@@ -453,7 +454,8 @@ covered per creature-minute, the longest unbroken line of births, body and brain
 report, from the MCP server below or the `census` diagnostic test, adds deaths by cause and by
 origin (random, gene-pool copy, gene-pool cross, zoo, born), where energy went (basal, brain,
 muscle, healing, digging, calls and attacks), muscle energy per 100 kg per 100 m travelled, how
-far the starved were from the nearest plant, and the best creatures alive.
+far the starved were from the nearest plant, what the scores of the lives let into the gene
+pool were made of (food, kills, children or travel), and the best creatures alive.
 
 **MCP server.** The app (and `evolve-headless --islands N --mcp PORT`) serves the
 [Model Context Protocol](https://modelcontextprotocol.io) on `http://127.0.0.1:7311/mcp`
@@ -664,6 +666,20 @@ Motion now costs energy, so these conclusions may no longer hold and deserve re-
 - **Help with mating backfires.** Dropping raindrops next to compatible relatives
   (`rain_near_kin`) raised births in one seed but stopped walking from evolving in two of three.
   Breeding without moving gets rewarded, so it's off by default.
+- **Score only what a creature went and got.** Rain brings about 220 creatures a minute that
+  live about a minute each, so the 48-genome pool keeps the luckiest of some 13,000 lives an
+  hour. Tested for an hour across three seeds against a world where all rain is random
+  (2026-10-24):
+  - *Food anywhere:* pool-bred creatures moved half as far as random ones and ate no more.
+    Cheaper metabolism (0.004) changed nothing.
+  - *Food only away from the landing spot* (`score_food_away`): the pool switched to sitting
+    and biting. A kill was worth 3 and came from whatever landed against a creature's head, and
+    pool creatures made 4–5 times as many kills as random ones while barely moving.
+  - *Averaging three lives per genome* (`pool_retest`) made that worse: sitting and biting is
+    heritable, so retests confirmed it (3.4 m a minute against 7). Off by default.
+  - *Kills only away too* (`score_kill`): pool creatures now eat and travel about as well as
+    random ones (7–10 and 5–6 m a minute, against 9.5 and 7), where before they fell to 3–7 and
+    3–5. Still not better: no creature closes in on food it can sense more than chance would.
 - **One thread pool for many worlds wastes the machine.** With all worlds sharing one pool, eight
   of them ran about 4,000 steps per second. With a pool per world, seven ran about 7,400.
 
