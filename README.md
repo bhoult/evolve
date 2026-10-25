@@ -284,6 +284,11 @@ body's real weight. Every joint has a genetic range of motion that the physics e
   evolved to ride it, bouncing over the ground off the ground three-quarters of the time. Now
   they barely move until evolution finds them a real gait. The physics costs about twice as
   much (about 3 ms a step for 50 creatures: one substep of 8 passes).
+- *Limbs in the ground:* a fast limb could pass into the ground between steps and stay there.
+  In 3% of lives a part sank half a meter or more, which looked like creatures falling through
+  the ground. Each part now looks ahead as far as it will move in the next step, up to
+  `soft_ccd` (0.5 m; rapier's soft continuous collision detection), which cut that to
+  0.15–0.3% at no measurable cost (2026-10-25, the `sinking` diagnostic).
 
 **Physics on many cores.** Rapier solves a world's articulations on one thread, so the world's
 physics is split into `physics_shards` (12) physics worlds stepped in parallel, each on a thread

@@ -784,7 +784,13 @@ fn totems_make_creatures_breed_fight_and_flee() {
 
     // Fear only makes creatures want to run: a block, which can't move itself, stays where it
     // is, but it hurts by the totem and senses where it stands (getting away would be a relief).
-    let fear = sim.random_land_point(40.0);
+    // On gentle ground: on a slope near the friction limit (about 43°) a block slides off by itself.
+    let fear = loop {
+        let at = sim.random_land_point(40.0);
+        if sim.terrain.normal_at(at.x + 3.0, at.z).y > 0.97 {
+            break at;
+        }
+    };
     let e = sim.spawn_creature(base(21), fear + Vec3::new(3.0, 0.0, 0.0), 0.3, f32::MAX, 0, None);
     run(&mut sim, 2);
     sim.apply(Command::Totem { at: fear.to_array(), kind: TotemKind::Fear });

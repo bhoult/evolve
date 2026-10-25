@@ -717,15 +717,21 @@ impl Sim {
         }
         let friction_changed = old.is_none_or(|o| o.body_friction != p.body_friction);
         let damping_changed = old.is_none_or(|o| o.air_drag != p.air_drag);
-        if friction_changed || damping_changed {
+        let ccd_changed = old.is_none_or(|o| o.soft_ccd != p.soft_ccd);
+        if friction_changed || damping_changed || ccd_changed {
             for c in &self.creatures {
                 let world = &mut self.shards[c.shard].world;
                 for part in &c.parts {
                     if friction_changed && let Some(col) = world.colliders.get_mut(part.collider) {
                         col.set_friction(p.body_friction);
                     }
-                    if damping_changed && let Some(b) = world.bodies.get_mut(part.body) {
-                        b.set_linear_damping(p.air_drag);
+                    if let Some(b) = world.bodies.get_mut(part.body) {
+                        if damping_changed {
+                            b.set_linear_damping(p.air_drag);
+                        }
+                        if ccd_changed {
+                            b.set_soft_ccd_prediction(p.soft_ccd);
+                        }
                     }
                 }
             }

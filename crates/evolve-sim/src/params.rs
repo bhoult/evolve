@@ -154,6 +154,12 @@ params! {
         max_body_speed: f32 = 30.0, [5, 200], Live;
         /// Hard cap on body part spin, rad/s.
         max_body_spin: f32 = 40.0, [5, 1000], Live;
+        /// How far ahead along its path each body part may look for the ground and other bodies,
+        /// m (rapier's soft continuous collision detection: it looks as far as the part will move
+        /// in the next step, up to this). Without it a fast limb could pass into the ground: 3%
+        /// of lives had a part sink half a meter or more, against 0.15-0.3% with it, at no
+        /// measurable cost. 0.5 covers a part at `max_body_speed`. 0 turns it off.
+        soft_ccd: f32 = 0.5, [0, 2], Live;
         /// Physics worlds the world is split into and stepped in parallel. Creatures that might
         /// touch share one, and rapier solves each world on one thread, so more use more cores.
         physics_shards: u32 = 12, [1, 32], Live;

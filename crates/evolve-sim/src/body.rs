@@ -469,6 +469,7 @@ pub fn spawn_body(
             .pose(root * spec.rest)
             .linear_damping(p.air_drag)
             .angular_damping(0.3)
+            .soft_ccd_prediction(p.soft_ccd)
             .can_sleep(false)
             .user_data(tag);
         let col = match spec.shape {

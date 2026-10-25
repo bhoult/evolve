@@ -946,3 +946,56 @@ fn watch_the_zoo() {
         }
     }
 }
+
+/// How far limbless blocks (which can't move themselves) drift on their own in 12 s at random
+/// places on the land (EVOLVE_DIAG_SLOPE=a,b: only where the ground slopes a to b degrees), with
+/// `soft_ccd` from EVOLVE_DIAG_SET.
+#[test]
+#[ignore]
+fn block_drift() {
+    let mut p = SimParams { min_population: 0, terrain_resolution: 65, weather: false, stones: 0, ..SimParams::default() };
+    for kv in std::env::var("EVOLVE_DIAG_SET").unwrap_or_default().split(',').filter(|s| !s.is_empty()) {
+        let (k, v) = kv.split_once('=').unwrap();
+        p.set_by_name(k, v).unwrap();
+    }
+    let mut sim = Sim::new(p);
+    let mut ids = Vec::new();
+    for k in 0..12 {
+        let mut g = Genome::random(&mut Rng::new(21 + k), &SimParams::default());
+        g.spine.segments = 0;
+        for l in &mut g.limbs {
+            l.present = false;
+        }
+        // EVOLVE_DIAG_SLOPE=a,b: only places whose ground slopes between a and b degrees.
+        let (lo, hi) = std::env::var("EVOLVE_DIAG_SLOPE")
+            .ok()
+            .and_then(|s| s.split_once(',').map(|(a, b)| (a.parse::<f32>().unwrap(), b.parse::<f32>().unwrap())))
+            .unwrap_or((0.0, 90.0));
+        let at = loop {
+            let at = sim.random_land_point(40.0);
+            let slope = sim.terrain.normal_at(at.x, at.z).y.acos().to_degrees();
+            if (lo..=hi).contains(&slope) {
+                break at;
+            }
+        };
+        ids.push((sim.spawn_creature(g, at, 0.3, f32::MAX, 0, None), at));
+    }
+    for s in 0..12 {
+        for _ in 0..evolve_sim::sim::TICKS_PER_SECOND {
+            sim.step();
+        }
+        if s == 1 || s == 11 {
+            let line: Vec<String> = ids
+                .iter()
+                .filter_map(|&(id, at)| {
+                    let c = sim.creature(id)?;
+                    let t = sim.torso_of(c)?.translation();
+                    let v = sim.torso_of(c)?.linvel();
+                    let n = sim.terrain.normal_at(t.x, t.z);
+                    Some(format!("{:.1}m (v {:.2}, slope {:.0}°)", (t.x - at.x).hypot(t.z - at.z), v.length(), n.y.acos().to_degrees()))
+                })
+                .collect();
+            println!("t {} s: {}", s + 1, line.join(", "));
+        }
+    }
+}
