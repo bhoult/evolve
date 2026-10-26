@@ -676,3 +676,37 @@ fn a_fine_terrain_collides_on_a_coarser_ground() {
     assert_eq!(sim.terrain.stride(), 1);
     assert!(sim.shards.iter().all(|s| s.ground.len() == 144), "pieces of 128 cells: {}", sim.shards[0].ground.len());
 }
+
+/// A creature with its body caught inside the ground (ground rebuilt around a resting limb, a fast
+/// limb through the surface) is set back on top within a second, wherever it is, not only where
+/// earth was just dug.
+#[test]
+fn a_body_caught_in_the_ground_is_set_back_on_top() {
+    let mut sim = Sim::new(SimParams { plant_max_count: 0, plant_spawn_rate: 0.0, ..quiet_params() });
+    let id = sim.rain_creature(None);
+    for _ in 0..240 {
+        sim.step();
+    }
+    let below = |sim: &Sim| {
+        let c = sim.creature(id).unwrap();
+        let world = &sim.shards[c.shard].world;
+        c.parts
+            .iter()
+            .filter_map(|q| world.bodies.get(q.body).map(|b| b.translation()))
+            .filter(|t| t.y < sim.terrain.collision_height_at(t.x, t.z))
+            .count()
+    };
+    assert_eq!(below(&sim), 0, "it stands on the ground");
+    let c = sim.creature(id).unwrap();
+    let (shard, parts): (usize, Vec<_>) = (c.shard, c.parts.iter().map(|q| q.body).collect());
+    for h in parts {
+        let b = sim.shards[shard].world.bodies.get_mut(h).unwrap();
+        let t = b.translation();
+        b.set_translation(t - evolve_sim::math::Vec3::Y * 1.0, true);
+    }
+    assert!(below(&sim) > 0, "pushed a meter into the ground");
+    for _ in 0..60 {
+        sim.step();
+    }
+    assert_eq!(below(&sim), 0, "and back on top within a second");
+}

@@ -489,6 +489,9 @@ pub struct Sim {
     /// Sim time the physics ground last took on the reshaped terrain.
     #[serde(skip)]
     pub settled_at: f64,
+    /// Sim time bodies were last checked for being caught inside the ground (see `unbury`).
+    #[serde(skip)]
+    pub unburied_at: f64,
     /// A background world, whose physics threads run at a lower priority.
     #[serde(skip)]
     pub background: bool,
@@ -614,6 +617,7 @@ impl Sim {
             brain_price: 1.0,
             gpu_headroom: 0.0,
             settled_at: 0.0,
+            unburied_at: 0.0,
             background,
             soak: 0.0,
             erosion_due: 0.0,

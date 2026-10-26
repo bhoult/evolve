@@ -415,6 +415,8 @@ impl Sim {
         let patches = self.terrain.dirty.len();
         self.earthworks(bdt);
         time("digging and settling", &mut lap);
+        self.unbury();
+        time("unburying", &mut lap);
         for (name, ms) in slow {
             eprintln!("evolve: {name} took {ms:.0} ms ({patches} patches of changed ground, {} still sliding)", self.terrain.sliding.len());
         }
@@ -463,6 +465,47 @@ impl Sim {
             c.life.spent.digging += dig_cost * moved.abs();
         }
         self.settle_terrain();
+    }
+
+    /// Twice a simulated second, every creature and loose stone with a part whose middle is below
+    /// the ground is set back on top, by as much as its most buried part needs. However it got
+    /// there (ground raised under it, a healing pit or a worn bank rebuilt around a resting limb,
+    /// a fast limb through the surface), a part inside the ground stays caught: the creature stood
+    /// pinned upright on it.
+    pub(crate) fn unbury(&mut self) {
+        if self.time - self.unburied_at < 0.5 {
+            return;
+        }
+        self.unburied_at = self.time;
+        let terrain = &self.terrain;
+        for o in self.obstacles.iter().filter(|o| o.dynamic) {
+            if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body) {
+                let t = b.translation();
+                let ground = terrain.collision_height_at(t.x, t.z);
+                if t.y < ground {
+                    b.set_translation(Vec3::new(t.x, ground + crate::sim::obstacle_lift(o.shape), t.z), true);
+                    b.set_linvel(Vec3::ZERO, true);
+                    b.wake_up(true);
+                }
+            }
+        }
+        for ci in 0..self.creatures.len() {
+            let c = &self.creatures[ci];
+            let world = &self.shards[c.shard].world;
+            let buried = c
+                .parts
+                .iter()
+                .zip(&c.plan)
+                .filter_map(|(q, spec)| {
+                    let t = world.bodies.get(q.body)?.translation();
+                    let ground = self.terrain.collision_height_at(t.x, t.z);
+                    (t.y < ground).then(|| ground + spec.shape.bounding_radius() - t.y)
+                })
+                .fold(0.0f32, f32::max);
+            if buried > 0.0 {
+                self.translate_creature(ci, Vec3::Y * buried);
+            }
+        }
     }
 
     /// After earth moved: the physics ground takes the new shape, plants and meat on changed
@@ -551,40 +594,16 @@ impl Sim {
         for &area in &areas {
             self.reseat_trees(Some(area));
         }
-        // Ground can rise by meters at once (land raised, or thrown up by a quake or a meteor):
-        // a stone it buried is set back on top, and so is a creature, by as much as its most
-        // buried part needs.
-        let terrain = &self.terrain;
+        // Loose stones resting on changed ground wake, to fall or roll (what the ground rose over
+        // is set back on top by `unbury`, right after).
         for o in self.obstacles.iter().filter(|o| o.dynamic) {
             if let Some(b) = self.shards[o.shard].world.bodies.get_mut(o.body)
                 && inside(b.translation())
             {
-                let t = b.translation();
-                let ground = terrain.collision_height_at(t.x, t.z);
-                if t.y < ground {
-                    b.set_translation(Vec3::new(t.x, ground + crate::sim::obstacle_lift(o.shape), t.z), true);
-                    b.set_linvel(Vec3::ZERO, true);
-                }
                 b.wake_up(true);
             }
         }
-        for ci in 0..self.creatures.len() {
-            let c = &self.creatures[ci];
-            let world = &self.shards[c.shard].world;
-            let buried = c
-                .parts
-                .iter()
-                .zip(&c.plan)
-                .filter_map(|(q, spec)| {
-                    let t = world.bodies.get(q.body)?.translation();
-                    let ground = self.terrain.collision_height_at(t.x, t.z);
-                    (inside(t) && t.y < ground).then(|| ground + spec.shape.bounding_radius() - t.y)
-                })
-                .fold(0.0f32, f32::max);
-            if buried > 0.0 {
-                self.translate_creature(ci, Vec3::Y * buried);
-            }
-        }
+        self.unburied_at = f64::MIN;
         let took = ms(started);
         if took > 100.0 {
             eprintln!(
