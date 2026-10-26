@@ -201,7 +201,7 @@ fn controls(ui: &mut egui::Ui) {
     bullet(ui, "1 Select: click a creature to inspect it, or hold and drag to carry it (scroll lifts it).");
     bullet(ui, "2 Plant food, 3 drop meat, 4 place a rock, 5 place a boulder, 6 drop a creature, 7 remove things, 8 scatter stones. The powers are in the Powers menu.");
     sub(ui, "Keys");
-    bullet(ui, "Space pauses, . steps once, + and - change speed (a quarter of real time up to Max).");
+    bullet(ui, "Space twice pauses (once runs again: a single press only asks, as Space is easy to hit by mistake), . steps once, + and - change speed (a quarter of real time up to Max).");
     bullet(ui, "F5 quick save, F9 quick load. Save / Load in the toolbar lists every saved world.");
     bullet(ui, "F12 takes a screenshot; R or F10 starts or stops recording a video, in the director's view too.");
     bullet(ui, "M mutes (the volume slider is in the toolbar). H opens this help.");
@@ -226,7 +226,7 @@ fn controls(ui: &mut egui::Ui) {
 
 fn watching(ui: &mut egui::Ui) {
     sub(ui, "The director (C)");
-    para(ui, "A camera that runs itself. It looks for something worth seeing (a kill, a birth, a new generation, a fight, a creature in trouble in the water, the best swimmer, the fastest walker, the strangest body, sunrise, storms) and circles it, gliding from one to the next. Each shot lasts its own time, mostly 10 to 25 seconds and now and then much longer, and a caption says what you're looking at. Moving the camera yourself, or C, takes back control. Space pauses the world in any view; a notice at the top says when it is.");
+    para(ui, "A camera that runs itself. It looks for something worth seeing (a kill, a birth, a new generation, a fight, a creature in trouble in the water, the best swimmer, the fastest walker, the strangest body, sunrise, storms) and circles it, gliding from one to the next. Each shot lasts its own time, mostly 10 to 25 seconds and now and then much longer, and a caption says what you're looking at. Moving the camera yourself, or C, takes back control. Space twice pauses the world in any view; a notice at the top says when it is.");
     sub(ui, "The inspector");
     para(ui, "Click a creature to see its energy, health, breath, water and mating drive, its body and traits, what it has done in life and its score. Buttons follow it, feed it, clone it, kill it, remove it, or keep it in the zoo.");
     bullet(ui, "Genome: every gene, what it does, and where it sits in its possible range.");

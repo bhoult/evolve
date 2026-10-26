@@ -368,6 +368,14 @@ fn tools(pictures: bool) -> Value {
             "inputSchema": {"type": "object", "properties": {"confirm": {"type": "boolean", "description": "must be true"}}, "required": ["confirm"]},
         }),
         json!({
+            "name": "run",
+            "description": "Pauses or runs the world on screen, and sets its speed (0 is Max: as fast as it goes). Space in the app pauses it too, easily by mistake.",
+            "inputSchema": {"type": "object", "properties": {
+                "paused": {"type": "boolean"},
+                "speed": {"type": "number", "minimum": 0, "description": "times real time; 0 for Max"}
+            }},
+        }),
+        json!({
             "name": "save_world",
             "description": "Saves the world on screen to a new .evo file (it won't overwrite one), e.g. to study it offline with the diagnostic tests.",
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "absolute path ending in .evo"}}, "required": ["path"]},
@@ -455,6 +463,18 @@ fn call(name: &str, args: &Value, runner: &Sender<Control>, shots: Option<&Sende
                 return Err("new_world discards the world on screen; pass confirm: true".into());
             }
             ask(runner, 0, Ask::NewWorld).map(text)
+        }
+        "run" => {
+            let mut did = Vec::new();
+            if let Some(s) = args.get("speed").and_then(Value::as_f64) {
+                runner.send(Control::Speed(s.max(0.0) as f32)).map_err(|_| "the simulation has stopped".to_string())?;
+                did.push(if s <= 0.0 { "speed Max".to_string() } else { format!("speed {s}x") });
+            }
+            if let Some(p) = args.get("paused").and_then(Value::as_bool) {
+                runner.send(Control::Pause(p)).map_err(|_| "the simulation has stopped".to_string())?;
+                did.push(if p { "paused" } else { "running" }.to_string());
+            }
+            Ok(text(if did.is_empty() { "nothing asked (give paused and/or speed)".into() } else { did.join(", ") }))
         }
         "save_world" => {
             let path = PathBuf::from(args.get("path").and_then(Value::as_str).ok_or("path is required")?);

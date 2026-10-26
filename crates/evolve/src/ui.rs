@@ -64,6 +64,8 @@ pub struct UiState {
     /// Compacting the zoo: how many of the best to keep, and whether it's waiting to be confirmed.
     zoo_keep: u32,
     confirm_compact: bool,
+    /// When Space was pressed once to pause (real seconds): a second press soon after pauses.
+    pause_asked: Option<f64>,
     /// Brain view: shown on request, and on its own while following a creature (unless closed
     /// for that creature).
     show_brain: bool,
@@ -216,6 +218,7 @@ impl Default for UiState {
             zoo_selected: None,
             zoo_keep: 10,
             confirm_compact: false,
+            pause_asked: None,
             show_brain: false,
             brain_closed_for: None,
             brain: BrainView::default(),
@@ -288,6 +291,7 @@ fn take_screenshot(commands: &mut Commands, link: &SimLink) {
 #[allow(clippy::too_many_arguments)]
 fn shortcuts(
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time<Real>>,
     snap: Res<Snap>,
     link: Res<SimLink>,
     mut st: ResMut<UiState>,
@@ -301,8 +305,21 @@ fn shortcuts(
     if keys.just_pressed(KeyCode::KeyM) {
         sound.muted = !sound.muted;
     }
+    // Space easily lands by mistake: pausing takes it twice (running again, once).
+    let now = time.elapsed_secs_f64();
     if keys.just_pressed(KeyCode::Space) {
-        link.0.send(Control::Pause(!snap.0.paused));
+        if snap.0.paused {
+            link.0.send(Control::Pause(false));
+            st.pause_asked = None;
+        } else if st.pause_asked.is_some_and(|t| now - t < PAUSE_CONFIRM) {
+            link.0.send(Control::Pause(true));
+            st.pause_asked = None;
+        } else {
+            st.pause_asked = Some(now);
+        }
+    }
+    if st.pause_asked.is_some_and(|t| now - t >= PAUSE_CONFIRM) {
+        st.pause_asked = None;
     }
     if keys.just_pressed(KeyCode::Period) {
         link.0.send(Control::StepOnce);
@@ -332,10 +349,14 @@ fn shortcuts(
 /// While the world is held up (saving, loading, or anything else keeping new pictures of it from
 /// coming), says so across the top of the screen, so a still picture doesn't look like a broken
 /// app.
+/// Seconds after a first press of Space in which a second one pauses.
+const PAUSE_CONFIRM: f64 = 2.0;
+
 fn busy_banner(
     mut contexts: EguiContexts,
     link: Res<SimLink>,
     snap: Res<crate::Snap>,
+    st: Res<UiState>,
     time: Res<Time<Real>>,
     mut seen: Local<(usize, f64)>,
 ) -> Result {
@@ -347,6 +368,7 @@ fn busy_banner(
     let still = now - seen.1;
     let text = match link.0.busy() {
         Some((what, for_)) => format!("{what}… {:.0} s", for_.as_secs_f32()),
+        None if st.pause_asked.is_some() && !snap.0.paused => "Press Space again to pause".to_string(),
         None if still > 1.5 && !snap.0.paused => format!("The simulation is busy… {still:.0} s"),
         None => return Ok(()),
     };

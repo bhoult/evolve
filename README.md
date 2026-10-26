@@ -55,7 +55,7 @@ cargo run --release -p evolve-sim --bin evolve-headless -- --minutes 120 --repor
 | M | mute; the volume slider is in the toolbar |
 | 1-8 | tools: select and drag, plant food, meat, rock, boulder, drop creature, remove, stones (the powers are in the Powers menu) |
 | Left click | use the tool. With Select, click a creature to inspect it, or hold and drag to carry it (scroll lifts it) |
-| Space, `.` | pause, single step |
+| Space twice, Space, `.` | pause (one press only asks: Space is easy to hit by mistake), run again, single step |
 | + / - | speed (¼× up to Max) |
 | F5 / F9 | quick save / quick load |
 | F12 | screenshot |
