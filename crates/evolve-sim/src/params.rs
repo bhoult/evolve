@@ -243,6 +243,10 @@ params! {
         /// Meters closed on food (while it has room to eat) worth as much in the life score as
         /// eating a plant.
         score_approach: f32 = 10.0, [0.1, 1000], Live;
+        /// A child's worth in the life score, in plants (the energy given it counts besides). Higher
+        /// breeds the gene pool, and so the rain, from creatures that raise families rather than
+        /// ones that only eat; scores made at different values don't compare exactly.
+        score_child: f32 = 0.5, [0, 50], Live;
         /// Fraction of the creatures bred from the gene pool that are instead exact copies of a
         /// pool genome judged on fewer than 3 lives, whose scores are averaged into its own. One
         /// life mostly measures luck (where it fell); this keeps the pool from filling with the

@@ -1564,7 +1564,7 @@ impl Sim {
         [
             c.life.earned / plant,
             c.life.kills_away as f32 * self.params.score_kill,
-            c.life.children as f32 * 0.5 + c.life.invested / plant,
+            c.life.children as f32 * self.params.score_child + c.life.invested / plant,
             c.life.distance / 50.0 + c.life.approached.max(0.0) / self.params.score_approach.max(0.1),
         ]
     }

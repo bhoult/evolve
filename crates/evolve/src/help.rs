@@ -737,7 +737,13 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
             num(p.score_kill)
         ),
     );
-    bullet(ui, "Breeding: 0.5 per child, plus 1 per plant's worth of energy given to children.");
+    bullet(
+        ui,
+        format!(
+            "Breeding: {} per child (score_child), plus 1 per plant's worth of energy given to children.",
+            num(p.score_child)
+        ),
+    );
     bullet(
         ui,
         format!(
