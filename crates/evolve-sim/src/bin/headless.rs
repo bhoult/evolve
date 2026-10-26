@@ -27,6 +27,7 @@ fn main() {
     let mut islands: Option<u32> = None;
     let mut mcp: Option<u16> = None;
     let mut wall: f64 = 60.0;
+    let mut profile_to: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         let mut val = || args.next().unwrap_or_else(|| die(&format!("{a} needs a value")));
@@ -38,6 +39,7 @@ fn main() {
             "--mcp" => mcp = Some(val().parse().unwrap_or_else(|_| die("bad --mcp"))),
             "--wall-seconds" => wall = val().parse().unwrap_or_else(|_| die("bad --wall-seconds")),
             "--load" => load_from = Some(val().into()),
+            "--profile" => profile_to = Some(val().into()),
             "--set" => {
                 let v = val();
                 let (k, x) = v.split_once('=').unwrap_or_else(|| die("--set wants name=value"));
@@ -104,6 +106,18 @@ fn main() {
     let mut cpu_last = (Instant::now(), evolve_sim::process_cpu_seconds().unwrap_or(0.0));
     let total_ticks = (minutes * 60.0 * TICKS_PER_SECOND as f64) as u64;
     let report_ticks = ((report * TICKS_PER_SECOND as f64) as u64).max(1);
+    #[cfg(feature = "profile")]
+    let profiler = profile_to.as_ref().map(|_| {
+        pprof::ProfilerGuardBuilder::default()
+            .frequency(997)
+            .blocklist(&["libc", "libgcc", "pthread", "vdso"])
+            .build()
+            .unwrap_or_else(|e| die(&format!("profiler: {e}")))
+    });
+    #[cfg(not(feature = "profile"))]
+    if profile_to.is_some() {
+        die("--profile needs a build with --features profile");
+    }
     let start = Instant::now();
     let mut last = (Instant::now(), sim.tick);
     for _ in 0..total_ticks {
@@ -189,12 +203,68 @@ fn main() {
         s.deaths_thirst,
         s.deaths_other
     );
+    #[cfg(feature = "profile")]
+    if let (Some(guard), Some(path)) = (profiler, &profile_to) {
+        write_profile(&guard, path);
+    }
     if let Some(p) = save_to {
         match save::save(&mut sim, &p) {
             Ok(bytes) => println!("saved {} ({} bytes)", p.display(), bytes),
             Err(e) => die(&e),
         }
     }
+}
+
+/// Where the sampled time went: by kind of thread, then the functions most often on the CPU
+/// (themselves, and with what they call), over all threads and over the physics threads alone.
+#[cfg(feature = "profile")]
+fn write_profile(guard: &pprof::ProfilerGuard, path: &std::path::Path) {
+    use std::collections::HashMap;
+    use std::fmt::Write;
+    let report = guard.report().build().unwrap_or_else(|e| die(&format!("profiler: {e}")));
+    // Thread names without their number ("evolve-physics-3" -> "evolve-physics").
+    let kind = |name: &str| name.trim_end_matches(|c: char| c.is_ascii_digit() || c == '-').to_string();
+    let mut threads: HashMap<String, isize> = HashMap::new();
+    let mut own: [HashMap<String, isize>; 2] = Default::default();
+    let mut within: [HashMap<String, isize>; 2] = Default::default();
+    let mut total = [0isize; 2];
+    for (frames, &n) in &report.data {
+        let k = kind(&frames.thread_name);
+        *threads.entry(k.clone()).or_default() += n;
+        let names: Vec<String> = frames.frames.iter().flatten().map(|s| s.name()).collect();
+        for (i, on) in [true, k == "evolve-physics"].into_iter().enumerate() {
+            if !on {
+                continue;
+            }
+            total[i] += n;
+            if let Some(leaf) = names.first() {
+                *own[i].entry(leaf.clone()).or_default() += n;
+            }
+            let mut seen = std::collections::HashSet::new();
+            for f in &names {
+                if seen.insert(f.as_str()) {
+                    *within[i].entry(f.clone()).or_default() += n;
+                }
+            }
+        }
+    }
+    let mut o = String::new();
+    let top = |m: &HashMap<String, isize>, all: isize, n: usize| {
+        let mut v: Vec<(&String, &isize)> = m.iter().collect();
+        v.sort_by(|a, b| b.1.cmp(a.1));
+        v.into_iter()
+            .take(n)
+            .map(|(f, &c)| format!("{:5.1}%  {}\n", c as f64 * 100.0 / all.max(1) as f64, f.chars().take(160).collect::<String>()))
+            .collect::<String>()
+    };
+    let all: isize = threads.values().sum();
+    let _ = writeln!(o, "{all} samples. By thread:\n{}", top(&threads, all, 20));
+    for (i, label) in ["all threads", "the physics threads"].iter().enumerate() {
+        let _ = writeln!(o, "Own time, {label}:\n{}", top(&own[i], total[i], 40));
+        let _ = writeln!(o, "Including what they call, {label}:\n{}", top(&within[i], total[i], 60));
+    }
+    std::fs::write(path, o).unwrap_or_else(|e| die(&format!("write {}: {e}", path.display())));
+    println!("profile written to {}", path.display());
 }
 
 /// Runs the world through the real `Runner` at maximum speed with `n` background worlds, for

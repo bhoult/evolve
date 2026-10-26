@@ -18,6 +18,11 @@ wgpu.workspace = true
 half.workspace = true
 bytemuck.workspace = true
 libc = "0.2"
+pprof = { version = "0.14", optional = true }
+
+[features]
+# `evolve-headless --profile FILE`: where the CPU time goes, sampled from every thread.
+profile = ["dep:pprof"]
 
 [[bin]]
 name = "evolve-headless"
