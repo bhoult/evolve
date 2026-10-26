@@ -282,7 +282,10 @@ generation, diet, limbs and brain size. Click one to follow its most advanced me
 Every parameter is in the left panel and takes effect immediately. The ones marked ⟳ shape the
 terrain and apply when you press **Regenerate terrain**, which keeps all the life. **New world**
 starts over. **Save / Load** lists the worlds in `~/.local/share/evolve/saves`. A save holds the
-complete state, physics included, so a world resumes mid-stride exactly where it was.
+complete state, physics included, so a world resumes mid-stride exactly where it was. The world
+stops only while it is turned into bytes (a third of a second for a 2.6 GB save of a 5000-a-side
+island), each part on its own core; it is compressed (zstd) and written on other threads while
+the world runs on. Loading unpacks the parts in parallel too: 2 s for that save.
 
 ## How it works
 
@@ -671,7 +674,8 @@ an oar.
 
 **Older saves and zoo creatures.**
 - Saves from before multibody joints (EVOLVE04) and before multi-jointed bodies (EVOLVE03), and
-  zoo genomes from before multi-jointed bodies, still load.
+  zoo genomes from before multi-jointed bodies, still load. So do gzipped saves from before saves
+  were written in parallel (EVOLVE06).
 - Their brains are rewired onto the new layout so they behave exactly as before. A test checks
   this.
 - Creatures in an old save are rebuilt from their genomes where they stood.

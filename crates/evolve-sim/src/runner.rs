@@ -12,6 +12,7 @@ use crate::math::Vec3;
 use crate::zoo::{Offers, RainDraw, SharedZoo, Zoo, ZooMeta};
 use crate::islands::{Board, Pacer, WorkerCtl, Worker, WorldStatus, main_threads, migrate, world_pool};
 use crate::params::SimParams;
+use crate::mcp::Reply;
 use crate::save;
 use crate::sim::Sim;
 use crate::snapshot::{Highlight, HighlightKind, Snapshot};
@@ -197,6 +198,45 @@ const SLOW_PASS_MS: u64 = 120;
 /// price rises while memory is fuller than this, and falls more slowly as memory nears it).
 pub const MEMORY_TARGET: f32 = 0.9;
 
+/// Turns the world into bytes for a save (it waits for that) and leaves them to be written on
+/// other threads. A save still being written finishes first.
+fn start_save(sim: &mut Sim, shared: &Shared, saving: &mut Option<(save::Saving, Option<Reply>)>, path: &std::path::Path, reply: Option<Reply>) {
+    shared.busy(Some("Saving the world"));
+    if let Some(s) = saving.take() {
+        finish_save(sim, s);
+    }
+    match save::begin(sim, path) {
+        Ok(s) => *saving = Some((s, reply)),
+        Err(e) => {
+            sim.log(format!("Save failed: {e}"));
+            if let Some(r) = reply {
+                let _ = r.send(Err(e));
+            }
+        }
+    }
+    shared.busy(None);
+}
+
+/// Waits for a save to be written, and says so in the log and to whoever asked for it.
+fn finish_save(sim: &mut Sim, (saving, reply): (save::Saving, Option<Reply>)) {
+    let (path, held, let_go) = (saving.path().display().to_string(), saving.held, saving.let_go);
+    let r = saving.wait().map(|bytes| {
+        format!(
+            "{path} ({:.1} MB; the world waited {:.1} s, writing took {:.1} s more)",
+            bytes as f64 / 1e6,
+            held.as_secs_f32(),
+            let_go.elapsed().as_secs_f32()
+        )
+    });
+    match &r {
+        Ok(m) => sim.log(format!("Saved {m}")),
+        Err(e) => sim.log(format!("Save failed: {e}")),
+    }
+    if let Some(reply) = reply {
+        let _ = reply.send(r.map(|m| format!("saved {m}")));
+    }
+}
+
 fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo) {
     let mut paused = false;
     let mut speed = 1.0f32;
@@ -231,6 +271,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     // world's best, and reading a new rain sample after.
     let mut zoo_offer: Option<JoinHandle<()>> = None;
     let mut rain_draw: Option<JoinHandle<(u64, Vec<(crate::genome::Genome, u32)>)>> = None;
+    // A save being compressed and written on other threads, and who asked for it (over MCP).
+    let mut saving: Option<(save::Saving, Option<Reply>)> = None;
     // A world that hasn't started yet (not a loaded one) begins with zoo creatures.
     if sim.tick == 0 && sim.creatures.is_empty() {
         crate::zoo::seed_world(&zoo, &mut sim);
@@ -240,6 +282,9 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     let mut reported_stopped: Vec<usize> = Vec::new();
     loop {
         let pass = Instant::now();
+        if saving.as_ref().is_some_and(|(s, _)| s.is_finished()) {
+            finish_save(&mut sim, saving.take().expect("just looked"));
+        }
         // Background worlds must exist before commands that target them are handled.
         sync_workers(&mut workers, &sim, speed, paused, &board, &zoo);
         let mut reset_islands = false;
@@ -252,9 +297,12 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         loop {
             match rx.try_recv() {
                 Ok(Control::Quit) | Err(TryRecvError::Disconnected) => {
-                    // Not quitting halfway through putting genomes in the zoo.
+                    // Not quitting halfway through putting genomes in the zoo, or writing a save.
                     if let Some(h) = zoo_offer.take() {
                         let _ = h.join();
+                    }
+                    if let Some(s) = saving.take() {
+                        finish_save(&mut sim, s);
                     }
                     return;
                 }
@@ -276,16 +324,13 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 }
                 Ok(Control::StepOnce) => step_once = true,
                 Ok(Control::BrainView(limits)) => brain_view = limits,
-                Ok(Control::Save(path)) => {
-                    shared.busy(Some("Saving the world"));
-                    match save::save(&mut sim, &path) {
-                        Ok(bytes) => sim.log(format!("Saved {} ({:.1} MB)", path.display(), bytes as f64 / 1e6)),
-                        Err(e) => sim.log(format!("Save failed: {e}")),
-                    }
-                    shared.busy(None);
-                }
+                Ok(Control::Save(path)) => start_save(&mut sim, &shared, &mut saving, &path, None),
                 Ok(Control::Load(path)) => {
                     shared.busy(Some("Loading the world"));
+                    // A save still being written finishes first (it may be the one asked for).
+                    if let Some(s) = saving.take() {
+                        finish_save(&mut sim, s);
+                    }
                     match save::load(&path) {
                         Ok(loaded) => {
                             sim = loaded;
@@ -299,6 +344,9 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 }
                 Ok(Control::LoadWith(path, sets)) => {
                     shared.busy(Some("Loading the world"));
+                    if let Some(s) = saving.take() {
+                        finish_save(&mut sim, s);
+                    }
                     match save::load(&path) {
                         Ok(mut loaded) => {
                             // Settings given with it override the loaded world's own.
@@ -442,13 +490,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             new_world = Some(Box::new(sim.params.clone()));
                             let _ = reply.send(Ok("starting a new world with the current settings".into()));
                         }
-                        Ask::Save(path) => {
-                            shared.busy(Some("Saving the world"));
-                            let r = save::save(&mut sim, &path)
-                                .map(|bytes| format!("saved {} ({:.1} MB)", path.display(), bytes as f64 / 1e6));
-                            shared.busy(None);
-                            let _ = reply.send(r);
-                        }
+                        // Answered once the file is written.
+                        Ask::Save(path) => start_save(&mut sim, &shared, &mut saving, &path, Some(reply)),
                         // The world on screen leads with how fast it runs against real time.
                         Ask::Summary if world == 0 => {
                             let rate = steps_per_sec / crate::sim::TICKS_PER_SECOND as f32;

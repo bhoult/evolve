@@ -14,6 +14,7 @@ serde.workspace = true
 serde_json.workspace = true
 flate2.workspace = true
 rmp-serde.workspace = true
+zstd.workspace = true
 wgpu.workspace = true
 half.workspace = true
 bytemuck.workspace = true

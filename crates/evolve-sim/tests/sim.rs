@@ -177,6 +177,11 @@ fn save_and_load_resume_exactly() {
     assert_eq!(loaded.creatures.len(), sim.creatures.len());
     assert_eq!(loaded.plants.len(), sim.plants.len());
     assert_eq!(loaded.tick, sim.tick);
+    // Saved in separate sections, and put back in the world after saving.
+    assert_eq!(loaded.shards.len(), sim.shards.len());
+    assert!(sim.terrain.res > 2 && loaded.terrain.heights == sim.terrain.heights);
+    assert!(loaded.terrain.water == sim.terrain.water && loaded.terrain.fertility == sim.terrain.fertility);
+    assert_eq!(loaded.pool.entries.len(), sim.pool.entries.len());
     for (a, b) in sim.creatures.iter().zip(&loaded.creatures) {
         assert_eq!(a.id, b.id);
         for (pa, pb) in a.parts.iter().zip(&b.parts) {
@@ -195,6 +200,45 @@ fn save_and_load_resume_exactly() {
         (t - c.last_pos).length() > 1e-4 || t != Vec3::ZERO
     });
     assert!(moved);
+}
+
+#[test]
+fn saves_from_before_sections_still_load() {
+    use std::io::Write;
+    let mut sim = Sim::new(SimParams {
+        min_population: 10,
+        terrain_resolution: 65,
+        ..SimParams::default()
+    });
+    for _ in 0..60 {
+        sim.step();
+    }
+    // EVOLVE06: the whole world as one gzipped stream of MessagePack.
+    let path = std::env::temp_dir().join(format!("evolve-old-{}.evo", std::process::id()));
+    let mut f = std::fs::File::create(&path).unwrap();
+    f.write_all(b"EVOLVE06").unwrap();
+    let mut gz = flate2::write::GzEncoder::new(f, flate2::Compression::fast());
+    gz.write_all(&rmp_serde::to_vec_named(&sim).unwrap()).unwrap();
+    gz.finish().unwrap();
+    let loaded = save::load(&path).expect("load");
+    let _ = std::fs::remove_file(&path);
+    assert_eq!(loaded.tick, sim.tick);
+    assert_eq!(loaded.creatures.len(), sim.creatures.len());
+    assert!(loaded.terrain.heights == sim.terrain.heights);
+}
+
+#[test]
+fn terrain_layers_saved_as_numbers_still_load() {
+    use evolve_sim::terrain::Layer;
+    let samples = vec![0.5f32, -2.25, 1e6, 0.0];
+    // How saves before EVOLVE07 held a layer: a list of numbers.
+    let old: Layer = rmp_serde::from_slice(&rmp_serde::to_vec_named(&samples).unwrap()).unwrap();
+    assert_eq!(*old, samples);
+    let layer = Layer::from(samples.clone());
+    let now: Layer = rmp_serde::from_slice(&rmp_serde::to_vec_named(&layer).unwrap()).unwrap();
+    assert_eq!(*now, samples);
+    let json: Layer = serde_json::from_str(&serde_json::to_string(&layer).unwrap()).unwrap();
+    assert_eq!(*json, samples, "readable formats keep a list");
 }
 
 #[test]

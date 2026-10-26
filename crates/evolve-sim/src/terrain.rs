@@ -173,15 +173,47 @@ impl From<Vec<f32>> for Layer {
     }
 }
 
+/// In saves a layer is its raw little-endian bytes (as a list of numbers, a big terrain's layers
+/// took most of a second to write); in readable formats, a list. Saves from before still load.
 impl Serialize for Layer {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        self.0.as_slice().serialize(s)
+        if s.is_human_readable() {
+            self.0.as_slice().serialize(s)
+        } else {
+            s.serialize_bytes(bytemuck::cast_slice(self.0.as_slice()))
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for Layer {
     fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        Vec::<f32>::deserialize(d).map(Layer::from)
+        if d.is_human_readable() {
+            return Vec::<f32>::deserialize(d).map(Layer::from);
+        }
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = Layer;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("terrain samples as bytes or as a list")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, b: &[u8]) -> Result<Layer, E> {
+                if !b.len().is_multiple_of(4) {
+                    return Err(E::custom("a layer's bytes aren't whole f32s"));
+                }
+                Ok(b.chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect::<Vec<_>>()
+                    .into())
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Layer, A::Error> {
+                let mut v = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(x) = seq.next_element::<f32>()? {
+                    v.push(x);
+                }
+                Ok(v.into())
+            }
+        }
+        d.deserialize_bytes(V)
     }
 }
 
