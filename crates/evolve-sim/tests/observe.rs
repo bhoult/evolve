@@ -378,7 +378,7 @@ fn the_mcp_server_answers_an_assistant() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
     let summary = text(&call(port, "worlds_summary", serde_json::json!({})));
-    assert!(summary.starts_with("World 0 (on screen): t "), "{summary}");
+    assert!(summary.starts_with("World 0 (on screen): ") && summary.contains("x real time") && summary.contains("; t "), "{summary}");
     let report = text(&call(port, "world_report", serde_json::json!({"minutes": 1})));
     assert!(report.contains("Food standing"), "{report}");
     let list = text(&call(port, "list_creatures", serde_json::json!({"sort_by": "mass", "count": 2})));

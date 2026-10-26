@@ -553,6 +553,31 @@ fn a_body_from_the_sky_leaves_meat_only_when_killed() {
     assert!(left >= 0.9 * want, "a killed one leaves its body's meat: {left} of at least {want}");
 }
 
+/// Bitten and then running out of energy (a wounded creature burns it healing) is a kill: the body
+/// from the sky leaves its meat, as it would had its health run out first.
+#[test]
+fn bitten_then_out_of_energy_is_a_kill_and_leaves_meat() {
+    let mut p = quiet_params();
+    p.plant_max_count = 0;
+    p.plant_spawn_rate = 0.0;
+    let mut sim = Sim::new(p);
+    let (a, b) = (sim.rain_creature(None), sim.rain_creature(None));
+    sim.step();
+    let c = sim.creature_mut(b).unwrap();
+    c.last_attacker = Some(a);
+    c.attacked_ago = 0.0;
+    c.energy = 0.0;
+    let mass = c.mass;
+    let (killed, starved) = (sim.stats.deaths_killed, sim.stats.deaths_starved);
+    for _ in 0..4 {
+        sim.step();
+    }
+    assert!(sim.creature(b).is_none(), "it died");
+    assert_eq!((sim.stats.deaths_killed - killed, sim.stats.deaths_starved - starved), (1, 0), "of a bite, not hunger");
+    let left: f32 = sim.meat.iter().map(|m| m.energy).sum();
+    assert!(left >= 0.9 * mass * sim.params.sky_meat_per_mass, "it leaves its body's meat: {left}");
+}
+
 /// Meat-eaters that do nothing but breed, bite and eat, in a world with no plants and no rain:
 /// with energy conserved they die out, since every birth and death loses some.
 #[test]

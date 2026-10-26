@@ -2209,12 +2209,15 @@ impl Sim {
             c.pain *= 0.85f32.powf(bdt * 30.0);
             c.attacked_ago += bdt;
             if c.dead.is_none() {
-                if c.energy <= 0.0 {
+                // Bitten and dying within moments is a kill whatever ran out first: a wounded
+                // creature burns energy healing, and one bitten while low starved, leaving no meat
+                // and no kill to the biter.
+                if (c.energy <= 0.0 || c.health <= 0.0) && c.attacked_ago < RECENT_ATTACK {
+                    c.dead = Some(DeathCause::Killed);
+                } else if c.energy <= 0.0 {
                     c.dead = Some(DeathCause::Starved);
                 } else if c.health <= 0.0 {
-                    c.dead = Some(if c.attacked_ago < RECENT_ATTACK {
-                        DeathCause::Killed
-                    } else if c.drowning || c.oxygen < 0.5 {
+                    c.dead = Some(if c.drowning || c.oxygen < 0.5 {
                         DeathCause::Drowned
                     } else if c.hydration <= 0.0 {
                         DeathCause::Dehydrated
