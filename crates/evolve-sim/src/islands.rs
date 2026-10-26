@@ -90,6 +90,8 @@ pub struct WorldStatus {
     pub births: u64,
     pub steps_per_sec: f32,
     pub gpu_busy: f32,
+    /// How full its share of GPU brain memory is (see `Sim::brain_memory_fill`).
+    pub memory_fill: f32,
     /// The world's thread has stopped (it panicked).
     pub stopped: bool,
 }
@@ -106,6 +108,7 @@ impl WorldStatus {
             births: sim.stats.births,
             steps_per_sec,
             gpu_busy: sim.perf.gpu_busy,
+            memory_fill: sim.brain_memory_fill(),
             stopped: false,
         }
     }

@@ -767,6 +767,12 @@ impl Sim {
 
     /// Pulls the live brain state (activations, learned weights) back from the GPU, so a save
     /// captures it.
+    /// How full this world's share of GPU brain memory is, 0 to 1 (more when brains were saved
+    /// with a bigger budget); 0 with brains on the CPU.
+    pub fn brain_memory_fill(&self) -> f32 {
+        self.brains.as_ref().map_or(0.0, |g| g.memory_bytes() as f32 / g.budget_bytes.max(1) as f32)
+    }
+
     pub fn sync_brains(&mut self) {
         let Some(g) = self.brains.as_mut() else {
             return;

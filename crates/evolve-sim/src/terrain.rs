@@ -71,7 +71,7 @@ pub struct Terrain {
     #[serde(skip)]
     pub sliding: Vec<(usize, usize, usize, usize)>,
     /// Seconds each block of `REST_BLOCK` grid cells a side has gone undisturbed (dug, piled,
-    /// slid, raised...), row by row: only ground left alone `earth_rest` heals.
+    /// raised...; not slid), row by row: only ground left alone `earth_rest` heals.
     #[serde(default)]
     pub quiet: Vec<f32>,
     /// For spreading the coarse grid's water back (see `hydro::update`): which of its cells had
@@ -110,6 +110,10 @@ pub const ONE_PIECE: usize = 512;
 /// physics ground there is rebuilt: physics needs no millimetres, and rebuilding every piece
 /// with a channel in it every 30 s stalled the world.
 pub const EROSION_REBUILD: f32 = 0.05;
+
+/// Most grid points `slump` sweeps in one go, passes counted (a slide over a third of a big
+/// island, 24 passes, took most of a second every half a simulated second).
+const SLUMP_BUDGET: usize = 4_000_000;
 
 /// One layer of the grid (heights, water...), shared between copies of the terrain until one of
 /// them changes it, when that one gets its own. The screen takes a copy of the terrain several
@@ -458,7 +462,13 @@ impl Terrain {
         }
         self.sliding.clear();
         let mut settled = true;
+        // A slide over a big area gets fewer passes, and goes on next time.
+        let mut budget = SLUMP_BUDGET;
         for patch in self.dirty.clone() {
+            let (i0, i1, j0, j1) = patch;
+            let area = (i1 + 3 - i0) * (j1 + 3 - j0);
+            let passes = (budget / area).clamp(1, passes);
+            budget = budget.saturating_sub(area * passes);
             settled &= self.slump_patch(patch, angle, max_dig, max_pile, passes);
         }
         settled
@@ -505,9 +515,11 @@ impl Terrain {
                     }
                 }
             }
+            // What slid is reshaped but not disturbed: earth settling on its own doesn't hold off
+            // healing (a slide over a big loose area kept a third of an island from ever healing).
             let Some(m) = moved else {
                 if let Some((a, b, c, d)) = moved_any {
-                    self.mark_dirty(a, b, c, d);
+                    self.mark_reshaped(a, b, c, d);
                 }
                 return true;
             };
@@ -518,7 +530,7 @@ impl Terrain {
             region = grow(m);
         }
         if let Some((a, b, c, d)) = moved_any {
-            self.mark_dirty(a, b, c, d);
+            self.mark_reshaped(a, b, c, d);
             self.sliding.push((a, b, c, d));
         }
         false
@@ -679,7 +691,7 @@ impl Terrain {
 
     /// Marks rows i0..=i1 and columns j0..=j1 as reshaped, for slopes to settle and the physics
     /// ground to follow, without counting as a disturbance (healing reshapes ground too).
-    fn mark_reshaped(&mut self, i0: usize, i1: usize, j0: usize, j1: usize) {
+    pub fn mark_reshaped(&mut self, i0: usize, i1: usize, j0: usize, j1: usize) {
         // Patches this close (in cells) or overlapping become one.
         const NEAR: usize = 8;
         let mut r = (i0, i1, j0, j1);

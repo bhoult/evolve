@@ -193,6 +193,10 @@ impl Caches {
 /// A pass of the runner's loop longer than this is logged with what it was spent on.
 const SLOW_PASS_MS: u64 = 120;
 
+/// How full GPU brain memory may get before it holds the brain price up like a busy GPU does (the
+/// price rises while memory is fuller than this, and falls more slowly as memory nears it).
+pub const MEMORY_TARGET: f32 = 0.9;
+
 fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo) {
     let mut paused = false;
     let mut speed = 1.0f32;
@@ -530,7 +534,13 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                         .filter(|w| w.alive())
                         .filter_map(|w| w.status.lock().ok().map(|s| s.gpu_busy))
                         .sum::<f32>();
-                let error = busy - sim.params.gpu_target;
+                // Brain memory full counts as busy too: brains that don't fit are trimmed, so their
+                // price mustn't fall for want of GPU time while there's no room for them (it sat at
+                // the floor with memory 105% full, and brains grew into halving).
+                let fill = std::iter::once(sim.brain_memory_fill())
+                    .chain(workers.iter().filter(|w| w.alive()).filter_map(|w| w.status.lock().ok().map(|s| s.memory_fill)))
+                    .fold(0.0f32, f32::max);
+                let error = (busy - sim.params.gpu_target).max(fill - MEMORY_TARGET);
                 // The price drifts (a factor of e in two minutes at full error, faster when over,
                 // so an overloaded GPU is relieved quickly); growth follows the error directly.
                 let rate = if error > 0.0 { 1.0 / 30.0 } else { 1.0 / 120.0 };

@@ -478,6 +478,7 @@ impl Sim {
         // Timed, and a settling over a tenth of a second says where it went (it showed as pauses).
         let started = std::time::Instant::now();
         let area: usize = self.terrain.dirty.iter().map(|&(i0, i1, j0, j1)| (i1 + 1 - i0) * (j1 + 1 - j0)).sum();
+        let widest = self.terrain.dirty.iter().map(|&(i0, i1, j0, j1)| (i1 + 1 - i0).max(j1 + 1 - j0)).max().unwrap_or(0);
         let ms = |t: std::time::Instant| t.elapsed().as_secs_f32() * 1000.0;
         // Steep loose earth slides first; what's still sliding goes on next time.
         let p = &self.params;
@@ -488,7 +489,7 @@ impl Sim {
         // Only where earth is still sliding goes on next time (carrying every patch over while
         // any slid had them pile up into the hundreds).
         for (i0, i1, j0, j1) in std::mem::take(&mut self.terrain.sliding) {
-            self.terrain.mark_dirty(i0, i1, j0, j1);
+            self.terrain.mark_reshaped(i0, i1, j0, j1);
         }
         // The same ground in every physics world: the pieces of it that changed.
         let n = self.terrain.tiles();
@@ -587,8 +588,8 @@ impl Sim {
         let took = ms(started);
         if took > 100.0 {
             eprintln!(
-                "evolve: settling took {took:.0} ms: slumping {slumped:.0} ms over {} patches ({:.1}M points), \
-                 ground tiles {rebuilt:.0} ms ({} of {wanted} wanted), the rest {:.0} ms",
+                "evolve: settling took {took:.0} ms: slumping {slumped:.0} ms over {} patches ({:.1}M points, the widest \
+                 {widest} across), ground tiles {rebuilt:.0} ms ({} of {wanted} wanted), the rest {:.0} ms",
                 patches.len(),
                 area as f32 / 1e6,
                 wanted.min(TILES_PER_SETTLE),

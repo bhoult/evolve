@@ -357,6 +357,13 @@ impl Sim {
             );
         }
         let memory = match &self.brains {
+            Some(g) if self.brain_memory_fill() >= crate::runner::MEMORY_TARGET => format!(
+                "; brain memory {:.2} of this world's {:.2} GB (nearly full: brains' price is held up until \
+                 they shrink below {:.0}%, and a brain that doesn't fit is trimmed)",
+                g.memory_bytes() as f64 / 1e9,
+                g.budget_bytes as f64 / 1e9,
+                crate::runner::MEMORY_TARGET * 100.0
+            ),
             Some(g) => format!(
                 "; brain memory {:.2} of this world's {:.2} GB (a brain that doesn't fit is trimmed)",
                 g.memory_bytes() as f64 / 1e9,
