@@ -725,9 +725,14 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Eating: 1 per plant's worth ({} energy) of food or meat eaten at least {} m from where it fell or was born (score_food_away). Counting every meal rewarded landing beside a plant: big bodies that never walked filled up where they fell and won.",
+            "Eating: 1 per plant's worth ({} energy) of food or meat eaten at least {} m from where it fell or was born (score_food_away){}. Counting every meal rewarded landing beside a plant: big bodies that never walked filled up where they fell and won.",
             num(p.plant_max_energy),
-            num(p.score_food_away)
+            num(p.score_food_away),
+            if p.score_size_exponent > 0.0 {
+                format!(", times (100 kg / its mass)^{} so a big body's bigger appetite earns nothing extra (score_size_exponent)", num(p.score_size_exponent))
+            } else {
+                String::new()
+            }
         ),
     );
     bullet(

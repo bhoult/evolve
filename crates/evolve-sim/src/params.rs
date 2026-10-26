@@ -247,6 +247,11 @@ params! {
         /// breeds the gene pool, and so the rain, from creatures that raise families rather than
         /// ones that only eat; scores made at different values don't compare exactly.
         score_child: f32 = 0.5, [0, 50], Live;
+        /// How food in the life score is scaled by body size: 0 counts it as eaten, 0.75 per
+        /// metabolic size (mass^0.75, against a 100 kg body), so a big body that eats more only
+        /// because it needs more scores no higher than a small one that eats as well for its size.
+        /// (Counted as eaten, the gene pool bred ever bigger eaters, too big to breed.)
+        score_size_exponent: f32 = 0.0, [0, 1], Live;
         /// Fraction of the creatures bred from the gene pool that are instead exact copies of a
         /// pool genome judged on fewer than 3 lives, whose scores are averaged into its own. One
         /// life mostly measures luck (where it fell); this keeps the pool from filling with the

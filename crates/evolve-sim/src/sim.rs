@@ -1568,8 +1568,9 @@ impl Sim {
     /// once a creature has gone to get it.
     pub fn score_parts(&self, c: &Creature) -> [f32; 4] {
         let plant = self.params.plant_max_energy.max(1.0);
+        let size = (100.0 / c.mass.max(1.0)).powf(self.params.score_size_exponent);
         [
-            c.life.earned / plant,
+            c.life.earned / plant * size,
             c.life.kills_away as f32 * self.params.score_kill,
             c.life.children as f32 * self.params.score_child + c.life.invested / plant,
             c.life.distance / 50.0 + c.life.approached.max(0.0) / self.params.score_approach.max(0.1),
