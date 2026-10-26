@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use crate::commands::Command;
 use crate::math::Vec3;
-use crate::zoo::{SharedZoo, Zoo, ZooMeta, store_best};
+use crate::zoo::{Offers, RainDraw, SharedZoo, Zoo, ZooMeta};
 use crate::islands::{Board, Pacer, WorkerCtl, Worker, WorldStatus, main_threads, migrate, world_pool};
 use crate::params::SimParams;
 use crate::save;
@@ -227,6 +227,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     let mut next_log = sim.time + LOG_EVERY;
     let mut zoo_cache: (u64, Arc<Vec<ZooMeta>>) = (0, Arc::new(Vec::new()));
     let zoo_dir = zoo.lock().map(|z| z.dir().display().to_string()).unwrap_or_default();
+    // The zoo's disk work is done on other threads so the world doesn't stop for it: storing the
+    // world's best, and reading a new rain sample after.
+    let mut zoo_offer: Option<JoinHandle<()>> = None;
+    let mut rain_draw: Option<JoinHandle<(u64, Vec<(crate::genome::Genome, u32)>)>> = None;
     // A world that hasn't started yet (not a loaded one) begins with zoo creatures.
     if sim.tick == 0 && sim.creatures.is_empty() {
         crate::zoo::seed_world(&zoo, &mut sim);
@@ -247,7 +251,13 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         let mut worker_drops: Vec<(ZooTarget, Box<crate::genome::Genome>, u32, u32)> = Vec::new();
         loop {
             match rx.try_recv() {
-                Ok(Control::Quit) | Err(TryRecvError::Disconnected) => return,
+                Ok(Control::Quit) | Err(TryRecvError::Disconnected) => {
+                    // Not quitting halfway through putting genomes in the zoo.
+                    if let Some(h) = zoo_offer.take() {
+                        let _ = h.join();
+                    }
+                    return;
+                }
                 Ok(Control::Sim(c)) => {
                     if let Command::SetParams(p) = &c {
                         for w in &workers {
@@ -514,7 +524,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             next_zoo = sim.time + sim.params.zoo_interval as f64;
         }
         if sim.time >= next_zoo {
-            store_best(&zoo, &sim, 0);
+            if zoo_offer.as_ref().is_none_or(|h| h.is_finished()) {
+                let (offers, zoo) = (Offers::of(&sim, 0), zoo.clone());
+                zoo_offer = std::thread::Builder::new().name("evolve-zoo".into()).spawn(move || offers.give(&zoo)).ok();
+            }
             next_zoo = sim.time + sim.params.zoo_interval as f64;
         }
         if sim.time >= next_log {
@@ -524,8 +537,17 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         if sim.time >= next_migration {
             let interval = sim.params.migration_interval;
             migrate(&mut sim.pool, &board, interval);
-            crate::zoo::refresh_rain_sample(&zoo, &mut sim);
+            if rain_draw.is_none()
+                && let Some(draw) = RainDraw::due(&zoo, &sim)
+            {
+                rain_draw = std::thread::Builder::new().name("evolve-rain-sample".into()).spawn(move || draw.read()).ok();
+            }
             next_migration = sim.time + interval as f64;
+        }
+        if rain_draw.as_ref().is_some_and(|h| h.is_finished())
+            && let Some(Ok(drawn)) = rain_draw.take().map(|h| h.join())
+        {
+            (sim.zoo_sample_version, sim.zoo_sample) = drawn;
         }
 
         let window = rate_window.0.elapsed().as_secs_f32();
@@ -629,7 +651,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             snap.steps_per_sec = steps_per_sec;
             snap.cpu_percent = cpu_percent;
             snap.world_epoch = world_epoch;
-            if let Ok(z) = zoo.lock()
+            // Not waiting while the zoo is being written to: the list on screen catches up later.
+            if let Ok(z) = zoo.try_lock()
                 && z.version != zoo_cache.0
             {
                 zoo_cache = (z.version, Arc::new(z.entries.clone()));

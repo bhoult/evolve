@@ -564,47 +564,93 @@ const RAIN_SAMPLE: usize = 16;
 /// one of each (see `Zoo::offer`). Only creatures scored under today's rules, as for
 /// `seed_world`. Cheap when nothing changed, so it can be called often.
 pub fn refresh_rain_sample(zoo: &SharedZoo, sim: &mut crate::Sim) {
-    if sim.params.rain_from_zoo <= 0.0 {
-        return;
+    if let Some(draw) = RainDraw::due(zoo, sim) {
+        (sim.zoo_sample_version, sim.zoo_sample) = draw.read();
     }
-    let (dir, mut ids, version) = match zoo.lock() {
-        Ok(z) if z.version != sim.zoo_sample_version || sim.zoo_sample.is_empty() => (
-            z.dir.clone(),
-            z.entries.iter().filter(|e| e.score_version == SCORE_VERSION).map(|e| (e.id, e.generation)).collect::<Vec<_>>(),
-            z.version,
-        ),
-        _ => return,
-    };
-    sim.zoo_sample_version = version;
-    // Its own random numbers, so when the zoo changes doesn't change the world's.
-    let mut rng = crate::rng::Rng::new(version ^ sim.tick);
-    let mut sample = Vec::with_capacity(RAIN_SAMPLE);
-    while sample.len() < RAIN_SAMPLE && !ids.is_empty() {
-        let (id, generation) = ids.swap_remove(rng.below(ids.len()));
-        if let Ok(g) = load_genome(&dir, id) {
-            sample.push((g, generation));
+}
+
+/// A world's next rain sample (see `refresh_rain_sample`), picked while the zoo is held and read
+/// from disk after, which can be done on another thread: sixteen genomes of up to 15 MB each
+/// held the world up a fifth of a second.
+pub struct RainDraw {
+    dir: PathBuf,
+    ids: Vec<(u64, u32)>,
+    version: u64,
+    seed: u64,
+}
+
+impl RainDraw {
+    /// A draw if the world's sample is older than the zoo. None while another thread holds the
+    /// zoo (storing a world's best), so a world never waits on it; it's asked again later.
+    pub fn due(zoo: &SharedZoo, sim: &crate::Sim) -> Option<RainDraw> {
+        if sim.params.rain_from_zoo <= 0.0 {
+            return None;
         }
+        let z = zoo.try_lock().ok()?;
+        if z.version == sim.zoo_sample_version && !sim.zoo_sample.is_empty() {
+            return None;
+        }
+        let ids = z.entries.iter().filter(|e| e.score_version == SCORE_VERSION).map(|e| (e.id, e.generation)).collect();
+        // Its own random numbers, so when the zoo changes doesn't change the world's.
+        Some(RainDraw { dir: z.dir.clone(), ids, version: z.version, seed: z.version ^ sim.tick })
     }
-    sim.zoo_sample = sample;
+
+    /// Reads the sample; returns the zoo version it was drawn from, and the sample.
+    pub fn read(mut self) -> (u64, Vec<(Genome, u32)>) {
+        let mut rng = crate::rng::Rng::new(self.seed);
+        let mut sample = Vec::with_capacity(RAIN_SAMPLE);
+        while sample.len() < RAIN_SAMPLE && !self.ids.is_empty() {
+            let (id, generation) = self.ids.swap_remove(rng.below(self.ids.len()));
+            if let Ok(g) = load_genome(&self.dir, id) {
+                sample.push((g, generation));
+            }
+        }
+        (self.version, sample)
+    }
 }
 
 /// Offers the zoo the best genome of each kind in a world's gene pool (see `Zoo::offer`).
 pub fn store_best(zoo: &SharedZoo, sim: &crate::Sim, world: usize) {
-    if sim.pool.entries.is_empty() {
-        return;
+    Offers::of(sim, world).give(zoo);
+}
+
+/// The best genome of each kind in a world's gene pool, copied out to offer the zoo (see
+/// `store_best`), so writing them can be done on another thread: four to six genomes of up to
+/// 15 MB and the index after each held the world up most of a second every five minutes.
+pub struct Offers {
+    genomes: Vec<(Genome, f32, u32)>,
+    source: String,
+    max_entries: usize,
+    kind_distance: f32,
+}
+
+impl Offers {
+    pub fn of(sim: &crate::Sim, world: usize) -> Offers {
+        let source = if world == 0 {
+            format!("seed {}, {:.0} min", sim.params.seed, sim.time / 60.0)
+        } else {
+            format!("background world {world} (seed {}), {:.0} min", sim.params.seed, sim.time / 60.0)
+        };
+        let p = &sim.params;
+        let genomes = if sim.pool.entries.is_empty() {
+            Vec::new()
+        } else {
+            let entries = &sim.pool.entries;
+            sim.pool.kinds(p.zoo_kind_distance).into_iter().map(|(best, _)| (entries[best].genome.clone(), entries[best].score, entries[best].generation)).collect()
+        };
+        Offers { genomes, source, max_entries: p.zoo_max_entries as usize, kind_distance: p.zoo_kind_distance }
     }
-    let source = if world == 0 {
-        format!("seed {}, {:.0} min", sim.params.seed, sim.time / 60.0)
-    } else {
-        format!("background world {world} (seed {}), {:.0} min", sim.params.seed, sim.time / 60.0)
-    };
-    let p = &sim.params;
-    if let Ok(mut z) = zoo.lock() {
-        for (best, _) in sim.pool.kinds(p.zoo_kind_distance) {
-            let e = &sim.pool.entries[best];
-            if let Err(e) = z.offer(&e.genome, e.score, e.generation, &source, p.zoo_max_entries as usize, p.zoo_kind_distance) {
-                eprintln!("evolve: zoo: {e}");
-                break;
+
+    pub fn give(self, zoo: &SharedZoo) {
+        if self.genomes.is_empty() {
+            return;
+        }
+        if let Ok(mut z) = zoo.lock() {
+            for (genome, score, generation) in &self.genomes {
+                if let Err(e) = z.offer(genome, *score, *generation, &self.source, self.max_entries, self.kind_distance) {
+                    eprintln!("evolve: zoo: {e}");
+                    break;
+                }
             }
         }
     }
