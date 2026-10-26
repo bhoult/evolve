@@ -332,8 +332,10 @@ pub struct Perf {
     pub shard_slowest_ms: f32,
     pub shard_total_ms: f32,
     /// Where the physics time goes, summed over the worlds, ms per step, smoothed: finding
-    /// contacts (broad phase, narrow phase), solving, CCD, and the rest (islands, updates).
-    pub physics_stages: [f32; 5],
+    /// contacts (broad phase, narrow phase), solving, CCD, taking in what we changed (user
+    /// changes), building islands, collecting their constraints, moving the bodies (update), and
+    /// whatever's left.
+    pub physics_stages: [f32; 9],
     /// Each phase of the step (named in `PHASE_NAMES`), ms per step, smoothed. Phases that run
     /// only now and then (brains, ecology, water) count as their cost spread over the steps
     /// between.
@@ -1766,7 +1768,7 @@ impl Sim {
         self.perf.lap(7, &mut lap);
         // The physics worlds step in parallel: rapier solves a world's articulations on one
         // thread.
-        let (times, stages): (Vec<f32>, Vec<[f32; 5]>) = {
+        let (times, stages): (Vec<f32>, Vec<[f32; 9]>) = {
             use rayon::prelude::*;
             self.shards
                 .par_iter_mut()
@@ -1781,7 +1783,12 @@ impl Sim {
                     let c = &s.world.physics_pipeline.counters;
                     let (broad, narrow) = (c.cd.broad_phase_time.time_ms() as f32, c.cd.narrow_phase_time.time_ms() as f32);
                     let (solver, ccd) = (c.stages.solver_time.time_ms() as f32, c.stages.ccd_time.time_ms() as f32);
-                    (ms, [broad, narrow, solver, ccd, (ms - broad - narrow - solver - ccd).max(0.0)])
+                    let user = c.stages.user_changes.time_ms() as f32;
+                    let islands = c.stages.island_construction_time.time_ms() as f32;
+                    let collect = c.stages.island_constraints_collection_time.time_ms() as f32;
+                    let update = c.stages.update_time.time_ms() as f32;
+                    let known = broad + narrow + solver + ccd + user + islands + collect + update;
+                    (ms, [broad, narrow, solver, ccd, user, islands, collect, update, (ms - known).max(0.0)])
                 })
                 .unzip()
         };

@@ -402,12 +402,16 @@ impl Sim {
         let s = &f.physics_stages;
         let _ = writeln!(
             o,
-            "Physics, summed over the worlds: broad phase {:.1}, narrow phase {:.1}, solver {:.1}, CCD {:.1}, the rest {:.1} ms per step. Each world (ms per step / body parts): {}.",
+            "Physics, summed over the worlds: broad phase {:.1}, narrow phase {:.1}, solver {:.1}, CCD {:.1}, our changes {:.1}, islands {:.1}, their constraints {:.1}, moving bodies {:.1}, the rest {:.1} ms per step. Each world (ms per step / body parts): {}.",
             s[0],
             s[1],
             s[2],
             s[3],
             s[4],
+            s[5],
+            s[6],
+            s[7],
+            s[8],
             list.join(", ")
         );
         if let Some(spread) = self.step_spread() {
