@@ -297,7 +297,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     // The surface of deep water: a second mesh over lakes, ponds and deep streams (scene.rs),
     // flagged by a UV of -1. Sky reflections and sun glints over a dark body, see-through
     // where it thins out at the shore. Lakes lie level (their normal is up); streams follow their
-    // bed and carry their ripples downstream.
+    // bed and carry their ripples downstream. See-through, so never drawn deferred.
+#ifndef PREPASS_PIPELINE
     if (lake) {
         let fall = length(n.xz);
         let downhill = n.xz / max(fall, 1e-4);
@@ -325,6 +326,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         surface_out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(lake_col, alpha));
         return surface_out;
     }
+#endif
 
     let cover = smoothstep(0.005, 0.05, water) * on_land;
     if (cover > 0.001) {
