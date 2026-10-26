@@ -2142,15 +2142,33 @@ impl Sim {
             // away cost the physics seconds a step: it goes.
             if !bad && let Some(link) = world.multibody_joints.rigid_body_link(c.parts[0].body).copied() {
                 if let Some(mb) = world.multibody_joints.get_multibody(link.multibody) {
-                    let wild = mb.links().filter_map(|l| world.bodies.get(l.rigid_body_handle())).find(|b| {
-                        b.linvel().length() > GLITCH_SPEED * max_v || !terrain.contains(b.translation().x, b.translation().z, -50.0)
-                    });
-                    if let Some(b) = wild {
+                    let wild = mb
+                        .links()
+                        .map(|l| l.rigid_body_handle())
+                        .filter_map(|h| Some((h, world.bodies.get(h)?)))
+                        .find(|(_, b)| {
+                            b.linvel().length() > GLITCH_SPEED * max_v || !terrain.contains(b.translation().x, b.translation().z, -50.0)
+                        });
+                    if let Some((h, b)) = wild {
+                        // Which link, and what the creature was doing, to find what blows bodies up.
+                        let which = match c.parts.iter().position(|q| q.body == h) {
+                            Some(k) => format!("part {k} ({:?})", c.plan[k].shape),
+                            None => "a knuckle".to_string(),
+                        };
+                        let swivels = c.joints.iter().filter(|j| j.knuckle.is_some()).count();
                         eprintln!(
-                            "evolve: creature #{} blew apart ({:.0} m/s at {:.0?}), removed",
+                            "evolve: creature #{} blew apart ({:.0} m/s at {:.0?}, {which}; {} parts, {} joints of which {swivels} swivels, \
+                             {:.0} kg, age {:.0} s, in water {:.2}, soil {:.2}, held {}), removed",
                             c.id,
                             b.linvel().length(),
-                            b.translation().to_array()
+                            b.translation().to_array(),
+                            c.parts.len(),
+                            c.joints.len(),
+                            c.mass,
+                            c.age,
+                            c.in_water,
+                            c.soil,
+                            c.held.is_some()
                         );
                         bad = true;
                     }
