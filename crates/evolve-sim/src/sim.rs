@@ -1799,6 +1799,28 @@ impl Sim {
         for (s, &t) in self.shard_ms.iter_mut().zip(&times) {
             *s += (t - *s) * k;
         }
+        // A world that took far too long says what was in it: its fastest bodies (whose they
+        // are), its biggest, and how many contacts it had (a step of seconds stalled the world).
+        for (i, &ms) in times.iter().enumerate().filter(|(_, ms)| **ms > 300.0) {
+            let w = &self.shards[i].world;
+            let mut fast: Vec<(f32, f32, String)> = w
+                .bodies
+                .iter()
+                .map(|(_, b)| {
+                    let reach = b.colliders().iter().filter_map(|&h| w.colliders.get(h)).map(|c| c.compute_aabb().extents().max_element()).fold(0.0f32, f32::max);
+                    (b.linvel().length(), reach, format!("{:?} at {:.0?}", crate::body::Tag::decode(b.user_data), b.translation().to_array()))
+                })
+                .collect();
+            fast.sort_by(|a, b| b.0.total_cmp(&a.0));
+            let top: Vec<String> = fast.iter().take(3).map(|(v, r, who)| format!("{who} {v:.1} m/s, {r:.1} m across")).collect();
+            let widest = fast.iter().map(|f| f.1).fold(0.0f32, f32::max);
+            eprintln!(
+                "evolve: physics world {i} took {ms:.0} ms: {} bodies, {} contact pairs; fastest {}; widest body {widest:.1} m",
+                w.bodies.len(),
+                w.narrow_phase.contact_pairs().count(),
+                top.join("; ")
+            );
+        }
         let slowest = times.iter().copied().fold(0.0, f32::max);
         let total: f32 = times.iter().sum();
         self.perf.shard_slowest_ms += (slowest - self.perf.shard_slowest_ms) * k;
