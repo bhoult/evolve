@@ -213,6 +213,12 @@ pub fn spring(pos: &mut Vec3, vel: &mut Vec3, target: Vec3, omega: f32, dt: f32)
     *vel = (*vel - k * omega) * e;
 }
 
+/// Where the eye sits circling `focus` (before `apply_camera` keeps it above the ground and the
+/// waves).
+pub fn orbit_eye(focus: Vec3, yaw: f32, pitch: f32, distance: f32) -> Vec3 {
+    focus + Vec3::new(yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()) * distance
+}
+
 pub fn apply_camera(
     snap: Res<Snap>,
     env: Res<crate::env::Env>,
@@ -231,12 +237,7 @@ pub fn apply_camera(
             cam.focus.y += (ground - cam.focus.y) * 0.2;
         }
     }
-    let dir = Vec3::new(
-        cam.yaw.sin() * cam.pitch.cos(),
-        cam.pitch.sin(),
-        cam.yaw.cos() * cam.pitch.cos(),
-    );
-    let mut pos = cam.focus + dir * cam.distance;
+    let mut pos = orbit_eye(cam.focus, cam.yaw, cam.pitch, cam.distance);
     if t.res >= 3 {
         let ground = t.height_at(pos.x, pos.z) + 0.5;
         pos.y = pos.y.max(ground);
