@@ -112,6 +112,11 @@ fn long_ago() -> f32 {
 const RECENT_ATTACK: f32 = 5.0;
 /// A body part (or joint link) moving this many times `max_body_speed` has blown apart.
 const GLITCH_SPEED: f32 = 5.0;
+/// How fast a creature from the sky may fall, m/s, for its first `DESCENT_TIME` seconds.
+const DESCENT_SPEED: f32 = 10.0;
+const DESCENT_TIME: f32 = 8.0;
+/// Height of the torso above the ground, m, below which the fall is free (above any body standing).
+const DESCENT_ALOFT: f32 = 3.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Creature {
@@ -2109,6 +2114,17 @@ impl Sim {
 
             let mut bad = false;
             let mut slow = 1.0f32;
+            // A creature from the sky comes down slowly, and lands gently: a many-jointed body
+            // with thin limbs hitting the ground at the speed cap blew apart. Only while it's still
+            // well above the ground (the last couple of meters it falls freely, and lands with a
+            // thud).
+            let aloft = c.rained
+                && c.age < DESCENT_TIME
+                && world.bodies.get(c.parts[0].body).is_some_and(|b| {
+                    let t = b.translation();
+                    t.y - terrain.height_at(t.x, t.z) > DESCENT_ALOFT
+                });
+            let cap = if aloft { max_v.min(DESCENT_SPEED) } else { max_v };
             c.fall.resize(c.parts.len(), 0.0);
             for (k, part) in c.parts.iter().enumerate() {
                 let Some(b) = world.bodies.get_mut(part.body) else {
@@ -2135,7 +2151,7 @@ impl Sim {
                     bad = true;
                     continue;
                 }
-                slow = slow.min(max_v / v.length().max(1e-6)).min(max_w / w.length().max(1e-6));
+                slow = slow.min(cap / v.length().max(1e-6)).min(max_w / w.length().max(1e-6));
             }
             // A body blown apart (some link, the hidden knuckles of two-axis joints too, flung far
             // past the speed cap or out of the world) only gets worse, and a link hundreds of km
