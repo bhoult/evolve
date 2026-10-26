@@ -44,7 +44,13 @@ fn swayed(model: mat4x4<f32>, position: vec3<f32>) -> vec3<f32> {
 fn vertex(vertex: Vertex) -> VertexOutput {
     var out: VertexOutput;
     let model = mesh_functions::get_world_from_local(vertex.instance_index);
+#ifdef DEFERRED_PREPASS
+    // Drawn deferred (ray-traced lighting, raytracing.rs) they stand still: the rays see a still
+    // copy of each, and a swaying one would ripple in and out of its own shadow.
+    let wp = (model * vec4<f32>(vertex.position, 1.0)).xyz;
+#else
     let wp = swayed(model, vertex.position);
+#endif
 
     out.world_position = vec4<f32>(wp, 1.0);
     out.position = position_world_to_clip(wp);

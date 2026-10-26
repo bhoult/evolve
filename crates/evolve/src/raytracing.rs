@@ -9,6 +9,7 @@
 //! rays. Water, rain, the sky and the lights of miracles aren't traced.
 
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::CameraMainTextureUsages;
@@ -37,8 +38,22 @@ impl Plugin for RaytracingPlugin {
                 (cameras, refresh_copies, trace_new_meshes, follow_visibility)
                     .chain()
                     .after(VisibilitySystems::VisibilityPropagate),
-            );
+            )
+            .add_systems(Last, pace);
     }
+}
+
+/// Frames a second at most. Tracing a full-screen window takes the whole GPU from the creatures'
+/// brains otherwise (about 18 a second on an RTX 5080 at 4K, with nothing to spare).
+const MAX_FPS: f64 = 12.0;
+
+/// Holds each frame to `MAX_FPS`.
+fn pace(mut last: Local<Option<Instant>>) {
+    let frame = Duration::from_secs_f64(1.0 / MAX_FPS);
+    if let Some(spent) = last.map(|t| t.elapsed()) {
+        std::thread::sleep(frame.saturating_sub(spent));
+    }
+    *last = Some(Instant::now());
 }
 
 /// The traceable copy of each mesh that has one, by the original's id.
