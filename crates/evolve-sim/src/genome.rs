@@ -213,6 +213,11 @@ pub struct Genome {
     pub limbs: Vec<LimbGene>,
     pub traits: Traits,
     pub brain: BrainGenes,
+    /// Share of its ancestry selected in a background world (`parallel_worlds`), from 0 (all of
+    /// it bred here) to 1: set on what a background world hands on (by migration or the zoo),
+    /// kept by copies and averaged by crosses, so what those worlds add can be traced.
+    #[serde(default)]
+    pub foreign: f32,
 }
 
 /// What a creature is apart from its brain: body plan and traits, all that `Genome::distance`
@@ -427,6 +432,7 @@ impl Genome {
                 }
                 b
             },
+            foreign: 0.0,
         }
     }
 
@@ -471,6 +477,7 @@ impl Genome {
             limbs,
             traits,
             brain,
+            foreign: (a.foreign + b.foreign) / 2.0,
         }
     }
 

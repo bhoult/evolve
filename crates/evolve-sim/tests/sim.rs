@@ -1035,3 +1035,35 @@ fn the_blessing_of_heaven_keeps_a_creature_alive_and_changes_it() {
     }
     assert!(sim.creature(id).is_none(), "without the blessing it starves");
 }
+
+/// What a background world hands on is marked as its, crosses with lines from here halve the
+/// mark, and the report then tells the two apart.
+#[test]
+fn ancestry_from_background_worlds_is_traced() {
+    use evolve_sim::islands::{Board, migrate};
+    use evolve_sim::stats::GenePool;
+    let p = quiet_params();
+    let mut rng = Rng::new(12);
+    let mut there = Genome::random(&mut rng, &p);
+    let here = Genome::random(&mut rng, &p);
+    assert_eq!(here.foreign, 0.0, "made from scratch here");
+
+    let board: Board = std::sync::Arc::new(std::sync::Mutex::new(GenePool::default()));
+    let mut background = GenePool::default();
+    background.consider(5.0, 3, &there);
+    migrate(&mut background, &board, 0.0, true);
+    let mut world0 = GenePool::default();
+    migrate(&mut world0, &board, 60.0, false);
+    assert_eq!(world0.entries.len(), 1);
+    assert_eq!(world0.entries[0].genome.foreign, 1.0, "came in from a background world");
+
+    there.foreign = 1.0;
+    assert_eq!(Genome::crossover(&there, &here, &mut rng).foreign, 0.5);
+
+    let mut sim = Sim::new(quiet_params());
+    assert!(!sim.report(60.0).contains("Ancestry from background worlds"), "nothing to say yet");
+    assert!(!sim.summary_line(60.0).contains("background ancestry"));
+    sim.pool = world0;
+    assert!(sim.report(60.0).contains("Ancestry from background worlds"));
+    assert!(sim.summary_line(60.0).contains("background ancestry: pool 100% (1 of 1 mostly)"));
+}

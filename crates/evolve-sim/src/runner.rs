@@ -536,7 +536,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         }
         if sim.time >= next_migration {
             let interval = sim.params.migration_interval;
-            migrate(&mut sim.pool, &board, interval);
+            migrate(&mut sim.pool, &board, interval, false);
             if rain_draw.is_none()
                 && let Some(draw) = RainDraw::due(&zoo, &sim)
             {

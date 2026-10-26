@@ -64,13 +64,17 @@ pub type Board = Arc<Mutex<GenePool>>;
 
 /// Sends this world's best genomes to the board and takes the board's best into its own pool.
 /// Only the world you watch passes an `age_by` (its migration interval), so the board ages at
-/// one rate however many worlds there are.
-pub fn migrate(pool: &mut GenePool, board: &Board, age_by: f32) {
+/// one rate however many worlds there are. A background world's genomes go out marked as its
+/// (`Genome::foreign`).
+pub fn migrate(pool: &mut GenePool, board: &Board, age_by: f32, background: bool) {
     let Ok(mut b) = board.lock() else {
         return;
     };
     if age_by > 0.0 {
         b.age(0.998f32.powf(age_by));
+    }
+    if background {
+        pool.entries.iter_mut().for_each(|e| e.genome.foreign = 1.0);
     }
     for e in pool.entries.iter().take(MIGRANTS) {
         b.consider(e.score, e.generation, &e.genome);
@@ -314,7 +318,7 @@ fn worker_loop(
     pool.install(|| crate::zoo::seed_world(&zoo, &mut sim));
     crate::zoo::refresh_rain_sample(&zoo, &mut sim);
     // Start from the best genomes known so far rather than from nothing.
-    migrate(&mut sim.pool, &board, 0.0);
+    migrate(&mut sim.pool, &board, 0.0, true);
     let mut pacer = Pacer::new();
     let mut next_migration = sim.time + sim.params.migration_interval as f64;
     let mut next_zoo = sim.time + sim.params.zoo_interval as f64;
@@ -344,7 +348,7 @@ fn worker_loop(
         sim.events.clear();
         sim.highlights.clear();
         if sim.time >= next_migration {
-            migrate(&mut sim.pool, &board, 0.0);
+            migrate(&mut sim.pool, &board, 0.0, true);
             crate::zoo::refresh_rain_sample(&zoo, &mut sim);
             next_migration = sim.time + sim.params.migration_interval as f64;
         }

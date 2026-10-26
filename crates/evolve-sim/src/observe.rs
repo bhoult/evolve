@@ -31,6 +31,8 @@ pub struct Obituary {
     pub energy_left: f32,
     /// How far the nearest plant was when it died, m (infinite if none within `NEAR_PLANT`).
     pub nearest_plant: f32,
+    /// Its genome's ancestry from background worlds (`Genome::foreign`).
+    pub foreign: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +40,7 @@ pub struct BirthNote {
     pub time: f64,
     pub lineage: u32,
     pub mass: f32,
+    pub foreign: f32,
 }
 
 /// Distance out to which the census looks for the plant nearest a dead creature, m.
@@ -89,13 +92,14 @@ impl Sim {
             life: c.life.clone(),
             energy_left: c.energy,
             nearest_plant,
+            foreign: c.genome.foreign,
         };
         self.census.deaths.push_back(o);
         self.census.forget_before(self.time - KEEP);
     }
 
-    pub(crate) fn record_birth(&mut self, lineage: u32, mass: f32) {
-        self.census.births.push_back(BirthNote { time: self.time, lineage, mass });
+    pub(crate) fn record_birth(&mut self, lineage: u32, mass: f32, foreign: f32) {
+        self.census.births.push_back(BirthNote { time: self.time, lineage, mass, foreign });
         self.census.forget_before(self.time - KEEP);
     }
 
@@ -105,6 +109,55 @@ impl Sim {
     }
 
     /// One line on how the last `window` seconds went, for logs.
+    /// Genomes with ancestry from background worlds (`Genome::foreign`) against those bred here:
+    /// how much of the gene pool, the living and the births they make up, how the pool's retested
+    /// ones score, and how their lives here went. Nothing while there are none.
+    fn ancestry_report(&self, o: &mut String, deaths: &[&Obituary], births: &[&BirthNote]) {
+        let pool = &self.pool.entries;
+        let mean = |v: &mut dyn Iterator<Item = f32>| {
+            let (sum, n) = v.fold((0.0, 0), |(s, n), x| (s + x, n + 1));
+            100.0 * sum / n.max(1) as f32
+        };
+        let any = pool.iter().any(|e| e.genome.foreign > 0.0)
+            || self.creatures.iter().any(|c| c.genome.foreign > 0.0)
+            || deaths.iter().any(|d| d.foreign > 0.0);
+        if !any {
+            return;
+        }
+        let from_there = |f: f32| f >= 0.5;
+        // Pool entries judged here on more than the one life (or score) they came in with.
+        let retested = |there: bool| {
+            let s: Vec<f32> = pool.iter().filter(|e| e.samples >= 2 && from_there(e.genome.foreign) == there).map(|e| e.score).collect();
+            (s.len(), s.iter().sum::<f32>() / s.len().max(1) as f32)
+        };
+        let ((ft, fs), (ht, hs)) = (retested(true), retested(false));
+        let _ = writeln!(
+            o,
+            "\nAncestry from background worlds (1 for a genome one hands on, halved by each cross with a line from here): \
+             the gene pool's {} genomes average {:.0}%, {} mostly from there (retested here at least twice: {} from there scoring {:.2}, {} from here scoring {:.2}); \
+             the living average {:.0}% ({} of {} mostly from there); births in the window {:.0}%.",
+            pool.len(),
+            mean(&mut pool.iter().map(|e| e.genome.foreign)),
+            pool.iter().filter(|e| from_there(e.genome.foreign)).count(),
+            ft,
+            fs,
+            ht,
+            hs,
+            mean(&mut self.creatures.iter().map(|c| c.genome.foreign)),
+            self.creatures.iter().filter(|c| from_there(c.genome.foreign)).count(),
+            self.creatures.len(),
+            mean(&mut births.iter().map(|b| b.foreign)),
+        );
+        for (label, there) in [("Mostly from background worlds", true), ("Mostly from here", false)] {
+            let d: Vec<&Obituary> = deaths.iter().filter(|d| from_there(d.foreign) == there).copied().collect();
+            if d.is_empty() {
+                let _ = writeln!(o, "\n{label}: no deaths in the window.");
+            } else {
+                group(o, label, &d);
+            }
+        }
+    }
+
     pub fn summary_line(&self, window: f64) -> String {
         let from = self.time - window;
         let deaths: Vec<&Obituary> = self.census.deaths.iter().filter(|d| d.time >= from).collect();
@@ -122,10 +175,27 @@ impl Sim {
         let deepest = self.creatures.iter().map(|c| c.lineage).max().unwrap_or(0);
         let mut masses: Vec<f32> = self.creatures.iter().map(|c| c.mass).collect();
         let mut neurons: Vec<f32> = self.creatures.iter().map(|c| c.genome.brain.h as f32).collect();
+        // Ancestry from background worlds (`Genome::foreign`), once there is any.
+        let share = |v: Vec<f32>| 100.0 * v.iter().sum::<f32>() / v.len().max(1) as f32;
+        let pool: Vec<f32> = self.pool.entries.iter().map(|e| e.genome.foreign).collect();
+        let living: Vec<f32> = self.creatures.iter().map(|c| c.genome.foreign).collect();
+        let ancestry = if pool.iter().chain(&living).any(|&f| f > 0.0) {
+            let born: Vec<f32> = self.census.births.iter().filter(|b| b.time >= from).map(|b| b.foreign).collect();
+            format!(
+                ", background ancestry: pool {:.0}% ({} of {} mostly), living {:.0}%, births {:.0}%",
+                share(pool.clone()),
+                pool.iter().filter(|&&f| f >= 0.5).count(),
+                pool.len(),
+                share(living),
+                share(born)
+            )
+        } else {
+            String::new()
+        };
         format!(
             "t {:.0} min: {} alive ({} born here), births {:.1}/min, from the sky {:.1}/min, deaths {:.1}/min, \
              median age at death {:.0} s, eaten {:.1}/creature-min ({:.1} away from where they landed), \
-             never ate {:.0}%, travel {:.1} m/creature-min (closing on food {:.1}), longest line of births {}, mass p50 {:.0} kg, neurons p50 {:.0}, plants {}",
+             never ate {:.0}%, travel {:.1} m/creature-min (closing on food {:.1}), longest line of births {}, mass p50 {:.0} kg, neurons p50 {:.0}, plants {}{}",
             self.time / 60.0,
             self.creatures.len(),
             born_alive,
@@ -142,6 +212,7 @@ impl Sim {
             median(&mut masses),
             median(&mut neurons),
             self.plants.len(),
+            ancestry,
         )
     }
 
@@ -217,7 +288,7 @@ impl Sim {
             ("Of unknown origin (from an older save)", Origin::Unknown),
         ];
         for (label, origin) in groups {
-            let d: Vec<&&Obituary> = deaths.iter().filter(|d| d.origin == origin).collect();
+            let d: Vec<&Obituary> = deaths.iter().filter(|d| d.origin == origin).copied().collect();
             if d.is_empty() && !matches!(origin, Origin::Born) {
                 continue;
             }
@@ -225,75 +296,9 @@ impl Sim {
                 let _ = writeln!(o, "\n{label}: no deaths in the window.");
                 continue;
             }
-            let n = d.len() as f32;
-            let count = |c: DeathCause| d.iter().filter(|x| x.cause == c).count() as f32 / n * 100.0;
-            let mut ages: Vec<f32> = d.iter().map(|x| x.age).collect();
-            let lived = ages.iter().sum::<f32>().max(1e-6) / 60.0;
-            let sum = |f: &dyn Fn(&LifeStats) -> f32| d.iter().map(|x| f(&x.life)).sum::<f32>();
-            let spent = |f: &dyn Fn(&Spending) -> f32| sum(&|l: &LifeStats| f(&l.spent)) / lived;
-            let mass = d.iter().map(|x| x.mass).sum::<f32>() / n;
-            let _ = writeln!(
-                o,
-                "\n{label}: {} deaths, mean body {:.0} kg, median age at death {:.0} s (p90 {:.0} s).",
-                d.len(),
-                mass,
-                median(&mut ages),
-                quantile(&mut ages, 0.9)
-            );
-            let _ = writeln!(
-                o,
-                "  Causes: starved {:.0}%, killed {:.0}%, old age {:.0}%, drowned {:.0}%, thirst {:.0}%, other {:.0}%.",
-                count(DeathCause::Starved),
-                count(DeathCause::Killed),
-                count(DeathCause::OldAge),
-                count(DeathCause::Drowned),
-                count(DeathCause::Dehydrated),
-                count(DeathCause::Removed) + count(DeathCause::Glitch)
-            );
-            let _ = writeln!(
-                o,
-                "  Energy per creature-minute: ate {:.1} (plants {:.1}, meat {:.1}; away from where it landed {:.1}); spent basal {:.1}, brain {:.1}, muscle {:.1}, healing {:.1}, digging {:.1}, calls+attacks {:.1}; gave children {:.1}.",
-                sum(&|l| l.food()) / lived,
-                sum(&|l| l.plant_eaten) / lived,
-                sum(&|l| l.meat_eaten) / lived,
-                sum(&|l| l.earned) / lived,
-                spent(&|s| s.basal),
-                spent(&|s| s.brain),
-                spent(&|s| s.muscle),
-                spent(&|s| s.healing),
-                spent(&|s| s.digging),
-                spent(&|s| s.other),
-                sum(&|l| l.invested) / lived
-            );
-            let dist = sum(&|l| l.distance);
-            let muscle = sum(&|l| l.spent.muscle);
-            let kg_m: f32 = d.iter().map(|x| x.mass * x.life.distance).sum::<f32>().max(1e-6);
-            let _ = writeln!(
-                o,
-                "  Per life: {:.1} children, {:.2} kills ({:.2} away from where it landed), {:.0} m of net travel ({:.1} m/min); muscle energy per 100 kg per 100 m travelled: {:.2}.",
-                sum(&|l| l.children as f32) / n,
-                sum(&|l| l.kills as f32) / n,
-                sum(&|l| l.kills_away as f32) / n,
-                dist / n,
-                dist / lived,
-                muscle / kg_m * 1e4
-            );
-            let starved: Vec<&&&Obituary> = d.iter().filter(|x| x.cause == DeathCause::Starved).collect();
-            if !starved.is_empty() {
-                let ns = starved.len() as f32;
-                let within = |r: f32| starved.iter().filter(|x| x.nearest_plant <= r).count() as f32 / ns * 100.0;
-                let _ = writeln!(
-                    o,
-                    "  The starved: a plant within 2 m of {:.0}%, within 5 m {:.0}%, within 10 m {:.0}%, none within {:.0} m {:.0}%; {:.0}% never ate at all.",
-                    within(2.0),
-                    within(5.0),
-                    within(10.0),
-                    NEAR_PLANT,
-                    100.0 - within(NEAR_PLANT),
-                    starved.iter().filter(|x| x.life.food() < 0.5).count() as f32 / ns * 100.0
-                );
-            }
+            group(o, label, &d);
         }
+        self.ancestry_report(o, &deaths, &births);
 
         let st = &self.stats;
         if st.admitted > 0 {
@@ -450,6 +455,79 @@ impl Sim {
             c.life.kills,
             c.life.distance
         )
+    }
+}
+
+/// A group of deaths described: how they lived and died, where their energy went, how far they
+/// travelled, and how near food the starved were. `label` starts the first line.
+fn group(o: &mut String, label: &str, d: &[&Obituary]) {
+    let n = d.len() as f32;
+    let count = |c: DeathCause| d.iter().filter(|x| x.cause == c).count() as f32 / n * 100.0;
+    let mut ages: Vec<f32> = d.iter().map(|x| x.age).collect();
+    let lived = ages.iter().sum::<f32>().max(1e-6) / 60.0;
+    let sum = |f: &dyn Fn(&LifeStats) -> f32| d.iter().map(|x| f(&x.life)).sum::<f32>();
+    let spent = |f: &dyn Fn(&Spending) -> f32| sum(&|l: &LifeStats| f(&l.spent)) / lived;
+    let mass = d.iter().map(|x| x.mass).sum::<f32>() / n;
+    let _ = writeln!(
+        o,
+        "\n{label}: {} deaths, mean body {:.0} kg, median age at death {:.0} s (p90 {:.0} s).",
+        d.len(),
+        mass,
+        median(&mut ages),
+        quantile(&mut ages, 0.9)
+    );
+    let _ = writeln!(
+        o,
+        "  Causes: starved {:.0}%, killed {:.0}%, old age {:.0}%, drowned {:.0}%, thirst {:.0}%, other {:.0}%.",
+        count(DeathCause::Starved),
+        count(DeathCause::Killed),
+        count(DeathCause::OldAge),
+        count(DeathCause::Drowned),
+        count(DeathCause::Dehydrated),
+        count(DeathCause::Removed) + count(DeathCause::Glitch)
+    );
+    let _ = writeln!(
+        o,
+        "  Energy per creature-minute: ate {:.1} (plants {:.1}, meat {:.1}; away from where it landed {:.1}); spent basal {:.1}, brain {:.1}, muscle {:.1}, healing {:.1}, digging {:.1}, calls+attacks {:.1}; gave children {:.1}.",
+        sum(&|l| l.food()) / lived,
+        sum(&|l| l.plant_eaten) / lived,
+        sum(&|l| l.meat_eaten) / lived,
+        sum(&|l| l.earned) / lived,
+        spent(&|s| s.basal),
+        spent(&|s| s.brain),
+        spent(&|s| s.muscle),
+        spent(&|s| s.healing),
+        spent(&|s| s.digging),
+        spent(&|s| s.other),
+        sum(&|l| l.invested) / lived
+    );
+    let dist = sum(&|l| l.distance);
+    let muscle = sum(&|l| l.spent.muscle);
+    let kg_m: f32 = d.iter().map(|x| x.mass * x.life.distance).sum::<f32>().max(1e-6);
+    let _ = writeln!(
+        o,
+        "  Per life: {:.1} children, {:.2} kills ({:.2} away from where it landed), {:.0} m of net travel ({:.1} m/min); muscle energy per 100 kg per 100 m travelled: {:.2}.",
+        sum(&|l| l.children as f32) / n,
+        sum(&|l| l.kills as f32) / n,
+        sum(&|l| l.kills_away as f32) / n,
+        dist / n,
+        dist / lived,
+        muscle / kg_m * 1e4
+    );
+    let starved: Vec<&&Obituary> = d.iter().filter(|x| x.cause == DeathCause::Starved).collect();
+    if !starved.is_empty() {
+        let ns = starved.len() as f32;
+        let within = |r: f32| starved.iter().filter(|x| x.nearest_plant <= r).count() as f32 / ns * 100.0;
+        let _ = writeln!(
+            o,
+            "  The starved: a plant within 2 m of {:.0}%, within 5 m {:.0}%, within 10 m {:.0}%, none within {:.0} m {:.0}%; {:.0}% never ate at all.",
+            within(2.0),
+            within(5.0),
+            within(10.0),
+            NEAR_PLANT,
+            100.0 - within(NEAR_PLANT),
+            starved.iter().filter(|x| x.life.food() < 0.5).count() as f32 / ns * 100.0
+        );
     }
 }
 

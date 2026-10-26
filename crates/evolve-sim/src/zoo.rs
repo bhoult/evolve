@@ -636,7 +636,14 @@ impl Offers {
             Vec::new()
         } else {
             let entries = &sim.pool.entries;
-            sim.pool.kinds(p.zoo_kind_distance).into_iter().map(|(best, _)| (entries[best].genome.clone(), entries[best].score, entries[best].generation)).collect()
+            let genome = |e: &crate::stats::PoolEntry| {
+                let mut g = e.genome.clone();
+                if world > 0 {
+                    g.foreign = 1.0;
+                }
+                g
+            };
+            sim.pool.kinds(p.zoo_kind_distance).into_iter().map(|(best, _)| (genome(&entries[best]), entries[best].score, entries[best].generation)).collect()
         };
         Offers { genomes, source, max_entries: p.zoo_max_entries as usize, kind_distance: p.zoo_kind_distance }
     }

@@ -899,8 +899,8 @@ impl Sim {
         let offset = Vec3::new(a.cos(), 0.0, a.sin()) * (self.creatures[i].radius() + 0.8);
         let child = self.spawn_creature(genome, near + offset, 0.3, energy, generation, ids);
         if let Some(c) = self.creature(child) {
-            let (lineage, mass) = (c.lineage, c.mass);
-            self.record_birth(lineage, mass);
+            let (lineage, mass, foreign) = (c.lineage, c.mass, c.genome.foreign);
+            self.record_birth(lineage, mass, foreign);
         }
         let parent = self.creatures[i].id;
         self.highlight(crate::snapshot::HighlightKind::Birth, child, Some(parent), near + offset);
