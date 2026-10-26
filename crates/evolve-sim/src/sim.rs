@@ -110,6 +110,8 @@ fn long_ago() -> f32 {
 
 /// A death within this many seconds of a bite counts as a kill, credited to the biter.
 const RECENT_ATTACK: f32 = 5.0;
+/// A body part (or joint link) moving this many times `max_body_speed` has blown apart.
+const GLITCH_SPEED: f32 = 5.0;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Creature {
@@ -2134,6 +2136,25 @@ impl Sim {
                     continue;
                 }
                 slow = slow.min(max_v / v.length().max(1e-6)).min(max_w / w.length().max(1e-6));
+            }
+            // A body blown apart (some link, the hidden knuckles of two-axis joints too, flung far
+            // past the speed cap or out of the world) only gets worse, and a link hundreds of km
+            // away cost the physics seconds a step: it goes.
+            if !bad && let Some(link) = world.multibody_joints.rigid_body_link(c.parts[0].body).copied() {
+                if let Some(mb) = world.multibody_joints.get_multibody(link.multibody) {
+                    let wild = mb.links().filter_map(|l| world.bodies.get(l.rigid_body_handle())).find(|b| {
+                        b.linvel().length() > GLITCH_SPEED * max_v || !terrain.contains(b.translation().x, b.translation().z, -50.0)
+                    });
+                    if let Some(b) = wild {
+                        eprintln!(
+                            "evolve: creature #{} blew apart ({:.0} m/s at {:.0?}), removed",
+                            c.id,
+                            b.linvel().length(),
+                            b.translation().to_array()
+                        );
+                        bad = true;
+                    }
+                }
             }
             if bad {
                 c.dead = Some(DeathCause::Glitch);
