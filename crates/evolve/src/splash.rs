@@ -1,7 +1,8 @@
-//! Creatures in the sea: rings spreading on the surface where they move through it (drawn by the
-//! ocean shader from a short list of ripple sources) and spray thrown up where they hit it or
-//! burst out of it. Worked out from the snapshots: each body part against the moving sea surface,
-//! and its speed from one snapshot to the next.
+//! Creatures in the water, the sea or a lake, pond or stream: rings spreading on the surface where
+//! they move through it (drawn by the ocean and terrain shaders from a short list of ripple
+//! sources) and spray thrown up where they hit it or burst out of it. Worked out from the
+//! snapshots: each body part against the water surface (moving with the waves at sea), and its
+//! speed from one snapshot to the next.
 
 use std::collections::{HashMap, HashSet};
 
@@ -299,8 +300,11 @@ fn track(
                 let pos = Vec3::from_array(p.pos);
                 let rot = Quat::from_array(p.rot);
                 let (vertical, size) = extents(&p.shape, rot);
-                let depth = wl - t.height_at(pos.x, pos.z);
-                let surface = if depth > 0.05 { wl + env.wave_height(Vec2::new(pos.x, pos.z), depth) } else { wl };
+                // The sea, or water standing on the land above it (only the sea has waves).
+                let ground = t.height_at(pos.x, pos.z);
+                let still = t.water_surface(pos.x, pos.z, wl);
+                let depth = still - ground;
+                let surface = if still <= wl && depth > 0.05 { wl + env.wave_height(Vec2::new(pos.x, pos.z), depth) } else { still };
                 let wet = if depth <= 0.05 {
                     Wet::Land
                 } else if pos.y - vertical > surface {

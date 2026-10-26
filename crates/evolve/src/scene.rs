@@ -66,6 +66,9 @@ pub struct TerrainExt {
     /// zigzagged with the triangulation.
     #[storage(101, read_only, buffer)]
     surface: Buffer,
+    /// Where creatures stir the water (splash.rs), for ripples on lakes, ponds and streams.
+    #[storage(102, read_only, buffer)]
+    ripples: Buffer,
 }
 
 impl MaterialExtension for TerrainExt {
@@ -134,6 +137,7 @@ fn update_terrain(
     mut commands: Commands,
     snap: Res<Snap>,
     gpu: Res<EnvGpu>,
+    ripples: Res<crate::water::RippleBuffer>,
     device: Res<RenderDevice>,
     queue: Res<RenderQueue>,
     settings: Res<GraphicsSettings>,
@@ -162,7 +166,7 @@ fn update_terrain(
         }
     }
     if !state.built_from.as_ref().is_some_and(|b| Arc::ptr_eq(b, &t)) && state.scan.is_none() {
-        take_in(&mut commands, state, &t, snap.0.world_epoch, &device, &queue, &gpu, &mut materials);
+        take_in(&mut commands, state, &t, snap.0.world_epoch, &device, &queue, &gpu, &ripples.0, &mut materials);
     }
     if state.lod_tint != settings.lod_tint {
         state.lod_tint = settings.lod_tint;
@@ -188,6 +192,7 @@ fn take_in(
     device: &RenderDevice,
     queue: &RenderQueue,
     gpu: &EnvGpu,
+    ripples: &Buffer,
     materials: &mut Assets<TerrainMaterial>,
 ) {
     let same = state
@@ -242,7 +247,7 @@ fn take_in(
         }
     }
     let surface = state.surface.clone().expect("made above for a new world");
-    let ext = || TerrainExt { env: gpu.buffer.clone(), surface: surface.clone() };
+    let ext = || TerrainExt { env: gpu.buffer.clone(), surface: surface.clone(), ripples: ripples.clone() };
     if state.material.is_none() {
         state.material = Some(materials.add(ExtendedMaterial {
             base: StandardMaterial {

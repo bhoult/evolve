@@ -17,6 +17,59 @@
 // Water depth and soil moisture at each grid point, two half floats per u32 (scene.rs).
 @group(#{MATERIAL_BIND_GROUP}) @binding(101) var<storage, read> surface: array<u32>;
 
+// Where creatures stir the water; written each frame by splash.rs (the same list the sea uses).
+struct Ripple {
+    // x, z, start time (env clock), strength
+    a: vec4<f32>,
+    // size of what made it (m), foam, how far it reaches right now squared, unused
+    b: vec4<f32>,
+}
+struct Ripples {
+    count: vec4<f32>,
+    // The box (min x, min z, max x, max z) they all fit in.
+    bounds: vec4<f32>,
+    list: array<Ripple, 64>,
+}
+@group(#{MATERIAL_BIND_GROUP}) @binding(102) var<storage, read> ripples: Ripples;
+// Must match splash.rs.
+const RIPPLE_LIFE: f32 = 2.6;
+
+/// Rings spreading from where creatures move through a lake, pond or stream: the slope they add,
+/// and foam where the surface was broken hard. `fw` is meters per pixel. As water.wgsl's.
+fn creature_ripples(p: vec2<f32>, t: f32, fw: f32) -> vec3<f32> {
+    let rb = ripples.bounds;
+    if (ripples.count.x < 0.5 || fw > 0.6 || any(p < rb.xy) || any(p > rb.zw)) {
+        return vec3<f32>(0.0);
+    }
+    var g = vec2<f32>(0.0);
+    var foam = 0.0;
+    let n = min(u32(ripples.count.x), 64u);
+    for (var i = 0u; i < n; i++) {
+        let r = ripples.list[i];
+        let to = p - r.a.xy;
+        let d2 = dot(to, to);
+        let age = t - r.a.z;
+        if (d2 > r.b.z || age < 0.0 || age > RIPPLE_LIFE) {
+            continue;
+        }
+        let size = r.b.x;
+        let lambda = 0.22 + 0.2 * size;
+        let front = size * 0.5 + (0.45 + 0.35 * size) * age;
+        let d = sqrt(d2);
+        let x = d - front;
+        let width = select(lambda * (0.9 + 1.3 * age), lambda * 0.45, x > 0.0);
+        let shape = exp(-x * x / (width * width));
+        let fade = (1.0 - age / RIPPLE_LIFE) * (1.0 - age / RIPPLE_LIFE);
+        let spread = inverseSqrt(1.0 + 2.0 * front);
+        let resolved = 1.0 - smoothstep(lambda * 0.12, lambda * 0.5, fw);
+        let slope = r.a.w * 0.35 * fade * spread * resolved * shape * sin(6.2831853 / lambda * x);
+        g += to / max(d, 1e-3) * slope;
+        let core = 1.0 - smoothstep(size * 0.2, size * 0.6 + 0.1, d);
+        foam = max(foam, r.b.y * (core * exp(-age * 2.5) + 0.5 * exp(-age * 1.6) * exp(-x * x / 0.02)));
+    }
+    return vec3<f32>(g, foam);
+}
+
 fn surface_point(i: i32, j: i32, res: i32) -> vec2<f32> {
     let ii = clamp(i, 0, res - 1);
     let jj = clamp(j, 0, res - 1);
@@ -245,7 +298,8 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let q2 = p.xz * 0.9 - drift * 0.6;
         let ripple = (vec2<f32>(vnoise(q1), vnoise(q1 + 17.3)) - 0.5) * 0.12 * band(px, 2.3)
             + (vec2<f32>(vnoise(q2 + 5.1), vnoise(q2 + 23.7)) - 0.5) * 0.08 * band(px, 0.9);
-        let wn_ = normalize(n + vec3<f32>(-ripple.x, 0.0, -ripple.y));
+        let stirred = creature_ripples(p.xz, t, px);
+        let wn_ = normalize(n + vec3<f32>(-ripple.x - stirred.x, 0.0, -ripple.y - stirred.y));
         let v = pbr.V;
         let ndv_ = clamp(dot(wn_, v), 0.0, 1.0);
         let fres = 0.02 + 0.98 * pow(1.0 - ndv_, 5.0);
@@ -256,8 +310,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let body = mix(vec3<f32>(0.03, 0.17, 0.18), vec3<f32>(0.006, 0.035, 0.055), smoothstep(0.5, 4.0, water)) * incoming;
         let hs = normalize(v + env.sun.xyz);
         let glint = pow(max(dot(wn_, hs), 0.0), 400.0) * 18.0 * step(0.0, env.sun.y) * cloud_shadow(p);
-        let lake_col = body * (1.0 - fres) + sky_clear(rr, false) * fres + env.sun_color.rgb * glint;
-        let alpha = smoothstep(0.1, 0.35, water) * clamp(0.55 + 0.35 * smoothstep(0.3, 3.0, water) + fres, 0.0, 0.97);
+        let foam = clamp(stirred.z, 0.0, 1.0);
+        let lake_col = mix(body * (1.0 - fres) + sky_clear(rr, false) * fres + env.sun_color.rgb * glint, incoming * 0.8, foam * 0.8);
+        let alpha = max(smoothstep(0.1, 0.35, water) * clamp(0.55 + 0.35 * smoothstep(0.3, 3.0, water) + fres, 0.0, 0.97), foam * 0.9);
         var surface_out: FragmentOutput;
         surface_out.color = main_pass_post_lighting_processing(pbr, vec4<f32>(lake_col, alpha));
         return surface_out;
@@ -284,7 +339,9 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let ripple = (vec2<f32>(vnoise(q1), vnoise(q1 + 17.3)) - 0.5) * 0.16 * band(px, 2.3)
             + (vec2<f32>(vnoise(q2 + 5.1), vnoise(q2 + 23.7)) - 0.5) * 0.1 * band(px, 0.9);
         let surface = normalize(mix(vec3<f32>(0.0, 1.0, 0.0), n, running));
-        pbr.N = normalize(mix(pbr.N, normalize(surface + vec3<f32>(-ripple.x, 0.0, -ripple.y)), cover));
+        let stirred = creature_ripples(p.xz, t, px);
+        pbr.N = normalize(mix(pbr.N, normalize(surface + vec3<f32>(-ripple.x - stirred.x, 0.0, -ripple.y - stirred.y)), cover));
+        col = mix(col, vec3<f32>(0.8), clamp(stirred.z, 0.0, 1.0) * cover * 0.7);
     }
 
     // Bumps from two octaves of noise, much stronger on rock than on grass or sand. Skipped far
