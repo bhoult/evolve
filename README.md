@@ -35,6 +35,11 @@ Debian/Ubuntu). Without them, the build fails rather than running silently.
 The window opens through XWayland. For a native Wayland window, install `libwayland-dev` and
 build with `--features wayland`.
 
+For ray-traced lighting (experimental, through Bevy Solari; it needs a GPU with hardware ray
+tracing), build with `--features raytracing` and run with `--raytracing`. Sun shadows and light
+bounced off the ground are then traced; water, rain, the sky and the lights of miracles aren't.
+The renderer shares the GPU with the creatures' brains, so the simulation runs slower with it.
+
 A fresh world starts with random bodies that mostly flail and starve. Real walking usually
 appears after 40–60 simulated minutes, which is a few minutes of wall time at **Max** speed. To
 skip ahead, evolve a world with the headless runner, which runs as fast as the CPU allows, prints

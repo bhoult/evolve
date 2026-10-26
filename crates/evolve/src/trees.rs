@@ -28,9 +28,14 @@ impl MaterialExtension for TreeExt {
     fn prepass_vertex_shader() -> ShaderRef {
         shader("tree.wgsl")
     }
+
+    // Used only when the scene is drawn deferred (ray-traced lighting, see raytracing.rs).
+    fn deferred_vertex_shader() -> ShaderRef {
+        shader("tree.wgsl")
+    }
 }
 
-type TreeMaterial = ExtendedMaterial<StandardMaterial, TreeExt>;
+pub type TreeMaterial = ExtendedMaterial<StandardMaterial, TreeExt>;
 
 #[derive(Resource)]
 struct TreeAssets {

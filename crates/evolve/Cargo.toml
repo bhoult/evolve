@@ -12,6 +12,9 @@ dev = ["bevy/dynamic_linking"]
 # Native Wayland windows; needs `sudo apt install libwayland-dev` to build. Without it the app
 # runs through XWayland, which works fine.
 wayland = ["bevy/wayland"]
+# Ray-traced lighting through Bevy Solari (experimental; needs a GPU with hardware ray tracing).
+# Built in, it is still off until asked for with `--raytracing`.
+raytracing = ["bevy/bevy_solari"]
 
 [dependencies]
 evolve-sim.workspace = true

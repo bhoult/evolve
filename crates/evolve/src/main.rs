@@ -13,6 +13,8 @@ mod miracles;
 mod neural_view;
 mod observatory;
 mod preview;
+#[cfg(feature = "raytracing")]
+mod raytracing;
 mod recording;
 mod scene;
 mod sky;
@@ -113,11 +115,13 @@ pub struct Args {
     pub pick_test: bool,
     /// Port of the MCP server (see `evolve_sim::mcp`); 0 for none.
     pub mcp_port: u16,
+    /// Ray-traced lighting (see raytracing.rs), in builds with the `raytracing` feature.
+    pub raytracing: bool,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "evolve [--load FILE] [--seed N] [--speed X] [--zoo] [--director] [--mute] [--set name=value]...\n       [--screenshot FILE --frames N] [--camera x,z,distance,yaw,pitch] [--select-first]\n       [--time-of-day F] [--weather clear|cloudy|rain|storm] [--lightning] [--record VIDEO.mp4]\n       [--mcp-port N (default 7311, 0 for none)]"
+        "evolve [--load FILE] [--seed N] [--speed X] [--zoo] [--director] [--mute] [--set name=value]...\n       [--screenshot FILE --frames N] [--camera x,z,distance,yaw,pitch] [--select-first]\n       [--time-of-day F] [--weather clear|cloudy|rain|storm] [--lightning] [--record VIDEO.mp4]\n       [--mcp-port N (default 7311, 0 for none)] [--raytracing]"
     );
     std::process::exit(2)
 }
@@ -151,6 +155,13 @@ fn main() -> AppExit {
             "--zoo" => args.zoo = true,
             "--director" => args.director = true,
             "--mute" => args.mute = true,
+            "--raytracing" => {
+                if !cfg!(feature = "raytracing") {
+                    eprintln!("evolve: --raytracing needs a build with `--features raytracing`");
+                    std::process::exit(2)
+                }
+                args.raytracing = true
+            }
             "--neural-view" => args.neural_view = true,
             "--help-page" => args.help_page = Some(val()),
             "--genome-view" => args.genome_view = true,
@@ -244,8 +255,9 @@ fn main() -> AppExit {
         }
     }
 
-    App::new()
-        .insert_resource(ClearColor(scene::SKY))
+    let raytracing = args.raytracing;
+    let mut app = App::new();
+    app.insert_resource(ClearColor(scene::SKY))
         // Finer shadows, so small things don't look detached from their shadows.
         .insert_resource(bevy::light::DirectionalLightShadowMap { size: 4096 })
         .insert_resource(GlobalAmbientLight {
@@ -302,8 +314,14 @@ fn main() -> AppExit {
         .add_plugins((miracles::MiraclesPlugin, observatory::ObservatoryPlugin, flow::FlowPlugin))
         .add_systems(PreUpdate, refresh_snapshot)
         .add_systems(Update, (auto_screenshot, load_after))
-        .add_systems(Last, log_slow_frames)
-        .run()
+        .add_systems(Last, log_slow_frames);
+    // Only when asked: Solari draws every opaque material deferred from the moment it's added.
+    #[cfg(feature = "raytracing")]
+    if raytracing {
+        app.add_plugins(raytracing::RaytracingPlugin);
+    }
+    let _ = raytracing;
+    app.run()
 }
 
 fn refresh_snapshot(link: Res<SimLink>, time: Res<Time>, mut snap: ResMut<Snap>, mut interp: ResMut<Interp>) {

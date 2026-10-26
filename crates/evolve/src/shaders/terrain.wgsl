@@ -4,14 +4,22 @@
 // the blue channel is 1 where it was dug out rather than piled up, and alpha is how trampled it
 // is. Water standing or running on the ground (m) and soil moisture come from the surface
 // buffer, interpolated smoothly per pixel. The surface of deep water is a second mesh whose UV is
-// (depth, -1).
+// (depth, -1). Drawn deferred (for ray-traced lighting, raytracing.rs) it only writes what the
+// ground is; the lighting is worked out later.
+#import bevy_pbr::pbr_fragment::pbr_input_from_standard_material
+#ifdef PREPASS_PIPELINE
 #import bevy_pbr::{
-    pbr_fragment::pbr_input_from_standard_material,
+    prepass_io::{VertexOutput, FragmentOutput},
+    pbr_deferred_functions::deferred_output,
+}
+#else
+#import bevy_pbr::{
     forward_io::{VertexOutput, FragmentOutput},
     pbr_functions::{apply_pbr_lighting, main_pass_post_lighting_processing},
     lighting::F_AB,
     mesh_view_bindings::{lights, view},
 }
+#endif
 #import evolve::env::{env, vnoise, gnoise, fbm, cloud_shadow, sky_clear}
 
 // Water depth and soil moisture at each grid point, two half floats per u32 (scene.rs).
@@ -372,6 +380,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let shade = cloud_shadow(p);
     pbr.material.base_color = vec4<f32>(col * shade, 1.0);
 
+#ifdef PREPASS_PIPELINE
+    // Without the ambient put back under cloud shadows or the sky mirrored in wet ground.
+    return deferred_output(in, pbr);
+#else
     var out: FragmentOutput;
     out.color = apply_pbr_lighting(pbr);
     let ndv = max(dot(pbr.N, pbr.V), 0.0001);
@@ -389,4 +401,5 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     }
     out.color = main_pass_post_lighting_processing(pbr, out.color);
     return out;
+#endif
 }

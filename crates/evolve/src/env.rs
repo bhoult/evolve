@@ -269,7 +269,8 @@ fn create_env_buffer(mut commands: Commands, device: Res<RenderDevice>) {
 fn init_settings(mut commands: Commands, args: Res<Args>, existing: Option<Res<GraphicsSettings>>) {
     if existing.is_none() {
         let mut s = GraphicsSettings::default();
-        if args.no_shadows {
+        // Ray-traced lighting casts its own shadows.
+        if args.no_shadows || args.raytracing {
             s.shadows = ShadowQuality::Off;
         }
         commands.insert_resource(s);

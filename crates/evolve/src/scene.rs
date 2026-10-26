@@ -75,9 +75,14 @@ impl MaterialExtension for TerrainExt {
     fn fragment_shader() -> ShaderRef {
         shader("terrain.wgsl")
     }
+
+    // Used only when the scene is drawn deferred (ray-traced lighting, see raytracing.rs).
+    fn deferred_fragment_shader() -> ShaderRef {
+        shader("terrain.wgsl")
+    }
 }
 
-type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExt>;
+pub type TerrainMaterial = ExtendedMaterial<StandardMaterial, TerrainExt>;
 
 /// A square of the terrain, drawn as one mesh (and another over its deep water, if it has any).
 struct Chunk {
