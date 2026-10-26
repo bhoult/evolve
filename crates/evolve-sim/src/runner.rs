@@ -439,6 +439,12 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             shared.busy(None);
                             let _ = reply.send(r);
                         }
+                        // The world on screen leads with how fast it runs against real time.
+                        Ask::Summary if world == 0 => {
+                            let rate = steps_per_sec / crate::sim::TICKS_PER_SECOND as f32;
+                            let how = if paused { " (paused)" } else if speed == 0.0 { " at Max" } else { "" };
+                            let _ = reply.send(Ok(format!("{rate:.2}x real time{how}; {}", sim.summary_line(600.0))));
+                        }
                         ask if world == 0 => sim.answer(ask, reply),
                         ask => match workers.get(world - 1) {
                             Some(w) if w.alive() => w.send(WorkerCtl::Ask(ask, reply)),
