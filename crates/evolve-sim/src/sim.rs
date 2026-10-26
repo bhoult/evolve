@@ -331,6 +331,9 @@ pub struct Perf {
     /// time shows how well the worlds run in parallel).
     pub shard_slowest_ms: f32,
     pub shard_total_ms: f32,
+    /// Where the physics time goes, summed over the worlds, ms per step, smoothed: finding
+    /// contacts (broad phase, narrow phase), solving, CCD, and the rest (islands, updates).
+    pub physics_stages: [f32; 5],
     /// Each phase of the step (named in `PHASE_NAMES`), ms per step, smoothed. Phases that run
     /// only now and then (brains, ecology, water) count as their cost spread over the steps
     /// between.
@@ -1762,16 +1765,24 @@ impl Sim {
         self.perf.lap(7, &mut lap);
         // The physics worlds step in parallel: rapier solves a world's articulations on one
         // thread.
-        let times: Vec<f32> = {
+        let (times, stages): (Vec<f32>, Vec<[f32; 5]>) = {
             use rayon::prelude::*;
             self.shards
                 .par_iter_mut()
                 .map(|s| {
+                    let counters = &mut s.world.physics_pipeline.counters;
+                    if !counters.enabled() {
+                        counters.enable();
+                    }
                     let t = Instant::now();
                     s.world.step_with_events(&ContactFilter, &());
-                    t.elapsed().as_secs_f32() * 1000.0
+                    let ms = t.elapsed().as_secs_f32() * 1000.0;
+                    let c = &s.world.physics_pipeline.counters;
+                    let (broad, narrow) = (c.cd.broad_phase_time.time_ms() as f32, c.cd.narrow_phase_time.time_ms() as f32);
+                    let (solver, ccd) = (c.stages.solver_time.time_ms() as f32, c.stages.ccd_time.time_ms() as f32);
+                    (ms, [broad, narrow, solver, ccd, (ms - broad - narrow - solver - ccd).max(0.0)])
                 })
-                .collect()
+                .unzip()
         };
         let t2 = Instant::now();
         self.perf.lap(8, &mut lap);
@@ -1784,6 +1795,9 @@ impl Sim {
         let total: f32 = times.iter().sum();
         self.perf.shard_slowest_ms += (slowest - self.perf.shard_slowest_ms) * k;
         self.perf.shard_total_ms += (total - self.perf.shard_total_ms) * k;
+        for (i, e) in self.perf.physics_stages.iter_mut().enumerate() {
+            *e += (stages.iter().map(|s| s[i]).sum::<f32>() - *e) * k;
+        }
         self.perf.forces_ms += ((t_forces - t1).as_secs_f32() * 1000.0 - self.perf.forces_ms) * k;
         self.after_physics();
         self.perf.lap(9, &mut lap);

@@ -390,6 +390,26 @@ impl Sim {
             f.publish_ms,
             f.terrain_copy_ms
         );
+        // How the physics load is spread: each world's parts and time, slowest first.
+        let k = self.shards.len().max(1);
+        let mut parts = vec![0usize; k];
+        for c in &self.creatures {
+            parts[c.shard.min(k - 1)] += c.parts.len();
+        }
+        let mut worlds: Vec<(f32, usize)> = self.shard_ms.iter().copied().zip(parts).collect();
+        worlds.sort_by(|a, b| b.0.total_cmp(&a.0));
+        let list: Vec<String> = worlds.iter().map(|(ms, n)| format!("{ms:.1} ms/{n}")).collect();
+        let s = &f.physics_stages;
+        let _ = writeln!(
+            o,
+            "Physics, summed over the worlds: broad phase {:.1}, narrow phase {:.1}, solver {:.1}, CCD {:.1}, the rest {:.1} ms per step. Each world (ms per step / body parts): {}.",
+            s[0],
+            s[1],
+            s[2],
+            s[3],
+            s[4],
+            list.join(", ")
+        );
         if let Some(spread) = self.step_spread() {
             let _ = writeln!(o, "{spread}");
         }
