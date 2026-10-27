@@ -252,6 +252,10 @@ params! {
         /// because it needs more scores no higher than a small one that eats as well for its size.
         /// (Counted as eaten, the gene pool bred ever bigger eaters, too big to breed.)
         score_size_exponent: f32 = 0.0, [0, 1], Live;
+        /// The same scaling for the energy given to children: 0 counts it as given. A parent
+        /// gives a share of what it holds, and a tank holds more the bigger the body, so counted
+        /// as given it pays to be big.
+        score_gift_size_exponent: f32 = 0.0, [0, 1], Live;
         /// Fraction of the creatures bred from the gene pool that are instead exact copies of a
         /// pool genome judged on fewer than 3 lives, whose scores are averaged into its own. One
         /// life mostly measures luck (where it fell); this keeps the pool from filling with the

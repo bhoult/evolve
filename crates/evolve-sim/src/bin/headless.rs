@@ -12,6 +12,7 @@ use evolve_sim::sim::TICKS_PER_SECOND;
 use evolve_sim::{Sim, SimParams, save};
 
 fn main() {
+    evolve_sim::tune_allocator();
     evolve_sim::init_thread_pool();
     // Experiments shouldn't fill the real zoo; `EVOLVE_ZOO_DIR=...` picks one on purpose.
     if std::env::var_os("EVOLVE_ZOO_DIR").is_none() {

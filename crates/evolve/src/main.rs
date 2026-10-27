@@ -127,6 +127,7 @@ fn usage() -> ! {
 }
 
 fn main() -> AppExit {
+    evolve_sim::tune_allocator();
     let mut args = Args {
         frames: 240,
         mcp_port: evolve_sim::mcp::DEFAULT_PORT,

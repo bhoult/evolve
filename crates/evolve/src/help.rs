@@ -745,8 +745,13 @@ fn evolution(ui: &mut egui::Ui, p: &SimParams) {
     bullet(
         ui,
         format!(
-            "Breeding: {} per child (score_child), plus 1 per plant's worth of energy given to children.",
-            num(p.score_child)
+            "Breeding: {} per child (score_child), plus 1 per plant's worth of energy given to children{}.",
+            num(p.score_child),
+            if p.score_gift_size_exponent > 0.0 {
+                format!(", times (100 kg / its mass)^{} since a bigger tank gives more (score_gift_size_exponent)", num(p.score_gift_size_exponent))
+            } else {
+                String::new()
+            }
         ),
     );
     bullet(

@@ -50,6 +50,21 @@ pub fn process_cpu_seconds() -> Option<f64> {
 /// Sizes the shared rayon pool that physics and brains of every world run on, unless
 /// `RAYON_NUM_THREADS` is set. One world's physics stops getting faster past about 8 threads, so
 /// the rest of the cores go to the background worlds, which share this pool.
+/// Hands big allocations (256 KB and up) straight back to the system when freed. Brains' weights
+/// are blocks of several MB, made and freed some 80 times a minute as creatures are born and die;
+/// with glibc's default, which raises its threshold to the largest block freed so far, they're
+/// carved from the heap instead and the holes they leave never shrink back: the app levelled off
+/// at 17-18 GB, against about 6 GB with this. `MALLOC_MMAP_THRESHOLD_` in the environment wins.
+pub fn tune_allocator() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    if std::env::var_os("MALLOC_MMAP_THRESHOLD_").is_none() {
+        // Safe: only changes a malloc setting, before any threads are started.
+        unsafe {
+            libc::mallopt(libc::M_MMAP_THRESHOLD, 256 * 1024);
+        }
+    }
+}
+
 pub fn init_thread_pool() {
     if std::env::var_os("RAYON_NUM_THREADS").is_some() {
         return;
