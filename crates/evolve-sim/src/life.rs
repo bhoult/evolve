@@ -1048,6 +1048,7 @@ impl Sim {
     pub fn ecology(&mut self, dt: f32) {
         let p = self.params.clone();
         let rain = 1.0 + p.rain_plant_growth * self.weather.rain;
+        let die_back = if p.plant_lifespan > 0.0 { dt / (p.plant_lifespan * 60.0) } else { 0.0 };
         for f in &mut self.plants {
             let s = self
                 .terrain
@@ -1058,6 +1059,9 @@ impl Sim {
             } else {
                 let wet = 1.0 + p.water_growth * self.terrain.near_water(f.pos.x, f.pos.z, WATER_REACH);
                 f.energy = (f.energy + p.plant_growth * rain * wet * (0.2 + 0.8 * s) * dt).min(p.plant_max_energy);
+                if die_back > 0.0 && f.kind == PlantKind::Grass && f.energy >= p.plant_max_energy && self.rng.chance(die_back) {
+                    f.energy = 0.0;
+                }
             }
         }
         self.plants.retain(|f| f.energy > 0.0);

@@ -144,6 +144,30 @@ fn a_killed_body_from_the_sky_leaves_sky_meat_and_half_its_energy() {
 }
 
 #[test]
+fn grown_grass_dies_back_with_plant_lifespan_and_new_grass_takes_its_place() {
+    // A world full of grass and no creatures, run on ten minutes: (plants before, after, share
+    // of those before still standing).
+    let run = |lifespan: f32| {
+        let mut sim = Sim::new(SimParams { plant_spawn_rate: 100.0, plant_spread_rate: 0.0, ..quiet_params() });
+        while sim.time < 300.0 {
+            sim.step();
+        }
+        sim.params.plant_lifespan = lifespan;
+        let before: std::collections::HashSet<u64> = sim.plants.iter().map(|f| f.id).collect();
+        while sim.time < 900.0 {
+            sim.step();
+        }
+        let kept = sim.plants.iter().filter(|f| before.contains(&f.id)).count();
+        (before.len(), sim.plants.len(), kept as f32 / before.len().max(1) as f32)
+    };
+    let (_, _, kept) = run(0.0);
+    assert!(kept > 0.9, "only {:.0}% of the grass still stands with no lifespan", kept * 100.0);
+    let (before, after, kept) = run(2.0);
+    assert!(kept < 0.2, "{:.0}% of the grass outlived five lifespans", kept * 100.0);
+    assert!(after as f32 > 0.8 * before as f32, "grass not replaced: {before} -> {after}");
+}
+
+#[test]
 fn population_rains_back_to_minimum() {
     let mut sim = Sim::new(SimParams {
         min_population: 15,

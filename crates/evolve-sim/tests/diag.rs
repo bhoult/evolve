@@ -1214,6 +1214,85 @@ fn plant_layout() {
     layout(&format!("fresh, {minutes:.0} min"), &fresh);
 }
 
+/// What the land with no plant within 10 m is like, against the land with one: under water, on
+/// the shore, trampled, worn by water, steep, poor; and how well a plant would grow there. Says
+/// whether plants are missing because the ground is bad or because the plants are elsewhere.
+/// `EVOLVE_DIAG_SAVE=<save> cargo test --release --test diag bare_land -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn bare_land() {
+    let Some(path) = std::env::var_os("EVOLVE_DIAG_SAVE") else {
+        println!("set EVOLVE_DIAG_SAVE to a save");
+        return;
+    };
+    let sim = evolve_sim::save::load(std::path::Path::new(&path)).expect("load");
+    let (t, p) = (&sim.terrain, &sim.params);
+    let half = t.size * 0.5;
+    const CELL: f32 = 10.0;
+    let n = (t.size / CELL).ceil() as usize + 1;
+    let mut grid = vec![Vec::new(); n * n];
+    let at = |x: f32, z: f32| (((x + half) / CELL) as usize).min(n - 1) + (((z + half) / CELL) as usize).min(n - 1) * n;
+    for f in &sim.plants {
+        grid[at(f.pos.x, f.pos.z)].push((f.pos.x, f.pos.z));
+    }
+    let near = |x: f32, z: f32| {
+        let (ci, cj) = (((x + half) / CELL) as i64, ((z + half) / CELL) as i64);
+        (-1..=1i64).any(|di| {
+            (-1..=1i64).any(|dj| {
+                let (i, j) = (ci + di, cj + dj);
+                i >= 0 && j >= 0 && i < n as i64 && j < n as i64 && grid[i as usize + j as usize * n].iter().any(|&(px, pz)| (px - x).powi(2) + (pz - z).powi(2) <= 100.0)
+            })
+        })
+    };
+    // Per kind of land (0 bare, 1 with a plant near): spots, wet, shore, suitability sum, poor
+    // (suitability under 0.1), worn sum, trampled (worn over 0.3), eroded sum, cut (over 10 cm),
+    // flatness sum (normal.y squared), fertility sum.
+    let mut s = [[0.0f64; 11]; 2];
+    let mut x = -half + 1.25;
+    while x < half {
+        let mut z = -half + 1.25;
+        while z < half {
+            let h = t.height_at(x, z);
+            if h > p.water_level {
+                let k = t.nearest_point(x, z);
+                let suit = t.plant_suitability(x, z, p.water_level, p.terrain_height) as f64;
+                let worn = t.worn(k) as f64;
+                let cut = t.eroded.get(k).copied().unwrap_or(0.0) as f64;
+                let flat = (t.normal_at(x, z).y.clamp(0.0, 1.0) as f64).powi(2);
+                let row = &mut s[usize::from(near(x, z))];
+                for (c, v) in [
+                    1.0,
+                    f64::from(t.water_at(x, z) > 0.03),
+                    f64::from(h - p.water_level < 0.15),
+                    suit,
+                    f64::from(suit < 0.1),
+                    worn,
+                    f64::from(worn > 0.3),
+                    cut,
+                    f64::from(cut > 0.1),
+                    flat,
+                    t.fertility_at(x, z) as f64,
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    row[c] += v;
+                }
+            }
+            z += 2.5;
+        }
+        x += 2.5;
+    }
+    let total = s[0][0] + s[1][0];
+    for (name, r) in [("no plant within 10 m", &s[0]), ("a plant within 10 m", &s[1])] {
+        let (m, pc) = (|c: usize| r[c] / r[0].max(1.0), |c: usize| r[c] / r[0].max(1.0) * 100.0);
+        println!(
+            "{name}: {:.0}% of land; wet {:.0}%, shore {:.0}%; suitability mean {:.2}, under 0.1 {:.0}%; worn mean {:.2}, over 0.3 {:.0}%; cut by water mean {:.2} m, over 10 cm {:.0}%; flatness {:.2}; fertility {:.2}",
+            r[0] / total * 100.0, pc(1), pc(2), m(3), pc(4), m(5), pc(6), m(7), pc(8), m(9), m(10)
+        );
+    }
+}
+
 fn layout(name: &str, sim: &Sim) {
     let t = &sim.terrain;
     let wl = sim.params.water_level;

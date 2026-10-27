@@ -450,6 +450,17 @@ fn food(ui: &mut egui::Ui, p: &SimParams) {
             p.plant_max_count
         ),
     );
+    if p.plant_lifespan > 0.0 {
+        bullet(
+            ui,
+            format!(
+                "Full-grown grass that isn't eaten dies back after about {} on average (plant_lifespan), making room for new plants anywhere.",
+                dur(p.plant_lifespan * 60.0)
+            ),
+        );
+    } else {
+        bullet(ui, "Grass lives until it's eaten (plant_lifespan 0), so once the world is full, new plants only grow where grazing made room.");
+    }
     sub(ui, "Trees");
     bullet(
         ui,

@@ -330,6 +330,11 @@ params! {
         plant_spread_radius: f32 = 6.0, [0.5, 50], Live;
         /// New plants sprouting at random places per second.
         plant_spawn_rate: f32 = 2.0, [0, 100], Live;
+        /// Mean minutes a full-grown grass plant lives uneaten before it dies back; 0: until it's
+        /// eaten. Once the world holds all the grass it can, only grazing frees room for new
+        /// plants, so over hours what's left gathers where creatures don't go; dying back frees
+        /// room everywhere.
+        plant_lifespan: f32 = 0.0, [0, 10000], Live;
         /// Minimum spacing between plants, m.
         plant_min_spacing: f32 = 1.0, [0.1, 10], Live;
         /// Extra growth beside streams, ponds and lakes, for grass and trees: half again as fast
