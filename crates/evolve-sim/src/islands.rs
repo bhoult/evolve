@@ -87,6 +87,9 @@ pub fn migrate(pool: &mut GenePool, board: &Board, age_by: f32, background: bool
 #[derive(Clone, Debug, Default)]
 pub struct WorldStatus {
     pub index: usize,
+    /// An experiment arm's name (see `Worker::spawn_trial`); empty for the world on screen and its
+    /// islands.
+    pub label: String,
     pub time: f64,
     pub population: usize,
     pub max_generation: u32,
@@ -105,6 +108,7 @@ impl WorldStatus {
         let n = sim.creatures.len().max(1) as f32;
         Self {
             index,
+            label: String::new(),
             time: sim.time,
             population: sim.creatures.len(),
             max_generation: sim.stats.max_generation,
@@ -131,31 +135,53 @@ pub enum WorkerCtl {
 }
 
 pub struct Worker {
+    /// Its world's number (1 and up; the world on screen is 0).
+    pub index: usize,
     tx: Sender<WorkerCtl>,
     pub status: Arc<Mutex<WorldStatus>>,
     handle: Option<JoinHandle<()>>,
 }
 
+/// What a background world is for.
+enum Role {
+    /// One of the islands that trade their best genomes with the world on screen (through the
+    /// board) and keep their own landscapes.
+    Island(Board),
+    /// An experiment arm: see `Worker::spawn_trial`.
+    Trial { label: String, pool: Box<GenePool> },
+}
+
 impl Worker {
-    pub fn spawn(
-        index: usize,
-        params: SimParams,
-        speed: f32,
-        paused: bool,
-        board: Board,
-        zoo: SharedZoo,
-    ) -> Self {
+    pub fn spawn(index: usize, params: SimParams, speed: f32, paused: bool, board: Board, zoo: SharedZoo) -> Self {
+        Self::start(index, island_params(index, &params), speed, paused, Role::Island(board), zoo)
+    }
+
+    /// An experiment arm: a background world on `params` (see `trial_params`) whose gene pool
+    /// starts as `pool` (the world on screen's), and which trades genomes with no other world and
+    /// puts none in the zoo, so how it does is down to its settings. It still draws creatures
+    /// from the zoo for the rain, as every world does.
+    pub fn spawn_trial(index: usize, params: SimParams, label: String, pool: GenePool, speed: f32, paused: bool, zoo: SharedZoo) -> Self {
+        Self::start(index, params, speed, paused, Role::Trial { label, pool: Box::new(pool) }, zoo)
+    }
+
+    fn start(index: usize, params: SimParams, speed: f32, paused: bool, role: Role, zoo: SharedZoo) -> Self {
         let (tx, rx) = mpsc::channel();
+        let label = match &role {
+            Role::Trial { label, .. } => label.clone(),
+            Role::Island(_) => String::new(),
+        };
         let status = Arc::new(Mutex::new(WorldStatus {
             index,
+            label,
             ..Default::default()
         }));
         let s2 = status.clone();
         let handle = std::thread::Builder::new()
             .name(format!("evolve-world-{index}"))
-            .spawn(move || worker_loop(index, params, speed, paused, rx, s2, board, zoo))
+            .spawn(move || worker_loop(index, params, speed, paused, rx, s2, role, zoo))
             .expect("spawn background world");
         Self {
+            index,
             tx,
             status,
             handle: Some(handle),
@@ -182,7 +208,7 @@ impl Drop for Worker {
 }
 
 /// Each background world gets its own landscape so the islands don't all face the same problem.
-fn island_params(index: usize, p: &SimParams) -> SimParams {
+pub(crate) fn island_params(index: usize, p: &SimParams) -> SimParams {
     let mut p = p.clone();
     p.seed = p.seed.wrapping_add(7919 * index as u64);
     // As many physics worlds as it has threads.
@@ -195,6 +221,19 @@ fn island_params(index: usize, p: &SimParams) -> SimParams {
     let finest = (p.world_size / crate::hydro::HYDRO_CELL).ceil() as u32 + 1;
     p.terrain_resolution = p.terrain_resolution.min(finest);
     p
+}
+
+/// An experiment arm's settings: the world on screen's `main` settings on the island of
+/// `replicate` (every arm of a replicate shares its landscape and starting creatures), sized as
+/// a background world, with `set` on top. `trials` is how many arms run, for their shares of GPU
+/// brain memory.
+pub fn trial_params(main: &SimParams, replicate: u32, set: &[(String, String)], trials: usize) -> Result<SimParams, String> {
+    let mut p = island_params(replicate as usize + 1, main);
+    p.parallel_worlds = trials as u32;
+    for (name, value) in set {
+        p.set_by_name(name, value).map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(p)
 }
 
 /// Steps a world at a multiple of real time (or flat out), for `budget` at most per call.
@@ -309,16 +348,26 @@ fn worker_loop(
     mut paused: bool,
     rx: Receiver<WorkerCtl>,
     status: Arc<Mutex<WorldStatus>>,
-    board: Board,
+    role: Role,
     zoo: SharedZoo,
 ) {
     lower_priority();
     let pool = self::pool(&format!("evolve-world-{index}"), BACKGROUND_THREADS, true);
-    let mut sim = pool.install(|| Sim::new_background(island_params(index, &params)));
+    let mut sim = pool.install(|| Sim::new_background(params));
     pool.install(|| crate::zoo::seed_world(&zoo, &mut sim));
     crate::zoo::refresh_rain_sample(&zoo, &mut sim);
     // Start from the best genomes known so far rather than from nothing.
-    migrate(&mut sim.pool, &board, 0.0, true);
+    let (board, label) = match role {
+        Role::Island(board) => {
+            migrate(&mut sim.pool, &board, 0.0, true);
+            (Some(board), None)
+        }
+        Role::Trial { label, pool } => {
+            sim.pool = *pool;
+            sim.log(format!("Experiment arm \"{label}\""));
+            (None, Some(label))
+        }
+    };
     let mut pacer = Pacer::new();
     let mut next_migration = sim.time + sim.params.migration_interval as f64;
     let mut next_zoo = sim.time + sim.params.zoo_interval as f64;
@@ -338,8 +387,18 @@ fn worker_loop(
                     sim.brain_price = x;
                     sim.gpu_headroom = room;
                 }
-                // Like the world you watch, a new island shape waits for a new world.
+                // Like the world you watch, a new island shape waits for a new world. (An
+                // experiment arm keeps the settings it was started with: none are sent it.)
                 Ok(WorkerCtl::Params(p)) => sim.set_params(island_params(index, &p)),
+                // An arm's one-line summaries say which arm it is.
+                Ok(WorkerCtl::Ask(ask @ (crate::mcp::Ask::Summary | crate::mcp::Ask::Line { .. }), reply)) if label.is_some() => {
+                    let minutes = match ask {
+                        crate::mcp::Ask::Line { minutes } => minutes,
+                        _ => 10.0,
+                    };
+                    let name = label.as_deref().unwrap_or_default();
+                    let _ = reply.send(Ok(format!("[{name}] {:.0} sim-min in: {}", sim.time / 60.0, sim.summary_line(minutes * 60.0))));
+                }
                 Ok(WorkerCtl::Ask(ask, reply)) => sim.answer(ask, reply),
                 Err(TryRecvError::Empty) => break,
             }
@@ -348,16 +407,23 @@ fn worker_loop(
         sim.events.clear();
         sim.highlights.clear();
         if sim.time >= next_migration {
-            migrate(&mut sim.pool, &board, 0.0, true);
+            if let Some(board) = &board {
+                migrate(&mut sim.pool, board, 0.0, true);
+            }
             crate::zoo::refresh_rain_sample(&zoo, &mut sim);
             next_migration = sim.time + sim.params.migration_interval as f64;
         }
         if sim.time >= next_log {
-            eprintln!("evolve world {index}: {}", sim.summary_line(crate::runner::LOG_EVERY));
+            let arm = label.as_ref().map(|l| format!(" [{l}]")).unwrap_or_default();
+            eprintln!("evolve world {index}{arm}: {}", sim.summary_line(crate::runner::LOG_EVERY));
             next_log = sim.time + crate::runner::LOG_EVERY;
         }
+        // Only the islands put their best in the zoo: an arm's creatures were bred on settings
+        // under test.
         if sim.time >= next_zoo {
-            store_best(&zoo, &sim, index);
+            if board.is_some() {
+                store_best(&zoo, &sim, index);
+            }
             next_zoo = sim.time + sim.params.zoo_interval as f64;
         }
         let secs = window.0.elapsed().as_secs_f32();
@@ -365,7 +431,7 @@ fn worker_loop(
             rate = window.1 as f32 / secs;
             window = (Instant::now(), 0);
             if let Ok(mut s) = status.lock() {
-                *s = WorldStatus::of(index, &sim, rate);
+                *s = WorldStatus { label: label.clone().unwrap_or_default(), ..WorldStatus::of(index, &sim, rate) };
             }
         }
         if paused || speed > 0.0 {

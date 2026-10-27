@@ -544,6 +544,17 @@ claude mcp add --transport http evolve http://127.0.0.1:7311/mcp
 
 A watch on a paused world waits until the world runs again.
 
+**Experiments.** `start_experiment` tries other settings in background worlds: each arm (a name
+and the settings it changes) runs beside a *control* arm on the world on screen's settings,
+`replicates` times each (default 2) on as many islands, every arm of a replicate on the same
+island from the same start. Each arm's gene pool starts as the world on screen's; arms trade
+genomes with no world and put none in the zoo, so what they breed is down to their settings. They
+all run at one pace (`speed`, default 1x real time) so they keep step. They are background-sized
+(`background_population`) on ground no finer than the water grid, so an arm is judged against the
+control, not against the world on screen. `experiment_report` puts each arm's one-line summary
+side by side (`world_report` on an arm's world has the detail), `stop_experiment` ends it, and a
+new or loaded world ends it too. The Worlds panel names the arms.
+
 **World.**
 - *Terrain:* an island in an ocean. The coast follows the hills, with headlands and bays
   (`island_size`, `coast_roughness`). The terrain is a noise heightfield that is also the physics

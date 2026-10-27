@@ -242,6 +242,23 @@ fn terrain_layers_saved_as_numbers_still_load() {
 }
 
 #[test]
+fn experiment_arms_share_an_island_and_take_their_own_settings() {
+    use evolve_sim::islands::trial_params;
+    let main = SimParams::default();
+    let set = vec![("score_child".to_string(), "2.5".to_string())];
+    let control = trial_params(&main, 0, &[], 4).unwrap();
+    let arm = trial_params(&main, 0, &set, 4).unwrap();
+    let other = trial_params(&main, 1, &[], 4).unwrap();
+    assert_eq!(control.seed, arm.seed, "the arms of a replicate share an island");
+    assert_ne!(control.seed, other.seed, "each replicate has its own");
+    assert_eq!(control.score_child, main.score_child);
+    assert_eq!(arm.score_child, 2.5);
+    assert_eq!(arm.parallel_worlds, 4, "for their shares of GPU brain memory");
+    assert!(arm.max_population < main.max_population, "background-sized");
+    assert!(trial_params(&main, 0, &[("no_such_setting".into(), "1".into())], 4).is_err());
+}
+
+#[test]
 fn user_commands_work() {
     use evolve_sim::Command;
     use evolve_sim::sim::ObstacleShape;

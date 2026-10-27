@@ -1355,7 +1355,7 @@ fn worlds_list(ui: &mut egui::Ui, snap: &Snapshot) {
         .show(ui, |ui| {
             ui.label(
                 egui::RichText::new(
-                    "Background worlds evolve on spare cores; their best genomes migrate into this one's gene pool.",
+                    "Background worlds evolve on spare cores; their best genomes migrate into this one's gene pool. Named ones are an experiment's arms, on settings of their own, trading with nobody.",
                 )
                 .small()
                 .weak(),
@@ -1366,7 +1366,11 @@ fn worlds_list(ui: &mut egui::Ui, snap: &Snapshot) {
                 }
                 ui.end_row();
                 for w in &snap.worlds {
-                    ui.label(if w.index == 0 { "this".to_string() } else { format!("#{}", w.index) });
+                    ui.label(match (w.index, w.label.as_str()) {
+                        (0, _) => "this".to_string(),
+                        (k, "") => format!("#{k}"),
+                        (k, arm) => format!("#{k} {arm}"),
+                    });
                     if w.stopped {
                         ui.colored_label(egui::Color32::from_rgb(255, 110, 90), "stopped")
                             .on_hover_text("This world's thread stopped with an error; the reason is in the terminal.");
@@ -1421,8 +1425,9 @@ fn zoo_window(
                     .selected_text(label(st.zoo_target))
                     .show_ui(ui, |ui| {
                         ui.selectable_value(&mut st.zoo_target, ZooTarget::This, label(ZooTarget::This));
-                        for k in 1..snap.worlds.len() {
-                            ui.selectable_value(&mut st.zoo_target, ZooTarget::World(k), label(ZooTarget::World(k)));
+                        // Not into an experiment's arms: what they breed must be down to their settings.
+                        for w in snap.worlds.iter().skip(1).filter(|w| w.label.is_empty()) {
+                            ui.selectable_value(&mut st.zoo_target, ZooTarget::World(w.index), label(ZooTarget::World(w.index)));
                         }
                         ui.selectable_value(&mut st.zoo_target, ZooTarget::All, label(ZooTarget::All));
                     });

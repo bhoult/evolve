@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use crate::commands::Command;
 use crate::math::Vec3;
 use crate::zoo::{Offers, RainDraw, SharedZoo, Zoo, ZooMeta};
-use crate::islands::{Board, Pacer, WorkerCtl, Worker, WorldStatus, main_threads, migrate, world_pool};
+use crate::islands::{Board, Pacer, WorkerCtl, Worker, WorldStatus, main_threads, migrate, trial_params, world_pool};
 use crate::params::SimParams;
 use crate::mcp::Reply;
 use crate::save;
@@ -261,6 +261,10 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     let mut step_once = false;
     let mut board: Board = Arc::new(Mutex::new(GenePool::default()));
     let mut workers: Vec<Worker> = Vec::new();
+    // An experiment's arms (see `Worker::spawn_trial`), and a line on each: its world, name and
+    // settings.
+    let mut trials: Vec<Worker> = Vec::new();
+    let mut experiment: Vec<String> = Vec::new();
     let mut next_migration = sim.time;
     let mut world_epoch = 1u64;
     let mut next_zoo = sim.time + sim.params.zoo_interval as f64;
@@ -316,7 +320,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                 }
                 Ok(Control::Pause(p)) => {
                     paused = p;
-                    workers.iter().for_each(|w| w.send(WorkerCtl::Pause(p)));
+                    // (An experiment's arms keep their own pace, but pause with the rest.)
+                    workers.iter().chain(&trials).for_each(|w| w.send(WorkerCtl::Pause(p)));
                 }
                 Ok(Control::Speed(s)) => {
                     speed = s.max(0.0);
@@ -436,7 +441,61 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     use crate::mcp::Ask;
                     match ask {
                         Ask::Worlds => {
-                            let _ = reply.send(Ok(workers.len().to_string()));
+                            let _ = reply.send(Ok((workers.len() + trials.len()).to_string()));
+                        }
+                        Ask::StartExperiment { arms, replicates, speed: pace } => {
+                            let arms: Vec<(String, Vec<(String, String)>)> =
+                                std::iter::once(("control".to_string(), Vec::new())).chain(arms).collect();
+                            let n = arms.len() * replicates as usize;
+                            let planned: Result<Vec<_>, String> = (0..replicates)
+                                .flat_map(|r| arms.iter().map(move |arm| (r, arm)))
+                                .map(|(r, (label, set))| {
+                                    trial_params(&sim.params, r, set, n).map(|p| (r, label, set, p)).map_err(|e| format!("{label}: {e}"))
+                                })
+                                .collect();
+                            match planned {
+                                Err(e) => {
+                                    let _ = reply.send(Err(format!("{e}; no experiment started")));
+                                }
+                                Ok(planned) => {
+                                    trials.clear();
+                                    experiment.clear();
+                                    let first = 1 + workers.len();
+                                    for (k, (r, label, set, p)) in planned.into_iter().enumerate() {
+                                        let index = first + k;
+                                        let name = if replicates > 1 { format!("{label} #{}", r + 1) } else { label.clone() };
+                                        let settings = if set.is_empty() {
+                                            "the world on screen's settings".to_string()
+                                        } else {
+                                            set.iter().map(|(k, v)| format!("{k} = {v}")).collect::<Vec<_>>().join(", ")
+                                        };
+                                        experiment.push(format!("world {index}: {name}: {settings}"));
+                                        trials.push(Worker::spawn_trial(index, p, name, sim.pool.clone(), pace, paused, zoo.clone()));
+                                    }
+                                    sim.log(format!("Experiment started: {} arms on {replicates} islands", arms.len()));
+                                    let pace = if pace > 0.0 { format!("{pace}x real time") } else { "Max".to_string() };
+                                    let _ = reply.send(Ok(format!(
+                                        "{}\nEach runs at {pace}; experiment_report compares them.",
+                                        experiment.join("\n")
+                                    )));
+                                }
+                            }
+                        }
+                        Ask::StopExperiment => {
+                            let had = trials.len();
+                            trials.clear();
+                            experiment.clear();
+                            if had > 0 {
+                                sim.log("Experiment stopped");
+                            }
+                            let _ = reply.send(Ok(format!("stopped {had} experiment worlds")));
+                        }
+                        Ask::Experiment => {
+                            let _ = reply.send(if experiment.is_empty() {
+                                Err("no experiment is running (start_experiment starts one)".into())
+                            } else {
+                                Ok(experiment.join("\n"))
+                            });
                         }
                         Ask::SetParam { name, value } => {
                             let mut p = sim.params.clone();
@@ -498,8 +557,12 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             let how = if paused { " (paused)" } else if speed == 0.0 { " at Max" } else { "" };
                             let _ = reply.send(Ok(format!("{rate:.2}x real time{how}; {}", sim.summary_line(600.0))));
                         }
+                        Ask::Line { minutes } if world == 0 => {
+                            let rate = steps_per_sec / crate::sim::TICKS_PER_SECOND as f32;
+                            let _ = reply.send(Ok(format!("{rate:.2}x real time; {}", sim.summary_line(minutes * 60.0))));
+                        }
                         ask if world == 0 => sim.answer(ask, reply),
-                        ask => match workers.get(world - 1) {
+                        ask => match trials.iter().find(|t| t.index == world).or_else(|| workers.get(world - 1)) {
                             Some(w) if w.alive() => w.send(WorkerCtl::Ask(ask, reply)),
                             _ => {
                                 let _ = reply.send(Err(format!("there is no background world {world} running")));
@@ -529,6 +592,12 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             highlights = Arc::default();
             wiring = None;
             workers.clear();
+            // An experiment was on the old world's settings and gene pool.
+            if !trials.is_empty() {
+                sim.log("Experiment stopped with the old world");
+            }
+            trials.clear();
+            experiment.clear();
             board = Arc::new(Mutex::new(GenePool::default()));
             next_migration = sim.time;
         }
@@ -599,9 +668,12 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             // set speed the GPU idles by design.
             let steering = speed == 0.0 && !paused && sim.params.gpu_target > 0.0 && sim.brains.is_some();
             if steering {
+                // An experiment's arms count against the GPU's time, but not its memory: each arm
+                // has its own small share.
                 let busy = sim.perf.gpu_busy
                     + workers
                         .iter()
+                        .chain(&trials)
                         .filter(|w| w.alive())
                         .filter_map(|w| w.status.lock().ok().map(|s| s.gpu_busy))
                         .sum::<f32>();
@@ -623,7 +695,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     sim.brain_price = 1.0;
                 }
             }
-            for w in &workers {
+            for w in workers.iter().chain(&trials) {
                 w.send(WorkerCtl::BrainPrice(sim.brain_price, sim.gpu_headroom));
             }
             // Smoothed over a second or two, so the speed shown doesn't flicker with each
@@ -705,7 +777,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             snap.events = events.clone();
             snap.highlights = highlights.clone();
             snap.worlds = std::iter::once(WorldStatus::of(0, &sim, steps_per_sec))
-                .chain(workers.iter().filter_map(|w| {
+                .chain(workers.iter().chain(&trials).filter_map(|w| {
                     let mut s = w.status.lock().ok()?.clone();
                     s.stopped = !w.alive();
                     Some(s)

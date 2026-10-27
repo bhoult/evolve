@@ -29,6 +29,8 @@ pub type Reply = Sender<Result<String, String>>;
 pub enum Ask {
     Report { minutes: f64 },
     Summary,
+    /// The one-line summary over the last `minutes` simulated minutes.
+    Line { minutes: f64 },
     Creatures { sort: String, count: usize },
     Creature { id: u64 },
     Watch { id: u64, seconds: f32 },
@@ -44,6 +46,13 @@ pub enum Ask {
     /// worlds), as the New world button does.
     NewWorld,
     Save(PathBuf),
+    /// Start an experiment (answered by the runner): each arm (a name and settings) run in
+    /// background worlds, `replicates` of each on as many islands, beside a control arm on the
+    /// world on screen's settings, at `speed` times real time (0: flat out).
+    StartExperiment { arms: Vec<(String, Vec<(String, String)>)>, replicates: u32, speed: f32 },
+    StopExperiment,
+    /// The experiment's arms: which world each is, and its settings (answered by the runner).
+    Experiment,
 }
 
 /// A picture of the world from the app (there is none in the headless runner).
@@ -61,13 +70,20 @@ impl Sim {
         let text = match ask {
             Ask::Report { minutes } => Ok(self.report(minutes * 60.0)),
             Ask::Summary => Ok(self.summary_line(600.0)),
+            Ask::Line { minutes } => Ok(self.summary_line(minutes * 60.0)),
             Ask::Creatures { sort, count } => self.list_creatures(&sort, count),
             Ask::Creature { id } => self.creature_details(id),
             Ask::Watch { id, seconds } => return self.watch(id, seconds, reply),
             Ask::Params { filter } => Ok(self.params_text(&filter)),
-            Ask::Worlds | Ask::SetParam { .. } | Ask::SetParams(_) | Ask::RegenerateTerrain | Ask::NewWorld | Ask::Save(_) => {
-                Err("the runner answers that".into())
-            }
+            Ask::Worlds
+            | Ask::SetParam { .. }
+            | Ask::SetParams(_)
+            | Ask::RegenerateTerrain
+            | Ask::NewWorld
+            | Ask::Save(_)
+            | Ask::StartExperiment { .. }
+            | Ask::StopExperiment
+            | Ask::Experiment => Err("the runner answers that".into()),
         };
         let _ = reply.send(text);
     }
@@ -296,7 +312,7 @@ fn rpc(msg: &Value, runner: &Sender<Control>, shots: Option<&Sender<Shot>>) -> O
     })
 }
 
-const INSTRUCTIONS: &str = "evolve is a 3D evolution simulator. Creatures (bodies of boxes and capsules jointed by servo motors, each run by a recurrent neural network on the GPU) live on an island, eat plants and meat, fight, and breed. When there are fewer than min_population, new ones fall from the sky, mostly bred from a pool of past successes. The world on screen is world 0; background worlds (1, 2, ...) evolve in parallel and trade their best genomes. Start with worlds_summary or world_report; watch_creature shows how one moves.";
+const INSTRUCTIONS: &str = "evolve is a 3D evolution simulator. Creatures (bodies of boxes and capsules jointed by servo motors, each run by a recurrent neural network on the GPU) live on an island, eat plants and meat, fight, and breed. When there are fewer than min_population, new ones fall from the sky, mostly bred from a pool of past successes. The world on screen is world 0; background worlds (1, 2, ...) evolve in parallel and trade their best genomes. start_experiment runs settings to try in background worlds of their own beside a control on the world on screen's settings; experiment_report compares them. Start with worlds_summary or world_report; watch_creature shows how one moves.";
 
 fn tools(pictures: bool) -> Value {
     let world = json!({"type": "integer", "description": "0 for the world on screen (the default), 1 and up for background worlds", "minimum": 0});
@@ -373,6 +389,30 @@ fn tools(pictures: bool) -> Value {
             "inputSchema": {"type": "object", "properties": {
                 "paused": {"type": "boolean"},
                 "speed": {"type": "number", "minimum": 0, "description": "times real time; 0 for Max"}
+            }},
+        }),
+        json!({
+            "name": "start_experiment",
+            "description": "Tries other settings in background worlds: each arm runs on the world on screen's settings with its own changes, beside a control arm on the world on screen's settings unchanged, `replicates` times each on as many islands (every arm of a replicate on the same island, from the same start). Each arm's gene pool starts as the world on screen's; arms trade genomes with no world and put none in the zoo. They are background-sized (background_population) on coarser ground than the world on screen, so compare arms with the control, not with world 0. Replaces any experiment running; the world on screen and its islands carry on.",
+            "inputSchema": {"type": "object", "properties": {
+                "arms": {"type": "array", "items": {"type": "object", "properties": {
+                    "label": {"type": "string"},
+                    "set": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}},
+                }, "required": ["label", "set"]}, "description": "settings to try, e.g. [{\"label\": \"no cloning\", \"set\": {\"asexual\": false}}]"},
+                "replicates": {"type": "integer", "minimum": 1, "maximum": 4, "description": "islands each arm runs on (default 2)"},
+                "speed": {"type": "number", "minimum": 0, "description": "times real time for every arm, so they keep pace with each other (default 1; 0 is flat out, each as fast as it goes)"},
+            }, "required": ["arms"]},
+        }),
+        json!({
+            "name": "stop_experiment",
+            "description": "Ends the experiment running, if any, and frees its worlds.",
+            "inputSchema": {"type": "object", "properties": {}},
+        }),
+        json!({
+            "name": "experiment_report",
+            "description": "The experiment's arms side by side: each arm's settings, then one summary line per world (births vs creatures from the sky, deaths, age at death, food eaten and how much away from where they came into the world, travel, closing on food, body and brain sizes) over the last `minutes` simulated minutes. world_report on an arm's world has the detail (energy accounts, muscle cost per meter...).",
+            "inputSchema": {"type": "object", "properties": {
+                "minutes": {"type": "number", "minimum": 0.5, "maximum": 30, "description": "default 30"},
             }},
         }),
         json!({
@@ -458,6 +498,40 @@ fn call(name: &str, args: &Value, runner: &Sender<Control>, shots: Option<&Sende
             ask(runner, 0, Ask::SetParams(pairs)).map(text)
         }
         "regenerate_terrain" => ask(runner, 0, Ask::RegenerateTerrain).map(text),
+        "start_experiment" => {
+            let arms = args.get("arms").and_then(Value::as_array).ok_or("arms is required: a list of {label, set}")?;
+            let arms = arms
+                .iter()
+                .map(|a| {
+                    let label = a.get("label").and_then(Value::as_str).ok_or("each arm needs a label")?.to_string();
+                    let set = a.get("set").and_then(Value::as_object).ok_or(format!("{label}: set must be an object of name: value"))?;
+                    let set = set
+                        .iter()
+                        .map(|(k, v)| match v {
+                            Value::String(s) => Ok((k.clone(), s.clone())),
+                            Value::Number(_) | Value::Bool(_) => Ok((k.clone(), v.to_string())),
+                            _ => Err(format!("{label}: {k}: give a number, true/false or text")),
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    Ok((label, set))
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let replicates = args.get("replicates").and_then(Value::as_u64).unwrap_or(2).clamp(1, 4) as u32;
+            let speed = args.get("speed").and_then(Value::as_f64).unwrap_or(1.0).max(0.0) as f32;
+            ask(runner, 0, Ask::StartExperiment { arms, replicates, speed }).map(text)
+        }
+        "stop_experiment" => ask(runner, 0, Ask::StopExperiment).map(text),
+        "experiment_report" => {
+            let minutes = args.get("minutes").and_then(Value::as_f64).unwrap_or(30.0).clamp(0.5, 30.0);
+            let listing = ask(runner, 0, Ask::Experiment)?;
+            let mut out = format!("{listing}\nLast {minutes:.0} simulated minutes:\n");
+            out.push_str(&format!("world 0 (on screen, for reference): {}\n", ask(runner, 0, Ask::Line { minutes }).unwrap_or_else(|e| e)));
+            // The listing's first word on each arm line is its world.
+            for w in listing.lines().filter_map(|l| l.strip_prefix("world ")?.split(':').next()?.parse::<usize>().ok()) {
+                out.push_str(&format!("world {w}: {}\n", ask(runner, w, Ask::Line { minutes }).unwrap_or_else(|e| e)));
+            }
+            Ok(text(out))
+        }
         "new_world" => {
             if args.get("confirm").and_then(Value::as_bool) != Some(true) {
                 return Err("new_world discards the world on screen; pass confirm: true".into());
