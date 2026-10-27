@@ -124,6 +124,8 @@ struct Shot {
     /// When it last looked for a clear view, and when it may next turn back from a tree ahead.
     searched: f64,
     turned_back: f64,
+    /// Since when trees have hidden the subject from every view it could turn to.
+    hidden: Option<f64>,
     /// When the subject disappeared (died, or left the world).
     lost: Option<f64>,
 }
@@ -335,24 +337,39 @@ fn candidates(d: &mut Director, snap: &Snapshot, sky: Sky, now: f64) -> Vec<Cand
     out
 }
 
+/// Where a shot of `s` (and `o`) looks, how far from it, and the yaw side on to where `s` is
+/// heading (from one side; the other is half a turn round).
+fn frame(s: &CreatureView, o: Option<&CreatureView>) -> (Vec3, f32, f32) {
+    let mut focus = center_of_mass(s);
+    let mut distance = (size(s) * 5.0 + 3.0).clamp(4.5, 22.0);
+    if let Some(o) = o {
+        distance = distance.max(focus.distance(center_of_mass(o)) * 1.6 + 4.0);
+        focus = (focus + center_of_mass(o)) * 0.5;
+    }
+    let fwd = Quat::from_array(s.parts[0].rot) * Vec3::X;
+    (focus, distance, -fwd.z.atan2(fwd.x) + std::f32::consts::FRAC_PI_2)
+}
+
+/// Whether some view of a candidate's subjects, near the one a shot would start from, is clear of
+/// trees (a subject deep in a wood may have none).
+fn in_sight(snap: &Snapshot, c: &Candidate) -> bool {
+    let Some(s) = find(snap, c.subject) else {
+        return true;
+    };
+    let (focus, distance, yaw) = frame(s, find(snap, c.other));
+    best_view(snap, focus, &subject_points(snap, c.subject, c.other), yaw, 0.38, distance).0 <= CLEAR
+}
+
 fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Candidate, now: f64) {
     let from = (cam.focus, cam.distance, cam.yaw, cam.pitch);
     let r1 = d.random();
     let r2 = d.random();
     let (focus, distance, yaw, pitch, yaw_rate) = match find(snap, c.subject) {
         Some(s) => {
-            let mut focus = center_of_mass(s);
-            let mut distance = (size(s) * 5.0 + 3.0).clamp(4.5, 22.0);
-            if let Some(o) = find(snap, c.other) {
-                distance = distance.max(focus.distance(center_of_mass(o)) * 1.6 + 4.0);
-                focus = (focus + center_of_mass(o)) * 0.5;
-            }
-            // Side on to where it's heading, from either side.
-            let rot = Quat::from_array(s.parts[0].rot);
-            let fwd = rot * Vec3::X;
-            let heading = fwd.z.atan2(fwd.x);
-            let side = if r1 < 0.5 { 1.0 } else { -1.0 };
-            let yaw = -heading + side * std::f32::consts::FRAC_PI_2 + (r2 - 0.5) * 0.8;
+            let (focus, distance, side_on) = frame(s, find(snap, c.other));
+            // From either side.
+            let side = if r1 < 0.5 { 0.0 } else { std::f32::consts::PI };
+            let yaw = side_on + side + (r2 - 0.5) * 0.8;
             (focus, distance, yaw, 0.28 + 0.2 * r2, (r1 - 0.5) * 0.15)
         }
         None => {
@@ -411,6 +428,7 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
         aim: None,
         searched: now,
         turned_back: now,
+        hidden: None,
         lost: None,
     });
 }
@@ -428,7 +446,9 @@ const TRUNK_RADIUS: f32 = 0.045;
 /// The middle of the picture kept clear: a cone about the sight line this wide (the tangent of
 /// its half-angle), narrow at the subject and wide at the camera, so a tree beside the lens that
 /// would fill half the frame counts as well as one dead in line.
-const CONE: f32 = 0.18;
+const CONE: f32 = 0.22;
+/// Room kept between the camera and any crown, m, so it never peers out from under the leaves.
+const EYE_ROOM: f32 = 2.0;
 /// Meters of the cone's middle line through trees (each widened by the cone) that still count
 /// as a clear view.
 const CLEAR: f32 = 0.05;
@@ -437,6 +457,10 @@ const TURN_RATE: f32 = 0.9;
 const TILT_RATE: f32 = 0.5;
 /// How far ahead round its circle it looks for a tree coming between, seconds.
 const LOOK_AHEAD: f32 = 2.5;
+/// How long a shot stays on a subject that trees hide from every view, seconds.
+const HIDDEN_FOR: f64 = 5.0;
+/// How much less a subject that trees hide is worth a shot.
+const HIDDEN_INTEREST: f32 = 0.3;
 
 /// What a shot keeps in view: its subject and the other one, if any.
 fn subject_points(snap: &Snapshot, subject: Option<u64>, other: Option<u64>) -> Vec<Vec3> {
@@ -483,8 +507,10 @@ fn tree_cover(trees: &[&TreeView], eye: Vec3, at: Vec3) -> f32 {
         let foot = Vec3::from_array(t.pos);
         // Through the leaves: the chord through a ball.
         let to = foot + Vec3::Y * (CROWN_AT * t.height) - eye;
+        let leaves = CROWN_RADIUS * t.height + LEAF_MARGIN;
+        cover += (leaves + EYE_ROOM - to.length()).max(0.0);
         let k = to.dot(dir);
-        let r = CROWN_RADIUS * t.height + LEAF_MARGIN + widen(k);
+        let r = leaves + widen(k);
         let off = to.length_squared() - k * k;
         if off < r * r {
             let half = (r * r - off).sqrt();
@@ -528,20 +554,25 @@ fn view_cover(snap: &Snapshot, trees: &[&TreeView], focus: Vec3, subjects: &[Vec
 /// (turn, pitch, how much nearer). With no clear view, the least blocked if it is much better
 /// than this one; None if this one will do.
 fn clear_view(snap: &Snapshot, focus: Vec3, subjects: &[Vec3], yaw: f32, pitch: f32, distance: f32) -> Option<(f32, f32, f32)> {
+    best_view(snap, focus, subjects, yaw, pitch, distance).1
+}
+
+/// The search behind `clear_view`, with how much tree is left in the view it settles on.
+fn best_view(snap: &Snapshot, focus: Vec3, subjects: &[Vec3], yaw: f32, pitch: f32, distance: f32) -> (f32, Option<(f32, f32, f32)>) {
     let trees = trees_near(snap, focus, distance + 1.0);
     if trees.is_empty() || subjects.is_empty() {
-        return None;
+        return (0.0, None);
     }
     let cover = |turn: f32, pitch: f32, closer: f32| view_cover(snap, &trees, focus, subjects, (yaw + turn, pitch, distance * closer));
     let here = cover(0.0, pitch, 1.0);
     if here <= CLEAR {
-        return None;
+        return (here, None);
     }
     let mut tries = Vec::new();
     for k in -16..=16i32 {
         // The same way round first at each step, so two equally good ways don't take turns.
         let turn = k.abs() as f32 * 0.2 * if k < 0 { -1.0 } else { 1.0 };
-        for tilt in [0.0, 0.2, 0.4, -0.12] {
+        for tilt in [0.0, 0.2, 0.4, -0.12, 0.7] {
             for closer in [1.0, 0.7] {
                 let cost = turn.abs() + 1.5 * f32::abs(tilt) + 2.0 * (1.0 - closer) + if k < 0 { 1e-3 } else { 0.0 };
                 tries.push((cost, turn, (pitch + tilt).clamp(0.12, 1.25), closer));
@@ -553,13 +584,13 @@ fn clear_view(snap: &Snapshot, focus: Vec3, subjects: &[Vec3], yaw: f32, pitch: 
     for (_, turn, pitch, closer) in tries {
         let c = cover(turn, pitch, closer);
         if c <= CLEAR {
-            return Some((turn, pitch, closer));
+            return (c, Some((turn, pitch, closer)));
         }
         if c < least.0 {
             least = (c, Some((turn, pitch, closer)));
         }
     }
-    least.1.filter(|_| least.0 < here * 0.5)
+    if least.0 < here * 0.5 { least } else { (here, None) }
 }
 
 /// Keeps trees from coming between the camera and its subjects: before circling into one it turns
@@ -571,6 +602,10 @@ fn keep_trees_out(shot: &mut Shot, snap: &Snapshot, subjects: &[Vec3], now: f64,
     let cover = |yaw: f32, pitch: f32, closer: f32| view_cover(snap, &trees, focus, subjects, (yaw, pitch, spread * closer));
     if !trees.is_empty() && !subjects.is_empty() {
         if cover(shot.yaw, shot.pitch, shot.closer) > CLEAR {
+            // Hidden only once there's nowhere clear left to turn to.
+            if shot.aim.is_none() {
+                shot.hidden.get_or_insert(now);
+            }
             if now - shot.searched > 0.25 {
                 shot.searched = now;
                 if let Some((turn, pitch, closer)) = clear_view(snap, focus, subjects, shot.yaw, shot.pitch, spread * shot.closer) {
@@ -579,6 +614,7 @@ fn keep_trees_out(shot: &mut Shot, snap: &Snapshot, subjects: &[Vec3], now: f64,
             }
         } else {
             shot.aim = None;
+            shot.hidden = None;
             let ahead = shot.yaw + shot.yaw_rate * LOOK_AHEAD;
             if now - shot.turned_back > 4.0 && cover(ahead, shot.pitch, shot.closer) > CLEAR {
                 shot.yaw_rate = -shot.yaw_rate;
@@ -590,6 +626,10 @@ fn keep_trees_out(shot: &mut Shot, snap: &Snapshot, subjects: &[Vec3], now: f64,
         shot.yaw += (yaw - shot.yaw).clamp(-TURN_RATE * dt, TURN_RATE * dt);
         shot.pitch += (pitch - shot.pitch).clamp(-TILT_RATE * dt, TILT_RATE * dt);
         shot.closer += (closer - shot.closer).clamp(-0.3 * dt, 0.3 * dt);
+        // (Near enough: the circling keeps nudging it on.)
+        if (yaw - shot.yaw).abs() + (pitch - shot.pitch).abs() + (closer - shot.closer).abs() < 0.02 {
+            shot.aim = None;
+        }
     }
 }
 
@@ -708,7 +748,8 @@ fn direct(
                         && Some(h.subject) != subject
                         && find(snap, Some(h.subject)).is_some()
                 });
-            held >= shot.length || shot.lost.is_some_and(|t| now - t > 1.5) || big_news
+            let hidden = shot.hidden.is_some_and(|t| now - t > HIDDEN_FOR);
+            held >= shot.length || shot.lost.is_some_and(|t| now - t > 1.5) || big_news || hidden
         }
     };
     if switch {
@@ -721,6 +762,12 @@ fn direct(
         let mut cands = candidates(d, snap, sky, now);
         if let Some(shot) = &d.shot {
             cands.retain(|c| !(c.kind == shot.kind && c.subject == shot.subject));
+        }
+        // Rather something that can be seen than something deep in a wood.
+        for c in &mut cands {
+            if !in_sight(snap, c) {
+                c.score *= HIDDEN_INTEREST;
+            }
         }
         if let Some(best) = cands.into_iter().max_by(|a, b| a.score.total_cmp(&b.score)) {
             start_shot(d, &cam, snap, sky, best, now);
@@ -856,6 +903,7 @@ mod tests {
             aim: None,
             searched: -10.0,
             turned_back: -10.0,
+            hidden: None,
             lost: None,
         }
     }
@@ -890,5 +938,28 @@ mod tests {
         }
         let t = clear_at.expect("it found a clear view");
         assert!(t > 0.1 && t < 3.0, "turning steadily, not jumping: clear after {t} s");
+        assert!(shot.hidden.is_none());
+    }
+
+    #[test]
+    fn a_subject_deep_in_a_wood_is_given_up() {
+        // Trees every 3 m all round.
+        let mut trees = Vec::new();
+        for i in -8..=8 {
+            for j in -8..=8 {
+                if (i, j) != (0, 0) {
+                    trees.push(tree(trees.len() as u64, i as f32 * 3.0, j as f32 * 3.0, 10.0));
+                }
+            }
+        }
+        let snap = world(trees);
+        let subject = [Vec3::new(1.5, 0.5, 1.5)];
+        assert!(best_view(&snap, subject[0], &subject, 0.0, 0.38, 12.0).0 > CLEAR, "no clear view");
+        let mut shot = circling(0.0, 0.05);
+        shot.focus = subject[0];
+        for k in 0..200 {
+            keep_trees_out(&mut shot, &snap, &subject, k as f64 * 0.05, 0.05);
+        }
+        assert!(shot.hidden.is_some_and(|t| 10.0 - t > HIDDEN_FOR), "hidden since {:?}", shot.hidden);
     }
 }
