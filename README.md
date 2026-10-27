@@ -568,7 +568,7 @@ simulated minutes each world adds a sample: for each kind of creature (all, fell
 born, bred from the gene pool, copies, crosses, random, zoo, retests) the sums over the lives
 that ended (deaths, minutes lived, meters travelled, muscle energy, food, children, kills, causes
 of death, median and p90 age) and how many arrived (births, sky spawns by source); and for the
-world, births and sky spawns, the living, plants, median body and brain size, brain price and the
+world, births and sky spawns, the living, plants and how much of the land has one within 5 or 10 m, median body and brain size, brain price and the
 gene pool's score. Rates are worked out when read, so short windows add up exactly into longer
 ones. Settings changes (a slider's drag counts once), loads, new worlds and experiments are kept
 as events. A world keeps its id in its saves, so its history carries on across restarts. The

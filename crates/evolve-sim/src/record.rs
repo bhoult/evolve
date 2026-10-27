@@ -334,6 +334,8 @@ pub const METRICS: &[Metric] = &[
     whole("alive", "creatures alive", Calc::Mean("alive")),
     whole("born_alive", "creatures alive that were born here", Calc::Mean("born_alive")),
     whole("plants", "plants", Calc::Mean("plants")),
+    whole("plants_near_5", "land with a plant within 5 m, %", Calc::Mean("plants_near_5")),
+    whole("plants_near_10", "land with a plant within 10 m, %", Calc::Mean("plants_near_10")),
     whole("mass_p50", "body mass of the living, median kg", Calc::Mean("mass_p50")),
     whole("neurons_p50", "brain neurons of the living, median", Calc::Mean("neurons_p50")),
     whole("brain_price", "brain price", Calc::Mean("brain_price")),
@@ -462,6 +464,7 @@ impl Sim {
         let births = self.census.births.iter().filter(|b| b.time >= from).count() as f64;
         let sky = self.census.sky.iter().filter(|s| s.0 >= from).count() as f64;
         let pool = &self.pool.entries;
+        let (near_5, near_10) = self.plant_reach();
         out.extend([
             ("world", "minutes", minutes),
             ("world", "births", births),
@@ -470,6 +473,8 @@ impl Sim {
             ("world", "alive", self.creatures.len() as f64),
             ("world", "born_alive", self.creatures.iter().filter(|c| !c.rained).count() as f64),
             ("world", "plants", self.plants.len() as f64),
+            ("world", "plants_near_5", near_5),
+            ("world", "plants_near_10", near_10),
             ("world", "mass_p50", median(self.creatures.iter().map(|c| c.mass).collect())),
             ("world", "neurons_p50", median(self.creatures.iter().map(|c| c.genome.brain.h as f32).collect())),
             ("world", "brain_price", self.brain_price as f64),
@@ -477,6 +482,45 @@ impl Sim {
             ("world", "generation", self.creatures.iter().map(|c| c.generation).max().unwrap_or(0) as f64),
         ]);
         out
+    }
+}
+
+impl Sim {
+    /// How much of the land has a plant near: the share of spots on a 5 m grid over the land with
+    /// one within 5 m and within 10 m, in percent. Plants seed beside their parents, so over the
+    /// hours they can bunch up and leave much of the land bare (a 100-hour world had a plant within
+    /// 10 m of 61% of the land, against 100% when fresh).
+    fn plant_reach(&self) -> (f64, f64) {
+        const CELL: f32 = 5.0;
+        let half = self.terrain.size * 0.5;
+        let n = (self.terrain.size / CELL).ceil() as usize + 1;
+        let cell_of = |v: f32| (((v + half) / CELL).max(0.0) as usize).min(n - 1);
+        let mut grid: Vec<Vec<(f32, f32)>> = vec![Vec::new(); n * n];
+        for p in &self.plants {
+            grid[cell_of(p.pos.x) + cell_of(p.pos.z) * n].push((p.pos.x, p.pos.z));
+        }
+        let (mut spots, mut five, mut ten) = (0u32, 0u32, 0u32);
+        for i in 0..n {
+            for j in 0..n {
+                let (x, z) = (i as f32 * CELL - half + CELL * 0.5, j as f32 * CELL - half + CELL * 0.5);
+                if self.terrain.height_at(x, z) <= self.params.water_level {
+                    continue;
+                }
+                spots += 1;
+                let mut best = f32::INFINITY;
+                for a in i.saturating_sub(2)..(i + 3).min(n) {
+                    for b in j.saturating_sub(2)..(j + 3).min(n) {
+                        for &(px, pz) in &grid[a + b * n] {
+                            best = best.min((px - x).powi(2) + (pz - z).powi(2));
+                        }
+                    }
+                }
+                five += u32::from(best <= 25.0);
+                ten += u32::from(best <= 100.0);
+            }
+        }
+        let pct = |k: u32| k as f64 / spots.max(1) as f64 * 100.0;
+        (pct(five), pct(ten))
     }
 }
 

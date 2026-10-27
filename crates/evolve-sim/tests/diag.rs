@@ -1186,3 +1186,89 @@ fn terrain_worked() {
         made.iter().sum::<f32>() / made.len() as f32, pct(&mut made.clone(), 0.9), pct(&mut made, 0.99)
     );
 }
+
+/// How plants lie over the land: how far a random spot on land is from the nearest plant, and how
+/// much of the land has plants at all, for a saved world and for a fresh one on the same settings
+/// grown for `EVOLVE_DIAG_MINUTES` (default 60) simulated minutes with no creatures, on ground as
+/// coarse as an experiment arm's. Plants seed within `plant_spread_radius` of their parents, so a
+/// world's plants may bunch up over the hours.
+/// `EVOLVE_DIAG_SAVE=path.evo cargo test --release --test diag plant_layout -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn plant_layout() {
+    let Some(path) = std::env::var_os("EVOLVE_DIAG_SAVE") else {
+        println!("set EVOLVE_DIAG_SAVE to a save");
+        return;
+    };
+    let saved = evolve_sim::save::load(std::path::Path::new(&path)).expect("load");
+    layout("saved", &saved);
+    let minutes: f64 = std::env::var("EVOLVE_DIAG_MINUTES").ok().and_then(|m| m.parse().ok()).unwrap_or(60.0);
+    let mut fresh = Sim::new(SimParams {
+        min_population: 0,
+        terrain_resolution: (saved.params.world_size as u32) + 1,
+        ..saved.params.clone()
+    });
+    while fresh.time < minutes * 60.0 {
+        fresh.step();
+    }
+    layout(&format!("fresh, {minutes:.0} min"), &fresh);
+}
+
+fn layout(name: &str, sim: &Sim) {
+    let t = &sim.terrain;
+    let wl = sim.params.water_level;
+    let half = t.size * 0.5;
+    // Plants bucketed in 5 m cells for nearest-plant searches.
+    const CELL: f32 = 5.0;
+    let n = (t.size / CELL).ceil() as usize + 1;
+    let mut grid = vec![Vec::new(); n * n];
+    let at = |x: f32, z: f32| (((x + half) / CELL) as usize).min(n - 1) + (((z + half) / CELL) as usize).min(n - 1) * n;
+    for p in &sim.plants {
+        grid[at(p.pos.x, p.pos.z)].push((p.pos.x, p.pos.z));
+    }
+    let (mut spots, mut within) = (0usize, [0usize; 4]);
+    let reach = [2.0f32, 5.0, 10.0, 25.0];
+    let mut x = -half + 1.25;
+    while x < half {
+        let mut z = -half + 1.25;
+        while z < half {
+            if t.height_at(x, z) > wl {
+                spots += 1;
+                let (ci, cj) = (((x + half) / CELL) as i64, ((z + half) / CELL) as i64);
+                let mut best = f32::INFINITY;
+                for di in -5..=5i64 {
+                    for dj in -5..=5i64 {
+                        let (i, j) = (ci + di, cj + dj);
+                        if i < 0 || j < 0 || i >= n as i64 || j >= n as i64 {
+                            continue;
+                        }
+                        for &(px, pz) in &grid[i as usize + j as usize * n] {
+                            best = best.min(((px - x).powi(2) + (pz - z).powi(2)).sqrt());
+                        }
+                    }
+                }
+                for (k, r) in reach.iter().enumerate() {
+                    if best <= *r {
+                        within[k] += 1;
+                    }
+                }
+            }
+            z += 2.5;
+        }
+        x += 2.5;
+    }
+    let land_cells = grid.iter().enumerate().filter(|(k, _)| {
+        let (i, j) = (k % n, k / n);
+        t.height_at(i as f32 * CELL - half + 2.5, j as f32 * CELL - half + 2.5) > wl
+    });
+    let (mut cells, mut planted) = (0usize, 0usize);
+    for (_, c) in land_cells {
+        cells += 1;
+        planted += usize::from(!c.is_empty());
+    }
+    let pct = |k: usize| within[k] as f32 / spots.max(1) as f32 * 100.0;
+    println!(
+        "{name}: {} plants; land spots with a plant within 2 m {:.0}%, 5 m {:.0}%, 10 m {:.0}%, 25 m {:.0}%; 5 m land cells with a plant {:.0}%",
+        sim.plants.len(), pct(0), pct(1), pct(2), pct(3), planted as f32 / cells.max(1) as f32 * 100.0
+    );
+}
