@@ -312,7 +312,7 @@ fn rpc(msg: &Value, runner: &Sender<Control>, shots: Option<&Sender<Shot>>) -> O
     })
 }
 
-const INSTRUCTIONS: &str = "evolve is a 3D evolution simulator. Creatures (bodies of boxes and capsules jointed by servo motors, each run by a recurrent neural network on the GPU) live on an island, eat plants and meat, fight, and breed. When there are fewer than min_population, new ones fall from the sky, mostly bred from a pool of past successes. The world on screen is world 0; background worlds (1, 2, ...) evolve in parallel and trade their best genomes. start_experiment runs settings to try in background worlds of their own beside a control on the world on screen's settings; experiment_report compares them. Start with worlds_summary or world_report; watch_creature shows how one moves.";
+const INSTRUCTIONS: &str = "evolve is a 3D evolution simulator. Creatures (bodies of boxes and capsules jointed by servo motors, each run by a recurrent neural network on the GPU) live on an island, eat plants and meat, fight, and breed. When there are fewer than min_population, new ones fall from the sky, mostly bred from a pool of past successes. The world on screen is world 0; background worlds (1, 2, ...) evolve in parallel and trade their best genomes. start_experiment runs settings to try in background worlds of their own beside a control on the world on screen's settings; experiment_report compares them. stats_history reads the record of how every world has done over time (kept across restarts), with the settings changes marked. Start with worlds_summary or world_report; watch_creature shows how one moves.";
 
 fn tools(pictures: bool) -> Value {
     let world = json!({"type": "integer", "description": "0 for the world on screen (the default), 1 and up for background worlds", "minimum": 0});
@@ -413,6 +413,17 @@ fn tools(pictures: bool) -> Value {
             "description": "The experiment's arms side by side: each arm's settings, then one summary line per world (births vs creatures from the sky, deaths, age at death, food eaten and how much away from where they came into the world, travel, closing on food, body and brain sizes) over the last `minutes` simulated minutes. world_report on an arm's world has the detail (energy accounts, muscle cost per meter...).",
             "inputSchema": {"type": "object", "properties": {
                 "minutes": {"type": "number", "minimum": 0.5, "maximum": 30, "description": "default 30"},
+            }},
+        }),
+        json!({
+            "name": "stats_history",
+            "description": "The stats record over time (kept in a database across restarts, loads and experiments; the app's Reports window graphs it): one metric for the chosen kinds of creature, bucketed, with the settings changes, loads and experiments in that time. Without `metric`, lists the metrics, the kinds of creature and the worlds recorded.",
+            "inputSchema": {"type": "object", "properties": {
+                "metric": {"type": "string", "description": "e.g. travel, cost, age_mean, age_p50, arrivals, births, sky, sky_share, eaten, children, mass, alive"},
+                "groups": {"type": "array", "items": {"type": "string"}, "description": "kinds of creature: all, sky, born, pool, pool_copy, pool_cross, random, zoo, retest, dropped (default [\"all\"]); ignored for whole-world metrics"},
+                "world": {"type": "string", "description": "part of a recorded world's name (most recently active first; default the world on screen's latest record, kind main), or #id"},
+                "bucket_minutes": {"type": "number", "minimum": 5, "description": "simulated minutes per row (default 30)"},
+                "since_hours": {"type": "number", "description": "wall-clock hours back (default 48)"}
             }},
         }),
         json!({
@@ -521,6 +532,7 @@ fn call(name: &str, args: &Value, runner: &Sender<Control>, shots: Option<&Sende
             ask(runner, 0, Ask::StartExperiment { arms, replicates, speed }).map(text)
         }
         "stop_experiment" => ask(runner, 0, Ask::StopExperiment).map(text),
+        "stats_history" => stats_history(args).map(text),
         "experiment_report" => {
             let minutes = args.get("minutes").and_then(Value::as_f64).unwrap_or(30.0).clamp(0.5, 30.0);
             let listing = ask(runner, 0, Ask::Experiment)?;
@@ -618,4 +630,72 @@ pub fn png_rgb(width: u32, height: u32, rgb: &[u8]) -> Vec<u8> {
     chunk(&mut out, b"IDAT", &z.finish().unwrap_or_default());
     chunk(&mut out, b"IEND", &[]);
     out
+}
+
+/// The `stats_history` tool: reads the record directly (it's a database; the runner needn't
+/// be asked).
+fn stats_history(args: &Value) -> Result<String, String> {
+    use crate::record;
+    let path = record::default_path();
+    let conn = record::open_read(&path).ok_or_else(|| format!("no stats record at {} yet", path.display()))?;
+    let worlds = record::worlds(&conn);
+    let Some(key) = args.get("metric").and_then(Value::as_str) else {
+        let mut out = String::from("Metrics (per kind of creature unless marked whole world):\n");
+        for m in record::METRICS {
+            out.push_str(&format!("  {}: {}{}\n", m.key, m.label, if m.world { " (whole world)" } else { "" }));
+        }
+        out.push_str("Kinds of creature:\n");
+        for (g, label) in record::GROUPS {
+            out.push_str(&format!("  {g}: {label}\n"));
+        }
+        out.push_str("Worlds, most recently active first:\n");
+        for w in worlds.iter().take(30) {
+            out.push_str(&format!(
+                "  #{} {} ({}), {} to {}\n",
+                w.id, w.name, w.kind, record::local_time_text(w.first_wall), record::local_time_text(w.last_wall)
+            ));
+        }
+        return Ok(out);
+    };
+    let metric = record::metric(key).ok_or_else(|| format!("no metric {key}; call stats_history without one for the list"))?;
+    let world = match args.get("world").and_then(Value::as_str) {
+        Some(w) if w.starts_with('#') => {
+            let id: i64 = w[1..].parse().map_err(|_| format!("{w} is not a world id"))?;
+            worlds.iter().find(|x| x.id == id)
+        }
+        Some(w) => worlds.iter().find(|x| x.name.to_lowercase().contains(&w.to_lowercase())),
+        None => worlds.iter().find(|x| x.kind == "main"),
+    }
+    .ok_or("no such world in the record")?;
+    let groups: Vec<String> = if metric.world {
+        vec!["world".into()]
+    } else {
+        args.get("groups")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|g| g.as_str().map(String::from)).collect())
+            .filter(|v: &Vec<String>| !v.is_empty())
+            .unwrap_or_else(|| vec!["all".into()])
+    };
+    let bucket = args.get("bucket_minutes").and_then(Value::as_f64).unwrap_or(30.0).max(5.0);
+    let since = record::now_wall() - (args.get("since_hours").and_then(Value::as_f64).unwrap_or(48.0) * 3600.0) as i64;
+    let mut table: std::collections::BTreeMap<i64, (f64, f64, Vec<Option<f64>>)> = Default::default();
+    for (k, g) in groups.iter().enumerate() {
+        for p in record::series(&conn, world.id, metric, g, bucket, since) {
+            let row = table.entry((p.sim_min / bucket).floor() as i64).or_insert((p.sim_min, p.wall, vec![None; groups.len()]));
+            row.2[k] = Some(p.value);
+        }
+    }
+    let mut out = format!("{} in #{} {} ({}), {bucket} sim-min buckets\nsim_min,local_time,{}\n", metric.label, world.id, world.name, world.kind, groups.join(","));
+    for (sim_min, wall, values) in table.values() {
+        let cells: Vec<String> = values.iter().map(|v| v.map(|x| format!("{x:.2}")).unwrap_or_default()).collect();
+        out.push_str(&format!("{sim_min:.0},{},{}\n", record::local_time_text(*wall as i64), cells.join(",")));
+    }
+    let events = record::events(&conn, world.id, since);
+    if !events.is_empty() {
+        out.push_str("Events:\n");
+        for (sim_min, wall, text) in events {
+            out.push_str(&format!("  {sim_min:.0} ({}): {text}\n", record::local_time_text(wall)));
+        }
+    }
+    Ok(out)
 }

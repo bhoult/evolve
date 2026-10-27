@@ -19,6 +19,7 @@ pub mod mcp;
 pub mod noise;
 pub mod observe;
 pub mod params;
+pub mod record;
 pub mod rng;
 pub mod runner;
 pub mod save;

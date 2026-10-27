@@ -1124,3 +1124,65 @@ fn ground_stride_mismatch() {
         );
     }
 }
+
+/// How worked the ground of a saved world is: what creatures dug or piled, what water cut, how
+/// much land is under water, and how bumpy it is underfoot against the ground as made.
+/// `EVOLVE_DIAG_SAVE=path.evo cargo test --release --test diag terrain_worked -- --ignored --nocapture`
+#[test]
+#[ignore]
+fn terrain_worked() {
+    let Some(path) = std::env::var_os("EVOLVE_DIAG_SAVE") else {
+        println!("set EVOLVE_DIAG_SAVE to a save");
+        return;
+    };
+    let sim = evolve_sim::save::load(std::path::Path::new(&path)).expect("load");
+    let t = &sim.terrain;
+    let (r, wl) = (t.res, sim.params.water_level);
+    let cell = t.size / (r - 1) as f32;
+    println!("terrain {r} a side, {cell:.3} m cells, water level {wl}");
+    let pct = |v: &mut Vec<f32>, q: f32| {
+        v.sort_by(f32::total_cmp);
+        v.get(((v.len() - 1) as f32 * q) as usize).copied().unwrap_or(0.0)
+    };
+    let (mut dug, mut cut, mut wet) = (Vec::new(), Vec::new(), Vec::new());
+    for k in 0..r * r {
+        if t.natural(k) <= wl {
+            continue;
+        }
+        dug.push((t.heights[k] - t.natural(k)).abs());
+        cut.push(t.eroded.get(k).copied().unwrap_or(0.0));
+        wet.push(t.water.get(k).copied().unwrap_or(0.0));
+    }
+    let n = dug.len() as f32;
+    let share = |v: &[f32], x: f32| v.iter().filter(|&&d| d > x).count() as f32 / n * 100.0;
+    let mean = |v: &[f32]| v.iter().sum::<f32>() / n;
+    println!("land points {} ({:.0}% of the grid)", dug.len(), n / (r * r) as f32 * 100.0);
+    println!(
+        "dug or piled: mean {:.3} m, over 10 cm {:.1}%, over 30 cm {:.1}%, p90 {:.3}, p99 {:.3}",
+        mean(&dug), share(&dug, 0.1), share(&dug, 0.3), pct(&mut dug.clone(), 0.9), pct(&mut dug, 0.99)
+    );
+    println!(
+        "cut by water: mean {:.3} m, over 10 cm {:.1}%, over 50 cm {:.1}%, p90 {:.3}, p99 {:.3}",
+        mean(&cut), share(&cut, 0.1), share(&cut, 0.5), pct(&mut cut.clone(), 0.9), pct(&mut cut, 0.99)
+    );
+    println!("under water: over 5 cm {:.1}%, over 30 cm {:.1}% of land", share(&wet, 0.05), share(&wet, 0.3));
+    // Bumpiness underfoot: height change over about half a meter, now and as made.
+    let d = ((0.5 / cell).round() as usize).max(1);
+    let (mut now, mut made) = (Vec::new(), Vec::new());
+    for i in (0..r).step_by(3) {
+        for j in (0..r - d).step_by(3) {
+            let (k, k2) = (i * r + j, i * r + j + d);
+            if t.natural(k) <= wl || t.natural(k2) <= wl {
+                continue;
+            }
+            now.push((t.heights[k2] - t.heights[k]).abs());
+            made.push((t.ground[k2] - t.ground[k]).abs());
+        }
+    }
+    println!(
+        "height change over {:.2} m: now mean {:.3} p90 {:.3} p99 {:.3}; as made mean {:.3} p90 {:.3} p99 {:.3}",
+        d as f32 * cell,
+        now.iter().sum::<f32>() / now.len() as f32, pct(&mut now.clone(), 0.9), pct(&mut now, 0.99),
+        made.iter().sum::<f32>() / made.len() as f32, pct(&mut made.clone(), 0.9), pct(&mut made, 0.99)
+    );
+}

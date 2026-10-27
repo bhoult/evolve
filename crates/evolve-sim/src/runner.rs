@@ -318,6 +318,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     if let Some(s) = saving.take() {
                         finish_save(&mut sim, s);
                     }
+                    crate::record::flush();
                     return;
                 }
                 Ok(Control::Sim(c)) => {
@@ -352,6 +353,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             caches = Caches::new(&sim);
                             reset_islands = true;
                             sim.log(format!("Loaded {}", path.display()));
+                            sim.record_event(format!("loaded from {}", path.display()));
                         }
                         Err(e) => sim.log(format!("Load failed: {e}")),
                     }
@@ -376,6 +378,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             caches = Caches::new(&sim);
                             reset_islands = true;
                             sim.log(format!("Loaded {}", path.display()));
+                            sim.record_event(format!("loaded from {}", path.display()));
                         }
                         Err(e) => sim.log(format!("Load failed: {e}")),
                     }
@@ -484,6 +487,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                                         trials.push(Worker::spawn_trial(index, p, name, sim.pool.clone(), pace, paused, zoo.clone()));
                                     }
                                     sim.log(format!("Experiment started: {} arms on {replicates} islands", arms.len()));
+                                    sim.record_event(format!("experiment started: {}", experiment.join("; ")));
                                     let pace = if pace > 0.0 { format!("{pace}x real time") } else { "Max".to_string() };
                                     let _ = reply.send(Ok(format!(
                                         "{}\nEach runs at {pace}; experiment_report compares them.",
@@ -498,6 +502,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                             experiment.clear();
                             if had > 0 {
                                 sim.log("Experiment stopped");
+                                sim.record_event("experiment stopped");
                             }
                             let _ = reply.send(Ok(format!("stopped {had} experiment worlds")));
                         }
@@ -595,6 +600,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             caches = Caches::new(&sim);
             reset_islands = true;
             sim.log("New world");
+            sim.record_event("new world");
         }
 
         // Background worlds: restart them for a new or loaded world, and match the param.

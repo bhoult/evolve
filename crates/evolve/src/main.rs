@@ -216,6 +216,15 @@ fn main() -> AppExit {
     }
 
     evolve_sim::init_thread_pool();
+    // How every world does over time goes into the stats record, which the Reports window
+    // graphs (screenshot runs are checks, and leave it alone).
+    if args.screenshot.is_none() {
+        let path = evolve_sim::record::default_path();
+        match evolve_sim::record::start(&path) {
+            Ok(()) => eprintln!("evolve: recording stats to {}", path.display()),
+            Err(e) => eprintln!("evolve: not recording stats ({e})"),
+        }
+    }
     // A world to load is loaded by the runner once the window is up (a big one takes a minute,
     // which with no window looked like the app had died); it starts from a tiny empty island,
     // and the screen says what it's doing meanwhile. A loaded world keeps its own settings

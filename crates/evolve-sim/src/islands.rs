@@ -360,11 +360,14 @@ fn worker_loop(
     let (board, label) = match role {
         Role::Island(board) => {
             migrate(&mut sim.pool, &board, 0.0, true);
+            sim.recording = crate::record::Recording { name: format!("Island {index}"), kind: "island" };
             (Some(board), None)
         }
         Role::Trial { label, pool } => {
             sim.pool = *pool;
             sim.log(format!("Experiment arm \"{label}\""));
+            sim.recording = crate::record::Recording { name: label.clone(), kind: "arm" };
+            sim.record_event(format!("experiment arm \"{label}\" started"));
             (None, Some(label))
         }
     };

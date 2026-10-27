@@ -50,8 +50,8 @@ pub const NEAR_PLANT: f32 = 25.0;
 pub struct Census {
     pub deaths: VecDeque<Obituary>,
     pub births: VecDeque<BirthNote>,
-    /// Creatures that fell from the sky: (time, energy they started with).
-    pub sky: VecDeque<(f64, f32)>,
+    /// Creatures that fell from the sky: (time, energy they started with, where they came from).
+    pub sky: VecDeque<(f64, f32, Origin)>,
 }
 
 impl Census {
@@ -103,8 +103,8 @@ impl Sim {
         self.census.forget_before(self.time - KEEP);
     }
 
-    pub(crate) fn record_sky(&mut self, energy: f32) {
-        self.census.sky.push_back((self.time, energy));
+    pub(crate) fn record_sky(&mut self, energy: f32, origin: Origin) {
+        self.census.sky.push_back((self.time, energy, origin));
         self.census.forget_before(self.time - KEEP);
     }
 
@@ -262,7 +262,7 @@ impl Sim {
 
         let deaths: Vec<&Obituary> = self.census.deaths.iter().filter(|d| d.time >= from).collect();
         let births: Vec<&BirthNote> = self.census.births.iter().filter(|b| b.time >= from).collect();
-        let sky: Vec<&(f64, f32)> = self.census.sky.iter().filter(|s| s.0 >= from).collect();
+        let sky: Vec<&(f64, f32, Origin)> = self.census.sky.iter().filter(|s| s.0 >= from).collect();
         let covered = (self.time - self.census.deaths.front().map(|d| d.time).unwrap_or(self.time)).min(window);
         let _ = writeln!(
             o,

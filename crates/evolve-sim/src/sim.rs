@@ -559,6 +559,16 @@ pub struct Sim {
     /// Creatures being followed to see how they move (see `observe::Watch`).
     #[serde(skip)]
     pub watches: Vec<crate::observe::Watch>,
+    /// This world's id in the stats record (see `record`), made when it's first recorded and
+    /// kept in its saves; 0 until then.
+    #[serde(default)]
+    pub world_uid: u64,
+    /// What the record calls this world.
+    #[serde(skip)]
+    pub recording: crate::record::Recording,
+    /// Sim time the record's last sample of this world reached (None until the first step).
+    #[serde(skip)]
+    pub recorded_to: Option<f64>,
 }
 
 pub const MAX_HISTORY: usize = 4000;
@@ -648,6 +658,9 @@ impl Sim {
             highlight_seq: 0,
             census: Default::default(),
             watches: Vec::new(),
+            world_uid: 0,
+            recording: Default::default(),
+            recorded_to: None,
         };
         sim.refresh_weather();
         sim.init_brains();
@@ -989,6 +1002,7 @@ impl Sim {
             self.resize_shards();
         }
         self.apply_gpu_budget();
+        self.record_param_changes(&old);
     }
 
     /// The physics world a creature is in.
@@ -1555,7 +1569,7 @@ impl Sim {
             }
             None => 0.0,
         };
-        self.record_sky(energy);
+        self.record_sky(energy, origin);
         id
     }
 
@@ -1859,6 +1873,7 @@ impl Sim {
         }
         if self.tick % (TICKS_PER_SECOND * 2) == 0 {
             self.sample_history();
+            self.record_stats();
         }
         if !self.watches.is_empty() && self.tick % 6 == 0 {
             self.sample_watches();
