@@ -425,7 +425,12 @@ const LEAF_MARGIN: f32 = 0.3;
 /// ... over a trunk this tall and this thick.
 const TRUNK_TOP: f32 = 0.3;
 const TRUNK_RADIUS: f32 = 0.045;
-/// Meters of sight line through trees that still count as a clear view.
+/// The middle of the picture kept clear: a cone about the sight line this wide (the tangent of
+/// its half-angle), narrow at the subject and wide at the camera, so a tree beside the lens that
+/// would fill half the frame counts as well as one dead in line.
+const CONE: f32 = 0.18;
+/// Meters of the cone's middle line through trees (each widened by the cone) that still count
+/// as a clear view.
 const CLEAR: f32 = 0.05;
 /// How fast it turns to a clear view: round the subject and up or down, radians a second.
 const TURN_RATE: f32 = 0.9;
@@ -443,7 +448,7 @@ fn trees_near(snap: &Snapshot, focus: Vec3, reach: f32) -> Vec<&TreeView> {
     snap.trees
         .iter()
         .filter(|t| {
-            let r = reach + CROWN_RADIUS * t.height + LEAF_MARGIN;
+            let r = reach * (1.0 + CONE) + CROWN_RADIUS * t.height + LEAF_MARGIN;
             t.fallen <= 0.0 && (t.pos[0] - focus.x).powi(2) + (t.pos[2] - focus.z).powi(2) < r * r
         })
         .collect()
@@ -460,23 +465,26 @@ fn eye(snap: &Snapshot, focus: Vec3, yaw: f32, pitch: f32, distance: f32) -> Vec
     p
 }
 
-/// Meters of the sight line from `eye` to `at` that run through trees. The last meter is left out:
-/// what stands right at the subject is part of the picture.
+/// How much of the sight line from `eye` to `at` runs through trees, in meters, each tree widened
+/// by how wide `CONE` is where it stands. The last meter is left out: what stands right at the
+/// subject is part of the picture.
 fn tree_cover(trees: &[&TreeView], eye: Vec3, at: Vec3) -> f32 {
     let line = at - eye;
-    let len = line.length() - 1.0;
+    let full = line.length();
+    let len = full - 1.0;
     if len <= 0.0 {
         return 0.0;
     }
-    let dir = line.normalize();
+    let dir = line / full;
     let along = |a: f32, b: f32| (b.min(len) - a.max(0.0)).max(0.0);
+    let widen = |k: f32| CONE * (full - k).clamp(0.0, full);
     let mut cover = 0.0;
     for t in trees {
         let foot = Vec3::from_array(t.pos);
         // Through the leaves: the chord through a ball.
         let to = foot + Vec3::Y * (CROWN_AT * t.height) - eye;
-        let r = CROWN_RADIUS * t.height + LEAF_MARGIN;
         let k = to.dot(dir);
+        let r = CROWN_RADIUS * t.height + LEAF_MARGIN + widen(k);
         let off = to.length_squared() - k * k;
         if off < r * r {
             let half = (r * r - off).sqrt();
@@ -485,13 +493,17 @@ fn tree_cover(trees: &[&TreeView], eye: Vec3, at: Vec3) -> f32 {
         // Through the trunk: across a standing cylinder, as far as it is tall.
         let (e, d) = (Vec2::new(eye.x - foot.x, eye.z - foot.z), Vec2::new(dir.x, dir.z));
         let (a, b) = (d.length_squared(), e.dot(d));
-        let rt = TRUNK_RADIUS * t.height;
+        if a < 1e-6 {
+            continue;
+        }
+        let w = widen(-b / a);
+        let rt = TRUNK_RADIUS * t.height + w;
         let disc = b * b - a * (e.length_squared() - rt * rt);
-        if a < 1e-6 || disc <= 0.0 {
+        if disc <= 0.0 {
             continue;
         }
         let (mut t0, mut t1) = ((-b - disc.sqrt()) / a, (-b + disc.sqrt()) / a);
-        let (y0, y1) = (foot.y - eye.y, foot.y + TRUNK_TOP * t.height - eye.y);
+        let (y0, y1) = (foot.y - w - eye.y, foot.y + TRUNK_TOP * t.height + w - eye.y);
         if dir.y.abs() > 1e-6 {
             let (h0, h1) = (y0 / dir.y, y1 / dir.y);
             t0 = t0.max(h0.min(h1));
@@ -770,12 +782,18 @@ mod tests {
         let t = tree(1, 0.0, 0.0, 10.0);
         let crown_y = CROWN_AT * 10.0;
         let r = CROWN_RADIUS * 10.0 + LEAF_MARGIN;
-        // Straight through the middle of the leaves: the whole width of the crown.
+        // Straight through the middle of the leaves, halfway: the crown widened by the cone (and
+        // the trunk, widened as much, reaching up into it).
         let c = tree_cover(&[&t], Vec3::new(-20.0, crown_y, 0.0), Vec3::new(20.0, crown_y, 0.0));
-        assert!((c - 2.0 * r).abs() < 1e-3, "{c} vs {}", 2.0 * r);
-        // Low down, under the leaves: across the trunk.
-        let c = tree_cover(&[&t], Vec3::new(-20.0, 1.0, 0.0), Vec3::new(20.0, 1.0, 0.0));
-        assert!((c - 2.0 * TRUNK_RADIUS * 10.0).abs() < 1e-3, "{c}");
+        let wide = r + CONE * 20.0;
+        assert!(c >= 2.0 * wide - 1e-3, "{c} vs {}", 2.0 * wide);
+        // Low down and close, under the leaves: across the trunk.
+        let c = tree_cover(&[&t], Vec3::new(-3.0, 1.0, 0.0), Vec3::new(3.0, 1.0, 0.0));
+        let wide = TRUNK_RADIUS * 10.0 + CONE * 3.0;
+        assert!((c - 2.0 * wide).abs() < 1e-3, "{c} vs {}", 2.0 * wide);
+        // A tree right beside the camera fills half the frame, though the subject is in sight.
+        let c = tree_cover(&[&t], Vec3::new(-2.0, crown_y, r + 1.5), Vec3::new(-2.0, crown_y, 20.0));
+        assert!(c > 0.5, "{c}");
         // Beside it, and stopping short of it.
         assert_eq!(tree_cover(&[&t], Vec3::new(-20.0, crown_y, 10.0), Vec3::new(20.0, crown_y, 10.0)), 0.0);
         assert_eq!(tree_cover(&[&t], Vec3::new(-20.0, crown_y, 0.0), Vec3::new(-8.0, crown_y, 0.0)), 0.0);
@@ -844,10 +862,10 @@ mod tests {
 
     #[test]
     fn circling_turns_back_before_a_tree_and_turns_away_from_one_in_the_way() {
-        // A tree 8 m out at yaw 0.3, the camera circling toward it from yaw 0.
-        let snap = world(vec![tree(1, 8.0 * 0.3f32.sin(), 8.0 * 0.3f32.cos(), 8.0)]);
+        // A tree 8 m out at yaw 0.6, the camera circling toward it from yaw -0.5.
+        let snap = world(vec![tree(1, 8.0 * 0.6f32.sin(), 8.0 * 0.6f32.cos(), 8.0)]);
         let subject = [Vec3::new(0.0, 0.5, 0.0)];
-        let mut shot = circling(0.0, 0.1);
+        let mut shot = circling(-0.5, 0.1);
         let mut now = 0.0;
         while now < 20.0 {
             shot.yaw += shot.yaw_rate * 0.05;
@@ -859,7 +877,7 @@ mod tests {
         }
         assert!(shot.yaw_rate < 0.0, "it turned back");
         // Behind the tree from the start (the subject walked there): it turns until it's clear.
-        let mut shot = circling(0.3, 0.0);
+        let mut shot = circling(0.6, 0.0);
         let mut clear_at = None;
         for k in 0..200 {
             let now = k as f64 * 0.05;
