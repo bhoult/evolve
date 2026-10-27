@@ -1128,3 +1128,25 @@ fn ancestry_from_background_worlds_is_traced() {
     assert!(sim.report(60.0).contains("Ancestry from background worlds"));
     assert!(sim.summary_line(60.0).contains("background ancestry: pool 100% (1 of 1 mostly)"));
 }
+
+#[test]
+fn coarser_physics_ground_while_running_keeps_going_with_rebuilds_owed() {
+    // 1201 points over 60 m, sampled at every point: ten pieces a side. Spaced 0.5 m apart, the
+    // same ground is one piece, so a rebuild owed to piece 55 of the old layout has no piece.
+    let mut sim = Sim::new(SimParams {
+        world_size: 60.0,
+        terrain_resolution: 1201,
+        ground_collision_cell: 0.0,
+        ..quiet_params()
+    });
+    assert_eq!(sim.terrain.tiles(), 10);
+    sim.terrain.worn_tiles.push(55);
+    let mut p = sim.params.clone();
+    p.ground_collision_cell = 0.5;
+    sim.set_params(p);
+    assert_eq!(sim.terrain.tiles(), 1);
+    sim.terrain.worn_tiles.push(55);
+    for _ in 0..90 {
+        sim.step();
+    }
+}

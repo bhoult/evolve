@@ -539,7 +539,7 @@ impl Sim {
         let mut tiles: Vec<(usize, usize)> = patches
             .iter()
             .flat_map(|&(i0, i1, j0, j1)| self.terrain.tiles_over(i0, i1, j0, j1))
-            .chain(worn.iter().map(|&k| (k / n, k % n)))
+            .chain(worn.iter().filter(|&&k| k < n * n).map(|&k| (k / n, k % n)))
             .collect();
         tiles.sort_unstable();
         tiles.dedup();

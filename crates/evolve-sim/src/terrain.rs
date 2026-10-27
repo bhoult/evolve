@@ -798,7 +798,15 @@ impl Terrain {
     /// 0.16 m has many more triangles under it to collide with than one on ground every 0.5 m,
     /// for detail no body can feel. The drawn ground keeps every point.
     pub fn set_collision_cell(&mut self, cell: f32) {
-        self.collision_stride = if cell > 0.0 { (cell / self.cell()).ceil().max(1.0) as usize } else { 1 };
+        let stride = if cell > 0.0 { (cell / self.cell()).ceil().max(1.0) as usize } else { 1 };
+        if stride != self.collision_stride {
+            // The pieces change with the spacing, and the caller rebuilds them all: pieces owed a
+            // rebuild are numbered by the old layout (read against the new one, a number past
+            // its last piece crashed the physics).
+            self.erosion_drift.clear();
+            self.worn_tiles.clear();
+        }
+        self.collision_stride = stride;
     }
 
     /// Height of the physics ground at a spot: the grid's own (`height_at`) unless the physics
