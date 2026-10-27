@@ -237,6 +237,14 @@ fn finish_save(sim: &mut Sim, (saving, reply): (save::Saving, Option<Reply>)) {
     }
 }
 
+/// Moves a brain price on by `error` (how far over its GPU target, negative when under) for
+/// `window` seconds: a factor of e in two minutes at full error, faster when over, so an
+/// overloaded GPU is relieved quickly.
+fn steer_price(price: f32, error: f32, window: f32) -> f32 {
+    let rate = if error > 0.0 { 1.0 / 30.0 } else { 1.0 / 120.0 };
+    (price * (error * window * rate).exp()).clamp(0.05, 20.0)
+}
+
 fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo) {
     let mut paused = false;
     let mut speed = 1.0f32;
@@ -265,6 +273,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
     // settings.
     let mut trials: Vec<Worker> = Vec::new();
     let mut experiment: Vec<String> = Vec::new();
+    // The arms' own brain price (see the steering below).
+    let mut trial_price = 1.0f32;
     let mut next_migration = sim.time;
     let mut world_epoch = 1u64;
     let mut next_zoo = sim.time + sim.params.zoo_interval as f64;
@@ -460,6 +470,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                                 Ok(planned) => {
                                     trials.clear();
                                     experiment.clear();
+                                    trial_price = sim.brain_price;
                                     let first = 1 + workers.len();
                                     for (k, (r, label, set, p)) in planned.into_iter().enumerate() {
                                         let index = first + k;
@@ -667,27 +678,20 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             // Steer the price of brains toward the GPU target, judged at Max speed only: at a
             // set speed the GPU idles by design.
             let steering = speed == 0.0 && !paused && sim.params.gpu_target > 0.0 && sim.brains.is_some();
+            let busy_of = |ws: &[Worker]| -> f32 {
+                ws.iter().filter(|w| w.alive()).filter_map(|w| w.status.lock().ok().map(|s| s.gpu_busy)).sum()
+            };
+            // Brain memory full counts as busy too: brains that don't fit are trimmed, so their
+            // price mustn't fall for want of GPU time while there's no room for them (it sat at
+            // the floor with memory 105% full, and brains grew into halving).
+            let fill_of = |ws: &[Worker]| -> f32 {
+                ws.iter().filter(|w| w.alive()).filter_map(|w| w.status.lock().ok().map(|s| s.memory_fill)).fold(0.0, f32::max)
+            };
+            let busy = sim.perf.gpu_busy + busy_of(&workers);
             if steering {
-                // An experiment's arms count against the GPU's time, but not its memory: each arm
-                // has its own small share.
-                let busy = sim.perf.gpu_busy
-                    + workers
-                        .iter()
-                        .chain(&trials)
-                        .filter(|w| w.alive())
-                        .filter_map(|w| w.status.lock().ok().map(|s| s.gpu_busy))
-                        .sum::<f32>();
-                // Brain memory full counts as busy too: brains that don't fit are trimmed, so their
-                // price mustn't fall for want of GPU time while there's no room for them (it sat at
-                // the floor with memory 105% full, and brains grew into halving).
-                let fill = std::iter::once(sim.brain_memory_fill())
-                    .chain(workers.iter().filter(|w| w.alive()).filter_map(|w| w.status.lock().ok().map(|s| s.memory_fill)))
-                    .fold(0.0f32, f32::max);
+                let fill = sim.brain_memory_fill().max(fill_of(&workers));
                 let error = (busy - sim.params.gpu_target).max(fill - MEMORY_TARGET);
-                // The price drifts (a factor of e in two minutes at full error, faster when over,
-                // so an overloaded GPU is relieved quickly); growth follows the error directly.
-                let rate = if error > 0.0 { 1.0 / 30.0 } else { 1.0 / 120.0 };
-                sim.brain_price = (sim.brain_price * (error * window * rate).exp()).clamp(0.05, 20.0);
+                sim.brain_price = steer_price(sim.brain_price, error, window);
                 sim.gpu_headroom = -error;
             } else {
                 sim.gpu_headroom = 0.0;
@@ -695,8 +699,19 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                     sim.brain_price = 1.0;
                 }
             }
-            for w in workers.iter().chain(&trials) {
+            for w in &workers {
                 w.send(WorkerCtl::BrainPrice(sim.brain_price, sim.gpu_headroom));
+            }
+            // An experiment's arms have a price of their own, steered into the GPU time this world
+            // and its islands leave (a twentieth at least). Counted in with this world's, their
+            // load made brains here 15 times dearer, and this world's brains shrank to a quarter.
+            if !trials.is_empty() && !paused && sim.params.gpu_target > 0.0 {
+                let room = (sim.params.gpu_target - busy).max(0.05);
+                let error = (busy_of(&trials) - room).max(fill_of(&trials) - MEMORY_TARGET);
+                trial_price = steer_price(trial_price, error, window);
+                for w in &trials {
+                    w.send(WorkerCtl::BrainPrice(trial_price, -error));
+                }
             }
             // Smoothed over a second or two, so the speed shown doesn't flicker with each
             // half-second's luck.

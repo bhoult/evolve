@@ -551,7 +551,10 @@ island from the same start. Each arm's gene pool starts as the world on screen's
 genomes with no world and put none in the zoo, so what they breed is down to their settings. They
 all run at one pace (`speed`, default 1x real time) so they keep step. They are background-sized
 (`background_population`) on ground no finer than the water grid, so an arm is judged against the
-control, not against the world on screen. `experiment_report` puts each arm's one-line summary
+control, not against the world on screen. Arms pay a brain price of their own, steered into the
+GPU time the world on screen and its islands leave, so running an experiment doesn't make brains
+dearer on screen (sharing one price, six arms at 3x made them 15 times dearer, and the world on
+screen's brains shrank to a quarter). `experiment_report` puts each arm's one-line summary
 side by side (`world_report` on an arm's world has the detail), `stop_experiment` ends it, and a
 new or loaded world ends it too. The Worlds panel names the arms.
 
