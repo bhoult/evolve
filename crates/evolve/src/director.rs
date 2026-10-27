@@ -1,9 +1,9 @@
 //! The director: a hands-off camera for just watching. It looks for something worth seeing (a
 //! kill, a birth, a fight, a swimmer, the fastest walker, a sunset, a storm), frames it, slowly
 //! circles it, and glides on to the next thing. Moving the camera yourself takes over. It keeps
-//! trees out of the way: each shot starts from where none stands between the camera and its
-//! subject, circles back before one would, and turns to a clear view if the subject walks behind
-//! one.
+//! trees and hills out of the way: each shot starts from where none stands between the camera and
+//! its subject, circles back before one would, and turns to a clear view if the subject walks
+//! behind one.
 
 use std::collections::{HashMap, VecDeque};
 
@@ -351,14 +351,14 @@ fn frame(s: &CreatureView, o: Option<&CreatureView>) -> (Vec3, f32, f32) {
     (focus, distance, -fwd.z.atan2(fwd.x) + std::f32::consts::FRAC_PI_2)
 }
 
-/// Whether some view of a candidate's subjects, near the one a shot would start from, is clear of
-/// trees (a subject deep in a wood may have none).
-fn in_sight(snap: &Snapshot, c: &Candidate) -> bool {
+/// How much tree or hill is left in the best view of a candidate's subjects near the one a shot
+/// would start from, m: 0 if some view is clear (a subject deep in a wood may have none).
+fn hidden_by(snap: &Snapshot, c: &Candidate) -> f32 {
     let Some(s) = find(snap, c.subject) else {
-        return true;
+        return 0.0;
     };
     let (focus, distance, yaw) = frame(s, find(snap, c.other));
-    best_view(snap, focus, &subject_points(snap, c.subject, c.other), yaw, 0.38, distance).0 <= CLEAR
+    best_view(snap, focus, &subject_points(snap, c.subject, c.other), yaw, 0.38, distance).0
 }
 
 fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Candidate, now: f64) {
@@ -469,8 +469,8 @@ const TILT_RATE: f32 = 0.5;
 const LOOK_AHEAD: f32 = 2.5;
 /// How long a shot stays on a subject that trees hide from every view, seconds.
 const HIDDEN_FOR: f64 = 5.0;
-/// How much less a subject that trees hide is worth a shot.
-const HIDDEN_INTEREST: f32 = 0.3;
+/// Meters of tree or hill in the best view of a subject that halve its worth as a shot.
+const HIDDEN_HALVES: f32 = 2.0;
 
 /// What a shot keeps in view: its subject and the other one, if any.
 fn subject_points(snap: &Snapshot, subject: Option<u64>, other: Option<u64>) -> Vec<Vec3> {
@@ -555,11 +555,31 @@ fn tree_cover(trees: &[&TreeView], eye: Vec3, at: Vec3) -> f32 {
     cover
 }
 
-/// Meters of tree between a camera at (`yaw`, `pitch`, `distance`) about `focus` and each of
-/// `subjects`, summed.
+/// Meters of the sight line from `eye` to `at` that run under the ground: a hill in the way. The
+/// last meter is left out, as for trees.
+fn ground_cover(snap: &Snapshot, eye: Vec3, at: Vec3) -> f32 {
+    let t = &snap.terrain;
+    let line = at - eye;
+    let len = line.length() - 1.0;
+    if t.res < 3 || len <= 0.0 {
+        return 0.0;
+    }
+    let steps = (len / 0.5).ceil();
+    let step = line.normalize() * (len / steps);
+    let under = (0..steps as usize)
+        .filter(|&k| {
+            let p = eye + step * (k as f32 + 0.5);
+            t.height_at(p.x, p.z) > p.y
+        })
+        .count();
+    under as f32 * len / steps
+}
+
+/// Meters of tree and hill between a camera at (`yaw`, `pitch`, `distance`) about `focus` and
+/// each of `subjects`, summed.
 fn view_cover(snap: &Snapshot, trees: &[&TreeView], focus: Vec3, subjects: &[Vec3], view: (f32, f32, f32)) -> f32 {
     let eye = eye(snap, focus, view.0, view.1, view.2);
-    subjects.iter().map(|&at| tree_cover(trees, eye, at)).sum()
+    subjects.iter().map(|&at| tree_cover(trees, eye, at) + ground_cover(snap, eye, at)).sum()
 }
 
 /// A view of `subjects` with no tree in the way, turned as little as will do from (`yaw`,
@@ -573,7 +593,7 @@ fn clear_view(snap: &Snapshot, focus: Vec3, subjects: &[Vec3], yaw: f32, pitch: 
 /// The search behind `clear_view`, with how much tree is left in the view it settles on.
 fn best_view(snap: &Snapshot, focus: Vec3, subjects: &[Vec3], yaw: f32, pitch: f32, distance: f32) -> (f32, Option<(f32, f32, f32)>) {
     let trees = trees_near(snap, focus, distance + 1.0);
-    if trees.is_empty() || subjects.is_empty() {
+    if subjects.is_empty() {
         return (0.0, None);
     }
     let cover = |turn: f32, pitch: f32, closer: f32| view_cover(snap, &trees, focus, subjects, (yaw + turn, pitch, distance * closer));
@@ -606,14 +626,14 @@ fn best_view(snap: &Snapshot, focus: Vec3, subjects: &[Vec3], yaw: f32, pitch: f
     if least.0 < here * 0.5 { least } else { (here, None) }
 }
 
-/// Keeps trees from coming between the camera and its subjects: before circling into one it turns
-/// back, and when one is in the way (the subject walked behind it) it turns, steadily, to the
-/// nearest clear view.
+/// Keeps trees and hills from coming between the camera and its subjects: before circling into
+/// one it turns back, and when one is in the way (the subject walked behind it) it turns,
+/// steadily, to the nearest clear view.
 fn keep_trees_out(shot: &mut Shot, snap: &Snapshot, subjects: &[Vec3], now: f64, dt: f32) {
     let (focus, spread) = (shot.focus, shot.spread);
     let trees = trees_near(snap, focus, spread + 1.0);
     let cover = |yaw: f32, pitch: f32, closer: f32| view_cover(snap, &trees, focus, subjects, (yaw, pitch, spread * closer));
-    if !trees.is_empty() && !subjects.is_empty() {
+    if !subjects.is_empty() {
         if cover(shot.yaw, shot.pitch, shot.closer) > CLEAR {
             // Hidden only once there's nowhere clear left to turn to.
             if shot.aim.is_none() {
@@ -778,9 +798,7 @@ fn direct(
         }
         // Rather something that can be seen than something deep in a wood.
         for c in &mut cands {
-            if !in_sight(snap, c) {
-                c.score *= HIDDEN_INTEREST;
-            }
+            c.score /= 1.0 + hidden_by(snap, c) / HIDDEN_HALVES;
         }
         if let Some(best) = cands.into_iter().max_by(|a, b| a.score.total_cmp(&b.score)) {
             start_shot(d, &cam, snap, sky, best, now);
@@ -871,6 +889,19 @@ mod tests {
         // A subject right under the leaves is part of the picture for its last meter only.
         let c = tree_cover(&[&t], Vec3::new(0.0, 30.0, 0.0), Vec3::new(0.0, crown_y, 0.0));
         assert!((c - (r - 1.0)).abs() < 1e-3, "{c}");
+    }
+
+    #[test]
+    fn hills_in_the_way_count_too() {
+        let p = evolve_sim::SimParams { terrain_resolution: 65, ..Default::default() };
+        let mut snap = world(Vec::new());
+        snap.terrain = std::sync::Arc::new(evolve_sim::terrain::Terrain::generate(&p, 1));
+        let t = &snap.terrain;
+        let at = Vec3::new(0.0, t.height_at(0.0, 0.0) + 0.5, 0.0);
+        let above = Vec3::new(10.0, t.height_at(10.0, 0.0) + 30.0, 0.0);
+        let below = Vec3::new(20.0, t.height_at(20.0, 0.0) - 5.0, 0.0);
+        assert_eq!(ground_cover(&snap, above, at), 0.0);
+        assert!(ground_cover(&snap, below, at) > 2.0);
     }
 
     #[test]
