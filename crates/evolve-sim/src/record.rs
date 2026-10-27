@@ -568,6 +568,57 @@ pub struct Point {
     pub value: f64,
 }
 
+/// What a world did in simulated minutes it later went over again, after being loaded from an
+/// older save (or restarted from its last one): those samples and events belong to a run that
+/// was abandoned, and the second run's stand in their place. Found from when each sample was
+/// written: anything with a later-written sample whose window began before it was gone over.
+struct Superseded {
+    /// Every sample's end, in simulated minutes, in order...
+    ends: Vec<f64>,
+    /// ...and the latest wall time of any sample ending there or before.
+    newest: Vec<i64>,
+}
+
+impl Superseded {
+    /// Simulated minutes of overlap too small to count (a window's end and the next one's start
+    /// differ by rounding).
+    const SLACK: f64 = 0.01;
+
+    fn read(conn: &Connection, world: i64, since_wall: i64) -> Self {
+        let mut s = Self { ends: Vec::new(), newest: Vec::new() };
+        let Ok(mut q) = conn.prepare_cached(
+            "SELECT sim_min, wall FROM samples WHERE world = ?1 AND grp = 'world' AND metric = 'minutes' AND wall >= ?2 ORDER BY sim_min",
+        ) else {
+            return s;
+        };
+        if let Ok(rows) = q.query_map(params![world, since_wall], |r| Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)?))) {
+            for (end, wall) in rows.flatten() {
+                s.newest.push(s.newest.last().map_or(wall, |&n| n.max(wall)));
+                s.ends.push(end);
+            }
+        }
+        s
+    }
+
+    /// The latest wall time of any sample ending before `sim_min`.
+    fn newest_before(&self, sim_min: f64) -> i64 {
+        match self.ends.partition_point(|&e| e < sim_min - Self::SLACK) {
+            0 => i64::MIN,
+            n => self.newest[n - 1],
+        }
+    }
+
+    /// A sample ending at `sim_min`, written at `wall`, that a later one's window overlaps.
+    fn sample(&self, sim_min: f64, wall: i64) -> bool {
+        self.newest_before(sim_min + WINDOW / 60.0) > wall
+    }
+
+    /// An event at `sim_min`, noted at `wall`, that a later-written sample went back over.
+    fn event(&self, sim_min: f64, wall: i64) -> bool {
+        self.newest_before(sim_min) > wall
+    }
+}
+
 /// `metric` for `grp` of world `world`, in buckets of `bucket_min` simulated minutes (samples
 /// are `WINDOW` long, so anything shorter is one sample a point), from `since_wall` on.
 pub fn series(conn: &Connection, world: i64, metric: &Metric, grp: &str, bucket_min: f64, since_wall: i64) -> Vec<Point> {
@@ -595,9 +646,13 @@ pub fn series(conn: &Connection, world: i64, metric: &Metric, grp: &str, bucket_
     let Ok(rows) = rows else {
         return Vec::new();
     };
+    let gone = Superseded::read(conn, world, since_wall);
     // A sample's a and b arrive as two rows; pair them by sim minute.
     let mut pending: HashMap<u64, (Option<f64>, Option<f64>, i64)> = HashMap::new();
     for (sim_min, wall, m, v) in rows.flatten() {
+        if gone.sample(sim_min, wall) {
+            continue;
+        }
         let e = pending.entry(sim_min.to_bits()).or_insert((None, None, wall));
         if m == a {
             e.0 = Some(v);
@@ -644,8 +699,9 @@ pub fn events(conn: &Connection, world: i64, since_wall: i64) -> Vec<(f64, i64, 
     let Ok(mut q) = conn.prepare_cached("SELECT sim_min, wall, text FROM events WHERE world = ?1 AND wall >= ?2 ORDER BY sim_min") else {
         return Vec::new();
     };
+    let gone = Superseded::read(conn, world, since_wall);
     q.query_map(params![world, since_wall], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .map(|rows| rows.flatten().collect())
+        .map(|rows| rows.flatten().filter(|e: &(f64, i64, String)| !gone.event(e.0, e.1)).collect())
         .unwrap_or_default()
 }
 
@@ -736,6 +792,52 @@ mod tests {
         // Two changes 5 s apart are one event from where it started; one 95 s later is its own.
         let texts: Vec<String> = events(&read, id, 0).into_iter().map(|e| e.2).collect();
         assert_eq!(texts, vec!["score_child: 1 → 3", "score_child: 1 → 4"]);
+
+        drop(tx);
+        writer.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_world_loaded_from_an_older_save_replaces_what_it_goes_back_over() {
+        let path = std::env::temp_dir().join(format!("evolve-record-rewind-test-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let (tx, rx) = channel();
+        let conn = open(&path).unwrap();
+        let writer = std::thread::spawn(move || writer(conn, rx));
+        let world = WorldTag { uid: 7, name: "test".into(), kind: "main", seed: 1 };
+        let sample = |sim_min: f64, wall: i64, births: f64| Msg::Sample {
+            world: world.clone(),
+            sim_min,
+            wall,
+            rows: vec![("world", "minutes", 5.0), ("world", "births", births)],
+        };
+        let event = |sim_min: f64, wall: i64, text: &str| Msg::Event { world: world.clone(), sim_min, wall, text: text.into() };
+        // A run to 20 minutes with a change at 17, then the save from 10.5 loaded and run on.
+        let sent = [
+            sample(5.0, 100, 1.0),
+            sample(10.0, 200, 2.0),
+            sample(15.0, 300, 3.0),
+            event(17.0, 350, "abandoned"),
+            sample(20.0, 400, 4.0),
+            event(10.5, 500, "loaded"),
+            sample(15.5, 600, 30.0),
+            event(16.0, 610, "kept"),
+            sample(20.5, 700, 40.0),
+        ];
+        for m in sent {
+            tx.send(m).unwrap();
+        }
+        let (done, wait) = channel();
+        tx.send(Msg::Flush(done)).unwrap();
+        wait.recv().unwrap();
+
+        let read = open_read(&path).unwrap();
+        let id = world_by_uid(&read, 7).unwrap();
+        let births: Vec<f64> = series(&read, id, metric("births").unwrap(), "", 5.0, 0).iter().map(|p| p.value).collect();
+        assert_eq!(births, vec![0.2, 0.4, 6.0, 8.0]);
+        let texts: Vec<String> = events(&read, id, 0).into_iter().map(|e| e.2).collect();
+        assert_eq!(texts, vec!["loaded", "kept"]);
 
         drop(tx);
         writer.join().unwrap();
