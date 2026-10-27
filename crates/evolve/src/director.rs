@@ -122,6 +122,10 @@ struct Shot {
     closer: f32,
     /// A view clear of trees it is turning to: yaw, pitch and `closer`.
     aim: Option<(f32, f32, f32)>,
+    /// How fast yaw, pitch and `closer` are changing on the way to `aim`.
+    steer: Vec3,
+    /// How fast it is circling just now (it eases toward `yaw_rate`).
+    orbit: f32,
     /// When it last looked for a clear view, and when it may next turn back from a tree ahead.
     searched: f64,
     turned_back: f64,
@@ -427,6 +431,8 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
         spread: distance,
         closer,
         aim: None,
+        steer: Vec3::ZERO,
+        orbit: yaw_rate,
         searched: now,
         turned_back: now,
         hidden: None,
@@ -462,9 +468,12 @@ const EYE_ROOM: f32 = 2.0;
 /// Meters of the cone's middle line through trees (each widened by the cone) that still count
 /// as a clear view.
 const CLEAR: f32 = 0.05;
-/// How fast it turns to a clear view: round the subject and up or down, radians a second.
-const TURN_RATE: f32 = 0.9;
-const TILT_RATE: f32 = 0.5;
+/// How briskly it turns to a clear view: the rate of a critically damped spring (per second), so
+/// the turn eases in and out; a turn of a radian is most of the way there in a second and a half.
+const STEER: f32 = 1.8;
+/// Seconds for the circling to ease into a new direction (turning back before a tree) or to a
+/// stop and back (while it turns to a clear view).
+const ORBIT_EASE: f32 = 1.0;
 /// How far ahead round its circle it looks for a tree coming between, seconds.
 const LOOK_AHEAD: f32 = 2.5;
 /// How long a shot stays on a subject that trees hide from every view, seconds.
@@ -639,31 +648,41 @@ fn keep_trees_out(shot: &mut Shot, snap: &Snapshot, subjects: &[Vec3], now: f64,
             if shot.aim.is_none() {
                 shot.hidden.get_or_insert(now);
             }
-            if now - shot.searched > 0.25 {
+            // It keeps to the view it's turning to while that stays clear, rather than swaying
+            // between gaps as the subject moves.
+            let committed = shot.aim.is_some_and(|(yaw, pitch, closer)| cover(yaw, pitch, closer) <= CLEAR);
+            if !committed && now - shot.searched > 0.25 {
                 shot.searched = now;
                 if let Some((turn, pitch, closer)) = clear_view(snap, focus, subjects, shot.yaw, shot.pitch, spread * shot.closer) {
                     shot.aim = Some((shot.yaw + turn, pitch, (shot.closer * closer).max(0.5)));
                 }
             }
         } else {
-            shot.aim = None;
             shot.hidden = None;
             let ahead = shot.yaw + shot.yaw_rate * LOOK_AHEAD;
-            if now - shot.turned_back > 4.0 && cover(ahead, shot.pitch, shot.closer) > CLEAR {
+            if shot.aim.is_none() && now - shot.turned_back > 4.0 && cover(ahead, shot.pitch, shot.closer) > CLEAR {
                 shot.yaw_rate = -shot.yaw_rate;
                 shot.turned_back = now;
             }
         }
     }
-    if let Some((yaw, pitch, closer)) = shot.aim {
-        shot.yaw += (yaw - shot.yaw).clamp(-TURN_RATE * dt, TURN_RATE * dt);
-        shot.pitch += (pitch - shot.pitch).clamp(-TILT_RATE * dt, TILT_RATE * dt);
-        shot.closer += (closer - shot.closer).clamp(-0.3 * dt, 0.3 * dt);
-        // (Near enough: the circling keeps nudging it on.)
-        if (yaw - shot.yaw).abs() + (pitch - shot.pitch).abs() + (closer - shot.closer).abs() < 0.02 {
-            shot.aim = None;
-        }
+    // Turning to a clear view eases in and out (a spring); with none to turn to, a turn under way
+    // coasts to a stop.
+    let mut view = Vec3::new(shot.yaw, shot.pitch, shot.closer);
+    let target = shot.aim.map_or(view, |(yaw, pitch, closer)| Vec3::new(yaw, pitch, closer));
+    spring(&mut view, &mut shot.steer, target, STEER, dt);
+    (shot.yaw, shot.pitch, shot.closer) = (view.x, view.y, view.z);
+    if shot.aim.is_some() && view.distance(target) < 0.01 && shot.steer.length() < 0.02 {
+        shot.aim = None;
     }
+}
+
+/// Moves the camera on round its circle, easing into a new direction rather than reversing at
+/// once, and easing to a stop while it turns to a clear view.
+fn circle(shot: &mut Shot, dt: f32) {
+    let rate = if shot.aim.is_some() { 0.0 } else { shot.yaw_rate };
+    shot.orbit += (rate - shot.orbit) * (1.0 - (-dt / ORBIT_EASE).exp());
+    shot.yaw += shot.orbit * dt;
 }
 
 fn smoothstep(x: f64) -> f32 {
@@ -826,7 +845,7 @@ fn direct(
     }
     spring(&mut shot.focus, &mut shot.focus_vel, target, FOLLOW_RATE, dt);
     shot.spread += (distance - shot.spread) * (1.0 - (-1.5 * dt).exp());
-    shot.yaw += shot.yaw_rate * dt;
+    circle(shot, dt);
     let subjects = subject_points(snap, shot.subject, shot.other);
     keep_trees_out(shot, snap, &subjects, now, dt);
     let distance = shot.spread * shot.closer;
@@ -956,6 +975,8 @@ mod tests {
             spread: 12.0,
             closer: 1.0,
             aim: None,
+            steer: Vec3::ZERO,
+            orbit: yaw_rate,
             searched: -10.0,
             turned_back: -10.0,
             hidden: None,
@@ -971,7 +992,7 @@ mod tests {
         let mut shot = circling(-0.5, 0.1);
         let mut now = 0.0;
         while now < 20.0 {
-            shot.yaw += shot.yaw_rate * 0.05;
+            circle(&mut shot, 0.05);
             keep_trees_out(&mut shot, &snap, &subject, now, 0.05);
             now += 0.05;
             let trees = trees_near(&snap, Vec3::ZERO, 13.0);
@@ -979,12 +1000,18 @@ mod tests {
             assert!(c <= CLEAR, "the tree came between at {now:.2} s (yaw {})", shot.yaw);
         }
         assert!(shot.yaw_rate < 0.0, "it turned back");
-        // Behind the tree from the start (the subject walked there): it turns until it's clear.
+        // Behind the tree from the start (the subject walked there): it turns until it's clear,
+        // smoothly: speeding up and slowing down, never starting or stopping all at once.
         let mut shot = circling(0.6, 0.0);
         let mut clear_at = None;
+        let (mut last_yaw, mut last_speed, mut jolt) = (shot.yaw, 0.0f32, 0.0f32);
         for k in 0..200 {
             let now = k as f64 * 0.05;
+            circle(&mut shot, 0.05);
             keep_trees_out(&mut shot, &snap, &subject, now, 0.05);
+            let speed = (shot.yaw - last_yaw) / 0.05;
+            jolt = jolt.max((speed - last_speed).abs());
+            (last_yaw, last_speed) = (shot.yaw, speed);
             let trees = trees_near(&snap, Vec3::ZERO, 13.0);
             let c = view_cover(&snap, &trees, Vec3::ZERO, &subject, (shot.yaw, shot.pitch, shot.spread * shot.closer));
             if c <= CLEAR && clear_at.is_none() {
@@ -994,6 +1021,7 @@ mod tests {
         let t = clear_at.expect("it found a clear view");
         assert!(t > 0.1 && t < 3.0, "turning steadily, not jumping: clear after {t} s");
         assert!(shot.hidden.is_none());
+        assert!(jolt < 0.2, "its turning speed changed by {jolt} rad/s from one frame to the next");
     }
 
     #[test]
