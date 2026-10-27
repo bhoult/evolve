@@ -783,10 +783,13 @@ impl Sim {
 
     /// Pulls the live brain state (activations, learned weights) back from the GPU, so a save
     /// captures it.
-    /// How full this world's share of GPU brain memory is, 0 to 1 (more when brains were saved
-    /// with a bigger budget); 0 with brains on the CPU.
+    /// How full this world's share of GPU brain memory is with living brains, 0 to 1 (more when
+    /// brains were saved with a bigger budget); 0 with brains on the CPU. Counted by what the
+    /// living take rather than what's held, which never shrinks: a world whose brains once
+    /// overfilled its share stayed "full" for good, and the price it held up shrank every
+    /// experiment arm's brains to under a tenth of the world on screen's.
     pub fn brain_memory_fill(&self) -> f32 {
-        self.brains.as_ref().map_or(0.0, |g| g.memory_bytes() as f32 / g.budget_bytes.max(1) as f32)
+        self.brains.as_ref().map_or(0.0, |g| g.live_bytes() as f32 / g.budget_bytes.max(1) as f32)
     }
 
     pub fn sync_brains(&mut self) {

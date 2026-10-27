@@ -88,3 +88,28 @@ fn the_gpu_hands_back_what_a_brain_learned() {
         assert_eq!(got[&id], p);
     }
 }
+
+#[test]
+fn brain_memory_in_use_falls_when_brains_go_though_what_is_held_does_not() {
+    use evolve_sim::gpu::GpuBrains;
+    let mut gpu = match GpuBrains::new() {
+        Ok(g) => g,
+        Err(e) => {
+            println!("no GPU, skipping: {e}");
+            return;
+        }
+    };
+    let mut rng = Rng::new(4);
+    for id in 1..=6u64 {
+        gpu.register(id, &BrainGenes::random(&mut rng, 900), None).unwrap();
+    }
+    let (live, held) = (gpu.live_bytes(), gpu.memory_bytes());
+    assert!(live > 0 && live <= held);
+    for id in 1..=5u64 {
+        gpu.unregister(id);
+    }
+    assert!(gpu.live_bytes() * 5 < live, "a sixth of the brains should take about a sixth");
+    assert_eq!(gpu.memory_bytes(), held);
+    gpu.unregister(6);
+    assert_eq!(gpu.live_bytes(), 0);
+}

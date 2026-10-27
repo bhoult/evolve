@@ -73,6 +73,10 @@ impl Layout {
     fn aux_len(&self) -> usize {
         self.b_out() + N_OUT
     }
+    /// GPU memory one brain takes: weights, aux block and both hidden-state copies.
+    fn bytes(&self) -> u64 {
+        (self.words() + self.aux_len() as u64 + 2 * self.hp as u64) * UNIT
+    }
 }
 
 fn pack_weights(g: &BrainGenes, l: Layout) -> Vec<u16> {
@@ -380,6 +384,8 @@ pub struct GpuBrains {
     /// Which hidden-state buffer holds the latest activations.
     parity: usize,
     slots: HashMap<u64, Slot>,
+    /// Bytes the living brains take up (see `live_bytes`).
+    live: u64,
     in_flight: Option<InFlight>,
     held: Option<Collected>,
     pub budget_bytes: u64,
@@ -515,15 +521,21 @@ impl GpuBrains {
             dirty: true,
             parity: 0,
             slots: HashMap::new(),
+            live: 0,
             in_flight: None,
             held: None,
             budget_bytes: DEFAULT_BUDGET_BYTES,
         })
     }
 
-    /// GPU memory held for brains, in bytes.
+    /// GPU memory held for brains, in bytes. It never shrinks: buffers stay as big as they grew.
     pub fn memory_bytes(&self) -> u64 {
         self.pages.iter().map(|p| p.bytes()).sum::<u64>() + self.aux.bytes() + self.hstate.bytes()
+    }
+
+    /// GPU memory the living brains take up, in bytes: what's held, less the gaps the dead left.
+    pub fn live_bytes(&self) -> u64 {
+        self.live
     }
 
     pub fn contains(&self, id: u64) -> bool {
@@ -533,8 +545,7 @@ impl GpuBrains {
     /// Would a brain with `h` neurons fit in the memory budget?
     pub fn fits(&self, h: usize) -> bool {
         let l = Layout::new(h);
-        let need = l.words() * UNIT + (l.aux_len() as u64 + 2 * l.hp as u64) * UNIT;
-        self.memory_bytes() + need <= self.budget_bytes || self.would_fit_in_place(l)
+        self.memory_bytes() + l.bytes() <= self.budget_bytes || self.would_fit_in_place(l)
     }
 
     fn would_fit_in_place(&self, l: Layout) -> bool {
@@ -613,6 +624,7 @@ impl GpuBrains {
         for b in &self.hstate.bufs {
             self.queue.write_buffer(b, h_off * UNIT, bytemuck::cast_slice(&hv));
         }
+        self.live += l.bytes();
         self.slots.insert(
             id,
             Slot {
@@ -628,6 +640,7 @@ impl GpuBrains {
 
     pub fn unregister(&mut self, id: u64) {
         if let Some(s) = self.slots.remove(&id) {
+            self.live -= s.layout.bytes();
             self.pages[s.page].release(s.w_off, s.layout.words());
             self.aux.release(s.aux_off, s.layout.aux_len() as u64);
             self.hstate.release(s.h_off, s.layout.hp as u64);
