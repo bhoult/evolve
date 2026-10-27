@@ -83,12 +83,33 @@ fn setup(
 const BUSHES: [usize; 2] = [2, 6];
 const TREES: [usize; 6] = [0, 1, 3, 4, 5, 7];
 
+/// Which of its kind's meshes a plant or tree is drawn with.
+fn pick(id: u64) -> usize {
+    (id.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as usize
+}
+
+/// The shapes trees are drawn in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TreeShape {
+    Conifer,
+    Broadleaf,
+    Poplar,
+}
+
+/// The shape the tree with this id is drawn in.
+pub fn tree_shape(id: u64) -> TreeShape {
+    match TREES[pick(id) % TREES.len()] % 4 {
+        0 => TreeShape::Conifer,
+        1 => TreeShape::Broadleaf,
+        _ => TreeShape::Poplar,
+    }
+}
+
 fn dress_plants(mut commands: Commands, added: Query<(Entity, &PlantOf, &PlantLook), Added<PlantOf>>, assets: Res<TreeAssets>) {
     let _cost = crate::FrameCost::start("dress_plants");
     for (e, p, look) in &added {
-        let h = (p.0.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 40) as usize;
         let kinds: &[usize] = if *look == PlantLook::Grass { &BUSHES } else { &TREES };
-        let mesh = assets.meshes[kinds[h % kinds.len()]].clone();
+        let mesh = assets.meshes[kinds[pick(p.0) % kinds.len()]].clone();
         commands
             .entity(e)
             .remove::<MeshMaterial3d<StandardMaterial>>()

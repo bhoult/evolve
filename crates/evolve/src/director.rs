@@ -15,6 +15,7 @@ use evolve_sim::snapshot::{CreatureView, HighlightKind, Snapshot, TreeView};
 
 use crate::camera::{FOLLOW_RATE, OrbitCam, center_of_mass, orbit_eye, spring};
 use crate::env::{Env, VisualOverride};
+use crate::trees::{TreeShape, tree_shape};
 use crate::tools::ToolState;
 use crate::{Args, Snap};
 
@@ -433,16 +434,25 @@ fn start_shot(d: &mut Director, cam: &OrbitCam, snap: &Snapshot, sky: Sky, c: Ca
     });
 }
 
-/// The trees as the sight lines see them, roughly as drawn (see `sync::tree_transform` and the
-/// tree meshes, whose four kinds this covers): a ball of leaves this far up the tree and this wide,
-/// as fractions of its height, ...
-const CROWN_AT: f32 = 0.62;
-const CROWN_RADIUS: f32 = 0.36;
-/// ... with this much room left round it, m, ...
+/// The widest any tree's leaves reach from its trunk, as a fraction of its height (see
+/// `tree_parts`).
+const CROWN_RADIUS: f32 = 0.37;
+/// Room left round the leaves, m.
 const LEAF_MARGIN: f32 = 0.3;
-/// ... over a trunk this tall and this thick.
-const TRUNK_TOP: f32 = 0.3;
+/// How thick a trunk is, as a fraction of the tree's height.
 const TRUNK_RADIUS: f32 = 0.045;
+
+/// A tree as the sight lines see it, roughly as drawn (see `sync::tree_transform` and the tree
+/// meshes): its leaves as balls (how far up the tree and how wide, as fractions of its height),
+/// and how far up its trunk shows below them.
+fn tree_parts(t: &TreeView) -> (&'static [(f32, f32)], f32) {
+    match tree_shape(t.id) {
+        // Its lowest tier is the widest, and comes nearly to the ground.
+        TreeShape::Conifer => (&[(0.28, 0.37), (0.63, 0.28)], 0.15),
+        TreeShape::Broadleaf => (&[(0.62, 0.36)], 0.4),
+        TreeShape::Poplar => (&[(0.55, 0.2), (0.8, 0.2)], 0.35),
+    }
+}
 /// The middle of the picture kept clear: a cone about the sight line this wide (the tangent of
 /// its half-angle), narrow at the subject and wide at the camera, so a tree beside the lens that
 /// would fill half the frame counts as well as one dead in line.
@@ -505,16 +515,19 @@ fn tree_cover(trees: &[&TreeView], eye: Vec3, at: Vec3) -> f32 {
     let mut cover = 0.0;
     for t in trees {
         let foot = Vec3::from_array(t.pos);
-        // Through the leaves: the chord through a ball.
-        let to = foot + Vec3::Y * (CROWN_AT * t.height) - eye;
-        let leaves = CROWN_RADIUS * t.height + LEAF_MARGIN;
-        cover += (leaves + EYE_ROOM - to.length()).max(0.0);
-        let k = to.dot(dir);
-        let r = leaves + widen(k);
-        let off = to.length_squared() - k * k;
-        if off < r * r {
-            let half = (r * r - off).sqrt();
-            cover += along(k - half, k + half);
+        let (balls, trunk_top) = tree_parts(t);
+        // Through the leaves: the chord through each ball.
+        for &(at, radius) in balls {
+            let to = foot + Vec3::Y * (at * t.height) - eye;
+            let leaves = radius * t.height + LEAF_MARGIN;
+            cover += (leaves + EYE_ROOM - to.length()).max(0.0);
+            let k = to.dot(dir);
+            let r = leaves + widen(k);
+            let off = to.length_squared() - k * k;
+            if off < r * r {
+                let half = (r * r - off).sqrt();
+                cover += along(k - half, k + half);
+            }
         }
         // Through the trunk: across a standing cylinder, as far as it is tall.
         let (e, d) = (Vec2::new(eye.x - foot.x, eye.z - foot.z), Vec2::new(dir.x, dir.z));
@@ -529,7 +542,7 @@ fn tree_cover(trees: &[&TreeView], eye: Vec3, at: Vec3) -> f32 {
             continue;
         }
         let (mut t0, mut t1) = ((-b - disc.sqrt()) / a, (-b + disc.sqrt()) / a);
-        let (y0, y1) = (foot.y - w - eye.y, foot.y + TRUNK_TOP * t.height + w - eye.y);
+        let (y0, y1) = (foot.y - w - eye.y, foot.y + trunk_top * t.height + w - eye.y);
         if dir.y.abs() > 1e-6 {
             let (h0, h1) = (y0 / dir.y, y1 / dir.y);
             t0 = t0.max(h0.min(h1));
@@ -813,8 +826,14 @@ fn direct(
 mod tests {
     use super::*;
 
-    fn tree(id: u64, x: f32, z: f32, height: f32) -> TreeView {
-        TreeView { id, pos: [x, 0.0, z], height, fallen: 0.0 }
+    /// The `n`th tree drawn in `shape`.
+    fn id_of(shape: TreeShape, n: u64) -> u64 {
+        (0..).filter(|&id| tree_shape(id) == shape).nth(n as usize).unwrap()
+    }
+
+    /// A broadleaf tree: one ball of leaves.
+    fn tree(n: u64, x: f32, z: f32, height: f32) -> TreeView {
+        TreeView { id: id_of(TreeShape::Broadleaf, n), pos: [x, 0.0, z], height, fallen: 0.0 }
     }
 
     /// Flat, with the water far below, so the eye goes where the orbit puts it.
@@ -827,8 +846,8 @@ mod tests {
     #[test]
     fn sight_lines_count_the_trees_they_pass_through() {
         let t = tree(1, 0.0, 0.0, 10.0);
-        let crown_y = CROWN_AT * 10.0;
-        let r = CROWN_RADIUS * 10.0 + LEAF_MARGIN;
+        let crown_y = 0.62 * 10.0;
+        let r = 0.36 * 10.0 + LEAF_MARGIN;
         // Straight through the middle of the leaves, halfway: the crown widened by the cone (and
         // the trunk, widened as much, reaching up into it).
         let c = tree_cover(&[&t], Vec3::new(-20.0, crown_y, 0.0), Vec3::new(20.0, crown_y, 0.0));
@@ -838,6 +857,11 @@ mod tests {
         let c = tree_cover(&[&t], Vec3::new(-3.0, 1.0, 0.0), Vec3::new(3.0, 1.0, 0.0));
         let wide = TRUNK_RADIUS * 10.0 + CONE * 3.0;
         assert!((c - 2.0 * wide).abs() < 1e-3, "{c} vs {}", 2.0 * wide);
+        // A conifer's lowest tier, wide and near the ground, where a broadleaf shows only trunk.
+        let conifer = TreeView { id: id_of(TreeShape::Conifer, 0), ..tree(1, 0.0, 0.0, 10.0) };
+        let (eye, at) = (Vec3::new(-4.0, 1.0, 1.6), Vec3::new(4.0, 0.5, 1.6));
+        assert!(tree_cover(&[&conifer], eye, at) > 2.0);
+        assert_eq!(tree_cover(&[&t], eye, at), 0.0);
         // A tree right beside the camera fills half the frame, though the subject is in sight.
         let c = tree_cover(&[&t], Vec3::new(-2.0, crown_y, r + 1.5), Vec3::new(-2.0, crown_y, 20.0));
         assert!(c > 0.5, "{c}");
@@ -855,7 +879,7 @@ mod tests {
         fallen.fallen = 1.0;
         let snap = world(vec![tree(1, 1.0, 0.0, 10.0), fallen, tree(3, 60.0, 0.0, 10.0)]);
         let near: Vec<u64> = trees_near(&snap, Vec3::ZERO, 20.0).iter().map(|t| t.id).collect();
-        assert_eq!(near, vec![1]);
+        assert_eq!(near, vec![id_of(TreeShape::Broadleaf, 1)]);
     }
 
     #[test]
