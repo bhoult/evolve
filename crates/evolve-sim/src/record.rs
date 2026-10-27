@@ -16,7 +16,8 @@ use std::sync::OnceLock;
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Duration;
 
-use rusqlite::{Connection, OptionalExtension, params};
+pub use rusqlite::Connection;
+use rusqlite::{OptionalExtension, params};
 
 use crate::observe::Obituary;
 use crate::params::ParamRef;

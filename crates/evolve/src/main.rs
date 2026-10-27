@@ -16,6 +16,7 @@ mod preview;
 #[cfg(feature = "raytracing")]
 mod raytracing;
 mod recording;
+mod reports;
 mod scene;
 mod sky;
 mod splash;

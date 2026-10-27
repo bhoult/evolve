@@ -556,7 +556,27 @@ GPU time the world on screen and its islands leave, so running an experiment doe
 dearer on screen (sharing one price, six arms at 3x made them 15 times dearer, and the world on
 screen's brains shrank to a quarter). `experiment_report` puts each arm's one-line summary
 side by side (`world_report` on an arm's world has the detail), `stop_experiment` ends it, and a
-new or loaded world ends it too. The Worlds panel names the arms.
+new or loaded world ends it too. The Worlds panel names the arms. An arm's brain price is steered
+on the brain memory its living brains use, not the memory held: buffers never shrink, and when
+it was the memory held, an arm that once overfilled its share held every arm's price at the top
+for good, so their brains shrank to a tenth of the world on screen's.
+
+**Stats record.** The app keeps how every world does over time (the world on screen, islands and
+experiment arms) in a SQLite database, `stats.sqlite` next to the saves directory
+(`~/.local/share/evolve/` by default; `EVOLVE_STATS_DB=FILE` puts it elsewhere). Every 5
+simulated minutes each world adds a sample: for each kind of creature (all, fell from the sky,
+born, bred from the gene pool, copies, crosses, random, zoo, retests) the sums over the lives
+that ended (deaths, minutes lived, meters travelled, muscle energy, food, children, kills, causes
+of death, median and p90 age) and how many arrived (births, sky spawns by source); and for the
+world, births and sky spawns, the living, plants, median body and brain size, brain price and the
+gene pool's score. Rates are worked out when read, so short windows add up exactly into longer
+ones. Settings changes (a slider's drag counts once), loads, new worlds and experiments are kept
+as events. A world keeps its id in its saves, so its history carries on across restarts. The
+**Reports** button opens the graphs: pick a world, metrics (travel, muscle cost per meter,
+lifespan, births and sky spawns per minute, sky share of arrivals, food, children, body mass,
+deaths by cause...), kinds of creature, how far back and how coarse, against the clock or the
+world's own time; changes and events are marked on every graph and listed below them. The MCP
+tool `stats_history` reads the same record. Headless runs and tests don't record.
 
 **World.**
 - *Terrain:* an island in an ocean. The coast follows the hills, with headlands and bays

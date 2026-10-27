@@ -74,6 +74,7 @@ pub struct UiState {
     brain: BrainView,
     /// Body plans of zoo creatures, read as their rows come into view.
     sketches: Sketches,
+    reports: crate::reports::Reports,
 }
 
 /// A finished sketch: (zoo id, its body plan, or None if the genome is unreadable).
@@ -223,6 +224,7 @@ impl Default for UiState {
             brain_closed_for: None,
             brain: BrainView::default(),
             sketches: Sketches::default(),
+            reports: Default::default(),
         }
     }
 }
@@ -451,6 +453,7 @@ fn ui_system(
     saves_window(ctx, &link, st, now);
     zoo_window(ctx, snap, &link, st, &mut tools, &mut preview);
     crate::help::help_window(ctx, &mut st.show_help, &mut st.help_topic, &st.params);
+    crate::reports::reports_window(ctx, &mut st.reports, snap.world_uid, now);
     Ok(())
 }
 
@@ -505,6 +508,13 @@ fn toolbar(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Help").clicked() {
                     st.show_help = !st.show_help;
+                }
+                if ui
+                    .selectable_label(st.reports.open, "Reports")
+                    .on_hover_text("Graphs of how every world has done over time: travel, lifespans, births and sky spawns...")
+                    .clicked()
+                {
+                    st.reports.open = !st.reports.open;
                 }
                 record_button(ui, rec);
                 sound_controls(ui, sound);

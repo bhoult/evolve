@@ -203,6 +203,8 @@ pub struct Snapshot {
     /// The going energy price of brains (1 is the `brain_energy_cost` param as set).
     pub brain_price: f32,
     pub brain_memory_bytes: u64,
+    /// The world's id in the stats record (see `record`; 0 before its first sample).
+    pub world_uid: u64,
     pub selected: Option<CreatureDetail>,
     /// Seconds left of a storm called down by hand (0 without one).
     pub storm_left: f32,
@@ -416,6 +418,7 @@ impl Sim {
             brain_backend: self.brain_backend.clone(),
             brain_price: self.brain_price,
             brain_memory_bytes: self.brains.as_ref().map(|g| g.memory_bytes()).unwrap_or(0),
+            world_uid: self.world_uid,
             selected,
             storm_left: self.acts.storm_left(self.time),
             whirlwinds: self.acts.whirlwinds.iter().map(|w| ([w.x, w.z], w.strength(self.time), w.seed)).collect(),
