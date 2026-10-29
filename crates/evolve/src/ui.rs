@@ -505,6 +505,9 @@ fn toolbar(
                 snap.steps_per_sec / 60.0,
                 fps
             ));
+            if let Some(low) = snap.low_priority.as_ref().filter(|s| s.share < 1.0 || s.gpu_given_back) {
+                ui.label(format!("low priority {:.0}%", low.share * 100.0)).on_hover_text(low.to_string());
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Help").clicked() {
                     st.show_help = !st.show_help;
@@ -903,6 +906,9 @@ fn stats_panel(
                         format!("snapshot {:.2} ms, terrain copy {:.2} ms", p.publish_ms, p.terrain_copy_ms),
                     );
                     row("Brains run on", snap.brain_backend.clone());
+                    if let Some(low) = &snap.low_priority {
+                        row("Low priority", low.to_string());
+                    }
                     if snap.brain_memory_bytes > 0 {
                         let all_busy: f32 = snap.worlds.iter().map(|w| w.gpu_busy).sum();
                         row(

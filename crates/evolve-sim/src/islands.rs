@@ -291,20 +291,32 @@ impl Pacer {
         let now = Instant::now();
         let elapsed = (now - self.last).as_secs_f64();
         self.last = now;
+        // Low priority mode: brains off the GPU while other programs need its memory.
+        if crate::low_priority::gpu_given_back() {
+            sim.give_back_gpu();
+        } else if sim.gpu_given_back {
+            sim.take_gpu_back();
+        }
         if paused {
             self.pending = 0.0;
             return 0;
         }
         let start = Instant::now();
         let mut steps = 0;
-        if speed <= 0.0 && (!self.steady || self.capacity <= 0.0) {
+        // Low priority mode's share of what the world can manage (1 normally).
+        let share = crate::low_priority::share() as f64;
+        if speed <= 0.0 && (self.capacity <= 0.0 || (!self.steady && share >= 1.0)) {
             while start.elapsed() < budget {
                 sim.step();
                 steps += 1;
             }
             self.learn(steps, start.elapsed().as_secs_f64());
         } else {
-            let per_sec = if speed <= 0.0 { self.max_pace() } else { TICKS_PER_SECOND as f64 * speed as f64 };
+            let mut per_sec = if speed <= 0.0 { self.max_pace() } else { TICKS_PER_SECOND as f64 * speed as f64 };
+            if share < 1.0 && self.capacity > 0.0 {
+                let most = if self.steady { self.capacity * MAX_PACE } else { self.capacity };
+                per_sec = per_sec.min(most * share);
+            }
             // Don't build up a backlog if the CPU can't keep up with the requested speed.
             self.pending = (self.pending + elapsed * per_sec).min(per_sec * 0.25 + 1.0);
             while self.pending >= 1.0 {
@@ -437,7 +449,7 @@ fn worker_loop(
                 *s = WorldStatus { label: label.clone().unwrap_or_default(), ..WorldStatus::of(index, &sim, rate) };
             }
         }
-        if paused || speed > 0.0 {
+        if paused || speed > 0.0 || crate::low_priority::share() < 1.0 {
             std::thread::sleep(Duration::from_millis(2));
         }
         let _ = rate;

@@ -571,11 +571,13 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
                         Ask::Summary if world == 0 => {
                             let rate = steps_per_sec / crate::sim::TICKS_PER_SECOND as f32;
                             let how = if paused { " (paused)" } else if speed == 0.0 { " at Max" } else { "" };
-                            let _ = reply.send(Ok(format!("{rate:.2}x real time{how}; {}", sim.summary_line(600.0))));
+                            let low = crate::low_priority::status().map(|s| format!(" ({s})")).unwrap_or_default();
+                            let _ = reply.send(Ok(format!("{rate:.2}x real time{how}{low}; {}", sim.summary_line(600.0))));
                         }
                         Ask::Line { minutes } if world == 0 => {
                             let rate = steps_per_sec / crate::sim::TICKS_PER_SECOND as f32;
-                            let _ = reply.send(Ok(format!("{rate:.2}x real time; {}", sim.summary_line(minutes * 60.0))));
+                            let low = crate::low_priority::status().map(|s| format!(" ({s})")).unwrap_or_default();
+                            let _ = reply.send(Ok(format!("{rate:.2}x real time{low}; {}", sim.summary_line(minutes * 60.0))));
                         }
                         ask if world == 0 => sim.answer(ask, reply),
                         ask => match trials.iter().find(|t| t.index == world).or_else(|| workers.get(world - 1)) {
@@ -646,6 +648,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             pool_for = sim.params.parallel_worlds;
             pool = world_pool("evolve-sim", main_threads(cores, pool_for as usize));
         }
+        crate::low_priority::set_enabled(sim.params.low_priority);
+        let share = crate::low_priority::share();
         rate_window.1 += pacer.run(&mut sim, speed, paused, Duration::from_millis(30), Some(&pool));
         let stepping = before_steps.elapsed();
         let stepped = before_tick..sim.tick;
@@ -682,8 +686,9 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         let window = rate_window.0.elapsed().as_secs_f32();
         if window >= 0.5 {
             // Steer the price of brains toward the GPU target, judged at Max speed only: at a
-            // set speed the GPU idles by design.
-            let steering = speed == 0.0 && !paused && sim.params.gpu_target > 0.0 && sim.brains.is_some();
+            // set speed the GPU idles by design, and so it does slowed down in low priority mode
+            // (where a falling price would grow brains because other programs were busy).
+            let steering = speed == 0.0 && !paused && sim.params.gpu_target > 0.0 && sim.brains.is_some() && share >= 1.0;
             let busy_of = |ws: &[Worker]| -> f32 {
                 ws.iter().filter(|w| w.alive()).filter_map(|w| w.status.lock().ok().map(|s| s.gpu_busy)).sum()
             };
@@ -711,7 +716,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             // An experiment's arms have a price of their own, steered into the GPU time this world
             // and its islands leave (a twentieth at least). Counted in with this world's, their
             // load made brains here 15 times dearer, and this world's brains shrank to a quarter.
-            if !trials.is_empty() && !paused && sim.params.gpu_target > 0.0 {
+            if !trials.is_empty() && !paused && sim.params.gpu_target > 0.0 && share >= 1.0 {
                 let room = (sim.params.gpu_target - busy).max(0.05);
                 let error = (busy_of(&trials) - room).max(fill_of(&trials) - MEMORY_TARGET);
                 trial_price = steer_price(trial_price, error, window);
@@ -731,7 +736,8 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             }
         }
 
-        if last_publish.elapsed() >= Duration::from_millis(15) {
+        // Slowed down in low priority mode, the screen is fed less often too (it draws less often).
+        if last_publish.elapsed() >= Duration::from_secs_f32(0.015 / share.max(crate::low_priority::FLOOR)) {
             last_publish = Instant::now();
             events.append(&mut sim.events);
             if events.len() > 8 {
@@ -786,6 +792,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             snap.speed = speed;
             snap.steps_per_sec = steps_per_sec;
             snap.cpu_percent = cpu_percent;
+            snap.low_priority = crate::low_priority::status();
             snap.world_epoch = world_epoch;
             // Not waiting while the zoo is being written to: the list on screen catches up later.
             if let Ok(z) = zoo.try_lock()
@@ -829,7 +836,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
         }
         copying = Duration::ZERO;
 
-        if paused || speed > 0.0 {
+        if paused || speed > 0.0 || share < 1.0 {
             std::thread::sleep(Duration::from_millis(2));
         }
     }

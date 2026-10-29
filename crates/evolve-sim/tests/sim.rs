@@ -398,6 +398,60 @@ fn brain_resize_keeps_surviving_wiring() {
     assert_eq!(child.w_rec.0.len(), child.h * child.h);
 }
 
+/// Low priority mode moves a running world's brains to the CPU, to hand the GPU's memory back to
+/// other programs, and later back again: they must carry on from where they were each way.
+#[test]
+fn brains_moved_off_the_gpu_and_back_carry_on_as_they_were() {
+    if let Err(e) = evolve_sim::gpu::GpuBrains::new() {
+        println!("no GPU, skipping: {e}");
+        return;
+    }
+    let mut sim = Sim::new(SimParams { min_population: 12, rain_interval: 0.0, terrain_resolution: 65, ..SimParams::default() });
+    sim.open_gpu();
+    assert!(sim.brains.is_some());
+    for _ in 0..120 {
+        sim.step();
+    }
+    let on_gpu = sim.brains.as_mut().unwrap().read_states();
+    sim.give_back_gpu();
+    assert!(sim.brains.is_none() && sim.gpu_given_back);
+    let mut compared = 0;
+    for c in &sim.creatures {
+        if let Some(s) = on_gpu.get(&c.id) {
+            assert_eq!(c.brain.plastic, s.plastic, "creature #{} lost what it learned", c.id);
+            assert_eq!(c.brain.hidden, s.hidden);
+            compared += 1;
+        }
+    }
+    assert!(compared > 0, "no brains to compare");
+    // They think (and learn) on the CPU meanwhile.
+    for _ in 0..60 {
+        sim.step();
+    }
+    assert!(
+        sim.creatures.iter().any(|c| on_gpu.get(&c.id).is_some_and(|s| s.plastic != c.brain.plastic)),
+        "brains should have kept learning on the CPU"
+    );
+    let on_cpu: Vec<(u64, Vec<f32>, Vec<f32>)> =
+        sim.creatures.iter().map(|c| (c.id, c.brain.plastic.clone(), c.brain.hidden.clone())).collect();
+    sim.take_gpu_back();
+    assert!(sim.brains.is_some() && !sim.gpu_given_back);
+    let back = sim.brains.as_mut().unwrap().read_states();
+    for (id, plastic, hidden) in &on_cpu {
+        let s = &back[id];
+        assert_eq!(&s.plastic, plastic, "creature #{id} lost what it learned on the CPU");
+        assert_eq!(&s.hidden, hidden);
+    }
+    for _ in 0..30 {
+        sim.step();
+    }
+    let later = sim.brains.as_mut().unwrap().read_states();
+    assert!(
+        on_cpu.iter().any(|(id, plastic, _)| later.get(id).is_some_and(|s| &s.plastic != plastic)),
+        "brains should be thinking and learning on the GPU again"
+    );
+}
+
 /// The GPU kernels must compute what the CPU reference computes, learning included.
 #[test]
 fn gpu_brains_match_cpu() {

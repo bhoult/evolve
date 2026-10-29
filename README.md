@@ -724,6 +724,18 @@ an oar.
 
 At **Max** speed the program is built to keep the whole machine busy.
 
+To share the machine instead, turn on **low priority** (`low_priority` under Hardware, or
+`--set low_priority=true`). Once a second it looks at what other programs use (CPU from `/proc`,
+GPU time and memory from `nvidia-smi`). When the machine is less than 10% free and other programs
+take part of it, every world slows down, to 5% of its pace at the least; with more than 25% free
+it speeds up again over about 20 s. The window draws fewer frames to match. When other programs
+leave less than 1 GB of GPU memory free, brains move to the CPU (what they learned goes with them,
+and they think the same there, only slower) and the GPU memory is handed back; they return after
+30 s of room. Only the pace changes, never the world: the brain price that steers toward
+`gpu_target` holds still while slowed down. On a 24-core machine with an RTX 5080, a path-traced
+render taking the whole GPU brought the world to 5% within 5 s, and it was back to full pace
+about 25 s after the render ended.
+
 - **GPU, brains:** every creature's brain runs on the GPU (`gpu.rs`, `brain.wgsl`). All brains of
   a world are evaluated in two batched compute dispatches per brain tick: one for every hidden
   neuron of every creature, one for every output plus the learning step. Results are read

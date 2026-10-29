@@ -228,6 +228,8 @@ pub struct Snapshot {
     pub steps_per_sec: f32,
     /// CPU used by the whole program, in percent of one core.
     pub cpu_percent: f32,
+    /// Low priority mode's share of the pace and its last look at the machine; `None` when off.
+    pub low_priority: Option<crate::low_priority::Status>,
     pub events: Vec<String>,
     /// The latest highlights, oldest first.
     pub highlights: Arc<Vec<Highlight>>,
@@ -438,6 +440,7 @@ impl Sim {
             speed: 1.0,
             steps_per_sec: 0.0,
             cpu_percent: 0.0,
+            low_priority: None,
             events: Vec::new(),
             highlights: Arc::default(),
             worlds: Vec::new(),

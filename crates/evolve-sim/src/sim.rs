@@ -539,6 +539,10 @@ pub struct Sim {
     pub brain_backend: String,
     #[serde(skip)]
     pub last_collect: Option<Instant>,
+    /// The brains were moved to the CPU to hand the GPU's memory back to other programs (low
+    /// priority mode), and go back when there's room.
+    #[serde(skip)]
+    pub gpu_given_back: bool,
     /// The sky right now; a function of the clock, so not saved.
     #[serde(skip)]
     pub weather: crate::weather::Weather,
@@ -653,6 +657,7 @@ impl Sim {
             brains: None,
             brain_backend: String::new(),
             last_collect: None,
+            gpu_given_back: false,
             weather: Default::default(),
             highlights: Vec::new(),
             highlight_seq: 0,
@@ -748,13 +753,20 @@ impl Sim {
         self.last_collect = None;
         self.brain_backend = "CPU".into();
         if std::env::var_os("EVOLVE_CPU_BRAINS").is_none() {
-            match crate::gpu::GpuBrains::new() {
-                Ok(g) => {
-                    self.brain_backend = format!("GPU ({})", g.adapter_name);
-                    self.brains = Some(g);
-                }
-                Err(e) => self.brain_backend = format!("CPU ({e})"),
+            self.open_gpu();
+        }
+    }
+
+    /// Opens the GPU for brains (whatever `EVOLVE_CPU_BRAINS` says) and uploads every living
+    /// creature's brain; they stay on the CPU if there's no GPU.
+    pub fn open_gpu(&mut self) {
+        self.last_collect = None;
+        match crate::gpu::GpuBrains::new() {
+            Ok(g) => {
+                self.brain_backend = format!("GPU ({})", g.adapter_name);
+                self.brains = Some(g);
             }
+            Err(e) => self.brain_backend = format!("CPU ({e})"),
         }
         self.apply_gpu_budget();
         if let Some(g) = self.brains.as_mut() {
@@ -803,6 +815,28 @@ impl Sim {
     /// experiment arm's brains to under a tenth of the world on screen's.
     pub fn brain_memory_fill(&self) -> f32 {
         self.brains.as_ref().map_or(0.0, |g| g.live_bytes() as f32 / g.budget_bytes.max(1) as f32)
+    }
+
+    /// Moves every brain to the CPU, what it has learned and all, and closes the GPU, handing its
+    /// memory back to other programs (low priority mode). They think the same there, only slower.
+    pub fn give_back_gpu(&mut self) {
+        if self.brains.is_none() {
+            return;
+        }
+        self.sync_brains();
+        self.brains = None;
+        self.last_collect = None;
+        self.perf.gpu_busy = 0.0;
+        self.gpu_given_back = true;
+        self.brain_backend = "CPU (GPU memory handed back to other programs)".into();
+        self.log("Low priority: brains moved to the CPU, handing the GPU's memory back");
+    }
+
+    /// Moves the brains back to the GPU after `give_back_gpu`.
+    pub fn take_gpu_back(&mut self) {
+        self.gpu_given_back = false;
+        self.open_gpu();
+        self.log(format!("Low priority: brains back on the GPU ({})", self.brain_backend));
     }
 
     pub fn sync_brains(&mut self) {
