@@ -35,6 +35,12 @@ Debian/Ubuntu). Without them, the build fails rather than running silently.
 The window opens through XWayland. For a native Wayland window, install `libwayland-dev` and
 build with `--features wayland`.
 
+`tools/install-desktop.sh` adds evolve to the desktop's applications
+(`~/.local/share/applications/evolve.desktop`, running this checkout's release build from the
+checkout). The desktop finds that entry by the window's app id, `evolve`, for its name and icon in
+the dock. The icon, `assets/icon.png`, is a render of the scene `assets/icon.json` by a separate
+SDF ray tracer, ray (`RAY=path/to/ray python3 tools/make-icon.py`).
+
 For ray-traced lighting (experimental, through Bevy Solari; it needs a GPU with hardware ray
 tracing), build with `--features raytracing` and run with `--raytracing`. Sun shadows and light
 bounced off the ground are then traced; water, rain, the sky and the lights of miracles aren't.

@@ -281,6 +281,9 @@ fn main() -> AppExit {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "evolve".into(),
+                        // The app id (WM_CLASS on X11): the desktop finds evolve.desktop by it for
+                        // the name and icon (tools/install-desktop.sh).
+                        name: Some("evolve".into()),
                         resolution: WindowResolution::new(1600, 900),
                         present_mode: if args.no_vsync {
                             PresentMode::AutoNoVsync
