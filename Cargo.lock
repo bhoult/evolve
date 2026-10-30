@@ -2535,6 +2535,8 @@ dependencies = [
  "evolve-sim",
  "half",
  "rayon",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

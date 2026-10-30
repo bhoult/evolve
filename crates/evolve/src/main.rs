@@ -18,6 +18,7 @@ mod raytracing;
 mod recording;
 mod reports;
 mod scene;
+mod settings;
 mod sky;
 mod splash;
 mod sync;
@@ -35,7 +36,6 @@ use bevy::prelude::*;
 use bevy::render::RenderPlugin;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::window::{PresentMode, WindowResolution};
-use bevy::winit::{UpdateMode, WinitSettings};
 use bevy_egui::EguiPlugin;
 use evolve_sim::params::ParamRef;
 use evolve_sim::{Control, Runner, Sim, SimParams, Snapshot};
@@ -326,9 +326,9 @@ fn main() -> AppExit {
             audio::AudioPlugin,
             recording::RecordingPlugin,
         ))
-        .add_plugins((miracles::MiraclesPlugin, observatory::ObservatoryPlugin, flow::FlowPlugin))
+        .add_plugins((miracles::MiraclesPlugin, observatory::ObservatoryPlugin, flow::FlowPlugin, settings::SettingsPlugin))
         .add_systems(PreUpdate, refresh_snapshot)
-        .add_systems(Update, (auto_screenshot, load_after, pace_frames))
+        .add_systems(Update, (auto_screenshot, load_after))
         .add_systems(Last, log_slow_frames);
     // Only when asked: Solari draws every opaque material deferred from the moment it's added.
     #[cfg(feature = "raytracing")]
@@ -337,21 +337,6 @@ fn main() -> AppExit {
     }
     let _ = raytracing;
     app.run()
-}
-
-/// Low priority mode draws less often as the world slows down: at 5% of its pace, a few frames a
-/// second (input still wakes it at once). Otherwise, Bevy's usual pace for games.
-fn pace_frames(snap: Res<Snap>, mut winit: ResMut<WinitSettings>) {
-    let share = snap.0.low_priority.as_ref().map_or(1.0, |s| s.share);
-    let want = if share >= 1.0 {
-        WinitSettings::game()
-    } else {
-        let mode = UpdateMode::reactive_low_power(std::time::Duration::from_secs_f32(1.0 / (60.0 * share)));
-        WinitSettings { focused_mode: mode, unfocused_mode: mode }
-    };
-    if winit.focused_mode != want.focused_mode || winit.unfocused_mode != want.unfocused_mode {
-        *winit = want;
-    }
 }
 
 fn refresh_snapshot(link: Res<SimLink>, time: Res<Time>, mut snap: ResMut<Snap>, mut interp: ResMut<Interp>) {

@@ -25,6 +25,7 @@ use crate::audio::SoundSettings;
 use crate::camera::OrbitCam;
 use crate::director::Director;
 use crate::env::{GraphicsSettings, ShadowQuality};
+use crate::settings::{AppSettings, LowPriority};
 use crate::preview::{PREVIEW_SIZE, Sketch, ZooPreview, sketch};
 use crate::sync::{ColorMode, ViewSettings};
 use crate::tools::{Tool, ToolState};
@@ -52,6 +53,7 @@ pub struct UiState {
     saves: Vec<(PathBuf, SystemTime, u64)>,
     saves_refreshed: f64,
     show_help: bool,
+    show_settings: bool,
     help_topic: crate::help::Topic,
     show_genome: bool,
     plot: PlotKind,
@@ -208,6 +210,7 @@ impl Default for UiState {
             saves: Vec::new(),
             saves_refreshed: -100.0,
             show_help: false,
+            show_settings: false,
             help_topic: crate::help::Topic::default(),
             show_genome: false,
             plot: PlotKind::Population,
@@ -397,6 +400,7 @@ fn ui_system(
     mut director: ResMut<Director>,
     mut sound: ResMut<SoundSettings>,
     mut gfx: ResMut<GraphicsSettings>,
+    mut app_settings: ResMut<AppSettings>,
     diag: Res<DiagnosticsStore>,
     time: Res<Time>,
     mut rec: ResMut<crate::recording::Recorder>,
@@ -427,7 +431,7 @@ fn ui_system(
         }
     }
     toolbar(ctx, snap, &link, st, &mut tools, &mut view, &mut cam, &mut director, &mut sound, &mut rec, fps);
-    params_panel(ctx, &link, st, &mut gfx, now);
+    params_panel(ctx, &link, st, now);
     stats_panel(ctx, snap, st, fps, &link, &mut cam);
     events_panel(ctx, snap, rec.fresh_notice());
     // The runner sketches the brain only while the brain view is open, to what it shows.
@@ -451,6 +455,7 @@ fn ui_system(
     }
     st.brain.ask(&link, brain_wants);
     saves_window(ctx, &link, st, now);
+    settings_window(ctx, snap, &mut st.show_settings, &mut app_settings, &mut gfx);
     zoo_window(ctx, snap, &link, st, &mut tools, &mut preview);
     crate::help::help_window(ctx, &mut st.show_help, &mut st.help_topic, &st.params);
     crate::reports::reports_window(ctx, &mut st.reports, snap.world_uid, now);
@@ -511,6 +516,13 @@ fn toolbar(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Help").clicked() {
                     st.show_help = !st.show_help;
+                }
+                if ui
+                    .selectable_label(st.show_settings, "Settings")
+                    .on_hover_text("This computer's settings: low priority mode and graphics (the world's own are under Parameters)")
+                    .clicked()
+                {
+                    st.show_settings = !st.show_settings;
                 }
                 if ui
                     .selectable_label(st.reports.open, "Reports")
@@ -693,7 +705,7 @@ fn param_widget(ui: &mut egui::Ui, info: &ParamInfo, r: ParamRef<'_>, default: f
     resp.on_hover_text(tip).changed()
 }
 
-fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: &mut GraphicsSettings, now: f64) {
+fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, now: f64) {
     egui::SidePanel::left("params")
         .resizable(true)
         .default_width(330.0)
@@ -716,27 +728,6 @@ fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: 
                     st.params = SimParams::default();
                     changed = true;
                 }
-            });
-            egui::CollapsingHeader::new("Graphics").show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut gfx.clouds, "clouds");
-                    ui.checkbox(&mut gfx.rain, "rain");
-                    ui.checkbox(&mut gfx.lightning, "lightning");
-                    ui.checkbox(&mut gfx.bloom, "bloom");
-                    ui.checkbox(&mut gfx.sway, "swaying plants");
-                });
-                ui.horizontal(|ui| {
-                    ui.label("shadows");
-                    for (q, name) in [(ShadowQuality::Off, "off"), (ShadowQuality::Low, "low"), (ShadowQuality::High, "high")] {
-                        ui.selectable_value(&mut gfx.shadows, q, name);
-                    }
-                    ui.checkbox(&mut gfx.soft_shadows, "soft (by weather)");
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.checkbox(&mut gfx.flow, "flowing water");
-                    ui.checkbox(&mut gfx.lod_tint, "tint terrain detail levels")
-                        .on_hover_text("Ground drawn coarser far away is tinted green, yellow, orange and red as its detail halves");
-                });
             });
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
@@ -792,6 +783,79 @@ fn params_panel(ctx: &mut egui::Context, link: &SimLink, st: &mut UiState, gfx: 
                 link.cmd(Command::SetParams(Box::new(st.params.clone())));
             }
         });
+}
+
+/// This computer's settings, kept in the settings file (settings.rs): low priority mode and the
+/// graphics. The world's own parameters are in the panel on the left, and saved with it.
+fn settings_window(ctx: &mut egui::Context, snap: &Snapshot, open: &mut bool, s: &mut AppSettings, gfx: &mut GraphicsSettings) {
+    egui::Window::new("Settings").open(open).resizable(false).default_width(420.0).show(ctx, |ui| {
+        ui.heading("Low priority");
+        ui.label(
+            "When other programs need the computer, evolve slows down and hands back GPU memory. \
+             Only how fast the world runs changes, never the world itself.",
+        );
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut s.low_priority, LowPriority::Never, "Never");
+            ui.selectable_value(&mut s.low_priority, LowPriority::WhenMinimized, "When the window is minimized");
+            ui.selectable_value(&mut s.low_priority, LowPriority::Always, "Always");
+        });
+        let percent = |ui: &mut egui::Ui, x: &mut f32, range: std::ops::RangeInclusive<f32>, text: &str, tip: &str| {
+            let mut p = *x * 100.0;
+            if ui.add(egui::Slider::new(&mut p, range).suffix("%").text(text)).on_hover_text(tip).changed() {
+                *x = p / 100.0;
+            }
+        };
+        percent(
+            ui,
+            &mut s.give_way_below,
+            0.0..=50.0,
+            "slow down when less is free",
+            "When less than this share of the CPU or of the GPU is free, and other programs are using some of it, \
+             the worlds slow down. They speed up again once 15 points more than this is free.",
+        );
+        percent(
+            ui,
+            &mut s.slowest,
+            1.0..=100.0,
+            "the slowest it goes",
+            "The worlds never go slower than this share of their full pace, however busy the computer is.",
+        );
+        ui.add(egui::Slider::new(&mut s.vram_free_gb, 0.25..=8.0).suffix(" GB").text("hand back GPU memory when less is free"))
+            .on_hover_text(
+                "When other programs leave less GPU memory free than this, brains move to the CPU (keeping what they learned) \
+                 and their GPU memory is handed back. They return after 30 s with room for them.",
+            );
+        match &snap.low_priority {
+            Some(status) => ui.label(status.to_string()),
+            None => ui.weak("off now"),
+        };
+        if ui.small_button("Defaults").clicked() {
+            *s = AppSettings::default();
+        }
+        ui.separator();
+        ui.heading("Graphics");
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut gfx.clouds, "clouds");
+            ui.checkbox(&mut gfx.rain, "rain");
+            ui.checkbox(&mut gfx.lightning, "lightning");
+            ui.checkbox(&mut gfx.bloom, "bloom");
+            ui.checkbox(&mut gfx.sway, "swaying plants");
+        });
+        ui.horizontal(|ui| {
+            ui.label("shadows");
+            for (q, name) in [(ShadowQuality::Off, "off"), (ShadowQuality::Low, "low"), (ShadowQuality::High, "high")] {
+                ui.selectable_value(&mut gfx.shadows, q, name);
+            }
+            ui.checkbox(&mut gfx.soft_shadows, "soft (by weather)");
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut gfx.flow, "flowing water");
+            ui.checkbox(&mut gfx.lod_tint, "tint terrain detail levels")
+                .on_hover_text("Ground drawn coarser far away is tinted green, yellow, orange and red as its detail halves");
+        });
+        ui.separator();
+        ui.weak(format!("Kept in {}", crate::settings::path().display()));
+    });
 }
 
 fn stats_panel(

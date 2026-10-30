@@ -64,15 +64,16 @@ impl WeatherPreset {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
 pub enum ShadowQuality {
     Off,
     Low,
     High,
 }
 
-/// Graphics toggles the UI can expose. Read every frame.
-#[derive(Resource, Clone, Debug)]
+/// Graphics toggles the UI can expose. Read every frame; kept in the settings file (settings.rs).
+#[derive(Resource, Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct GraphicsSettings {
     /// Clouds in the sky and their shadows on the ground.
     pub clouds: bool,
@@ -266,15 +267,15 @@ fn create_env_buffer(mut commands: Commands, device: Res<RenderDevice>) {
     commands.insert_resource(EnvGpu { buffer });
 }
 
+/// The graphics settings from the settings file (settings.rs), or the defaults, with the command
+/// line's say on top.
 fn init_settings(mut commands: Commands, args: Res<Args>, existing: Option<Res<GraphicsSettings>>) {
-    if existing.is_none() {
-        let mut s = GraphicsSettings::default();
-        // Ray-traced lighting casts its own shadows.
-        if args.no_shadows || args.raytracing {
-            s.shadows = ShadowQuality::Off;
-        }
-        commands.insert_resource(s);
+    let mut s = existing.map(|s| s.clone()).unwrap_or_default();
+    // Ray-traced lighting casts its own shadows.
+    if args.no_shadows || args.raytracing {
+        s.shadows = ShadowQuality::Off;
     }
+    commands.insert_resource(s);
 }
 
 /// A terrain's heights as the bytes of the shaders' heights buffer.

@@ -648,7 +648,6 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             pool_for = sim.params.parallel_worlds;
             pool = world_pool("evolve-sim", main_threads(cores, pool_for as usize));
         }
-        crate::low_priority::set_enabled(sim.params.low_priority);
         let share = crate::low_priority::share();
         rate_window.1 += pacer.run(&mut sim, speed, paused, Duration::from_millis(30), Some(&pool));
         let stepping = before_steps.elapsed();

@@ -517,12 +517,6 @@ params! {
         /// GPU memory for brains, shared by all worlds in proportion to their populations, in GB.
         /// Brains that don't fit are trimmed.
         gpu_memory_gb: f32 = 8.0, [0.5, 64], Live;
-        /// Give way to other programs: when they want the CPU or the GPU, every world slows down,
-        /// to 5% of its pace at the least, and speeds up again when they let go; when they run
-        /// short of GPU memory, brains move to the CPU (thinking the same, slower) and the
-        /// memory is handed back until there's room. The world itself doesn't change. Watches
-        /// the GPU through nvidia-smi.
-        low_priority: bool = false, [0, 1], Live;
     }
     "Zoo" {
         /// Simulated seconds between each world putting its best creature in the zoo.

@@ -24,6 +24,9 @@ rayon.workspace = true
 half.workspace = true
 bytemuck.workspace = true
 bevy_egui.workspace = true
+# The settings file (settings.rs).
+serde.workspace = true
+serde_json.workspace = true
 egui_plot.workspace = true
 # Sound output; the sounds themselves are synthesized in audio.rs.
 cpal = "0.15"
