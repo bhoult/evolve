@@ -54,6 +54,7 @@ pub struct UiState {
     saves_refreshed: f64,
     show_help: bool,
     show_settings: bool,
+    load: crate::load_view::LoadView,
     help_topic: crate::help::Topic,
     show_genome: bool,
     plot: PlotKind,
@@ -211,6 +212,7 @@ impl Default for UiState {
             saves_refreshed: -100.0,
             show_help: false,
             show_settings: false,
+            load: Default::default(),
             help_topic: crate::help::Topic::default(),
             show_genome: false,
             plot: PlotKind::Population,
@@ -456,6 +458,7 @@ fn ui_system(
     st.brain.ask(&link, brain_wants);
     saves_window(ctx, &link, st, now);
     settings_window(ctx, snap, &mut st.show_settings, &mut app_settings, &mut gfx);
+    crate::load_view::load_window(ctx, &mut st.load);
     zoo_window(ctx, snap, &link, st, &mut tools, &mut preview);
     crate::help::help_window(ctx, &mut st.show_help, &mut st.help_topic, &st.params);
     crate::reports::reports_window(ctx, &mut st.reports, snap.world_uid, now);
@@ -516,6 +519,13 @@ fn toolbar(
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("Help").clicked() {
                     st.show_help = !st.show_help;
+                }
+                if ui
+                    .selectable_label(st.load.open, "Load")
+                    .on_hover_text("How much of the CPU, GPU and memory evolve uses against other programs, and how fast the world runs, over time")
+                    .clicked()
+                {
+                    st.load.open = !st.load.open;
                 }
                 if ui
                     .selectable_label(st.show_settings, "Settings")

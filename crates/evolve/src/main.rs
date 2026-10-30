@@ -9,6 +9,7 @@ mod env;
 mod flow;
 mod genome_view;
 mod help;
+mod load_view;
 mod miracles;
 mod neural_view;
 mod observatory;

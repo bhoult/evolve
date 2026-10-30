@@ -19,6 +19,8 @@ pub struct SettingsPlugin;
 
 impl Plugin for SettingsPlugin {
     fn build(&self, app: &mut App) {
+        // Looks at the machine from the start, for the Load window (and low priority mode).
+        evolve_sim::machine::start();
         let file = load();
         app.insert_resource(file.app)
             .insert_resource(file.graphics)

@@ -727,6 +727,7 @@ fn run(mut sim: Sim, rx: Receiver<Control>, shared: Arc<Shared>, zoo: SharedZoo)
             // half-second's luck.
             let rate = rate_window.1 as f32 / window;
             steps_per_sec = if steps_per_sec <= 0.0 { rate } else { steps_per_sec + (rate - steps_per_sec) * 0.3 };
+            crate::machine::report_speed(steps_per_sec / crate::sim::TICKS_PER_SECOND as f32);
             rate_window = (Instant::now(), 0);
             if let Some(now) = crate::process_cpu_seconds() {
                 let (at, before) = cpu_mark;

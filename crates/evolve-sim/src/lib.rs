@@ -12,6 +12,7 @@ pub mod grid;
 pub mod islands;
 pub mod knock;
 pub mod low_priority;
+pub mod machine;
 pub mod gpu;
 pub mod hydro;
 mod life;

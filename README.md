@@ -742,6 +742,11 @@ The Settings window holds what belongs to the computer rather than to a world (l
 the graphics toggles), kept in `~/.config/evolve/settings.json`; a world's own parameters are in
 the panel on the left and saved with it.
 
+The **Load** button graphs, over the last 2 minutes to 2 hours, how much of the CPU, the GPU, RAM
+and GPU memory evolve uses against other programs (stacked: evolve in blue, everything else in
+orange on top), with the world's speed and low priority's pace below. It's read every second or two
+from `/proc` and `nvidia-smi` while the app runs; the MCP tool `machine_load` gives the same as CSV.
+
 - **GPU, brains:** every creature's brain runs on the GPU (`gpu.rs`, `brain.wgsl`). All brains of
   a world are evaluated in two batched compute dispatches per brain tick: one for every hidden
   neuron of every creature, one for every output plus the learning step. Results are read

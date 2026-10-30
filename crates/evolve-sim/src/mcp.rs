@@ -427,6 +427,14 @@ fn tools(pictures: bool) -> Value {
             }},
         }),
         json!({
+            "name": "machine_load",
+            "description": "What this program and everything else use of the CPU, the GPU, RAM and GPU memory, with the world's speed and low priority's pace, over the last minutes (one look every second or two; the app's Load window graphs it). CSV, one row per look, newest last.",
+            "inputSchema": {"type": "object", "properties": {
+                "minutes": {"type": "number", "description": "how far back (default 10, at most 120)"},
+                "every": {"type": "integer", "minimum": 1, "description": "keep every nth look (default: about 60 rows)"}
+            }},
+        }),
+        json!({
             "name": "save_world",
             "description": "Saves the world on screen to a new .evo file (it won't overwrite one), e.g. to study it offline with the diagnostic tests.",
             "inputSchema": {"type": "object", "properties": {"path": {"type": "string", "description": "absolute path ending in .evo"}}, "required": ["path"]},
@@ -533,6 +541,7 @@ fn call(name: &str, args: &Value, runner: &Sender<Control>, shots: Option<&Sende
         }
         "stop_experiment" => ask(runner, 0, Ask::StopExperiment).map(text),
         "stats_history" => stats_history(args).map(text),
+        "machine_load" => Ok(text(machine_load(args))),
         "experiment_report" => {
             let minutes = args.get("minutes").and_then(Value::as_f64).unwrap_or(30.0).clamp(0.5, 30.0);
             let listing = ask(runner, 0, Ask::Experiment)?;
@@ -698,4 +707,42 @@ fn stats_history(args: &Value) -> Result<String, String> {
         }
     }
     Ok(out)
+}
+
+/// The machine sampler's looks as CSV (see `machine_load` in `tools`).
+fn machine_load(args: &Value) -> String {
+    let minutes = args.get("minutes").and_then(Value::as_f64).unwrap_or(10.0).clamp(0.1, 120.0);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0.0, |d| d.as_secs_f64());
+    let looks: Vec<_> = crate::machine::history().into_iter().filter(|s| now - s.at <= minutes * 60.0).collect();
+    let every = args.get("every").and_then(Value::as_u64).map_or((looks.len() / 60).max(1), |n| n.max(1) as usize);
+    let pct = |x: Option<f32>| x.map(|v| format!("{:.0}", v * 100.0)).unwrap_or_default();
+    let gb = |x: Option<f32>| x.map(|v| format!("{v:.2}")).unwrap_or_default();
+    let mut out = String::from(
+        "min_ago,cpu_evolve_%,cpu_others_%,gpu_evolve_%,gpu_others_%,ram_evolve_gb,ram_others_gb,vram_evolve_gb,vram_others_gb,speed_x,pace_%\n",
+    );
+    let n = looks.len();
+    for (k, s) in looks.iter().enumerate() {
+        // Every nth, and the newest always.
+        if k % every != 0 && k + 1 != n {
+            continue;
+        }
+        out.push_str(&format!(
+            "{:.2},{},{},{},{},{:.2},{:.2},{},{},{:.2},{:.0}\n",
+            (now - s.at) / 60.0,
+            pct(Some(s.cpu_ours)),
+            pct(Some(s.cpu_others)),
+            pct(s.gpu_ours),
+            pct(s.gpu_others),
+            s.ram_ours,
+            s.ram_others,
+            gb(s.vram_ours),
+            gb(s.vram_others),
+            s.speed,
+            s.pace * 100.0
+        ));
+    }
+    if n == 0 {
+        out.push_str("(no looks yet: the sampler starts with the app and looks every second or two)\n");
+    }
+    out
 }
